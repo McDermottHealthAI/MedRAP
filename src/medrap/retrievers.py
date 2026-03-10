@@ -86,10 +86,11 @@ class InMemoryTopKRetriever(Retriever):
         """Retrieve top-k documents for each query.
 
         Args:
-            query_embeddings: Query tensor with shape ``(B, R, D_ret)``.
+            query_embeddings: Query tensor with shape ``(B, R, D_ret)`` on any
+            device.
 
         Returns:
-            ``RetrieverOutput`` with:
+            ``RetrieverOutput`` on same device as ``query_embeddings`` with:
                 - ``doc_tokens`` shaped ``(B, R, K, S_doc)``
                 - ``doc_attention_mask`` shaped ``(B, R, K, S_doc)``
                 - ``doc_scores`` shaped ``(B, R, K)``
