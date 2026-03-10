@@ -1,13 +1,36 @@
-"""Retrieval backends for RAP pipeline composition."""
+"""Retrieval backends for RAP pipeline composition.
+
+This module provides retriever implementations for small in-memory corpora and
+for dataset-backed corpora with attached nearest-neighbor indexes.
+"""
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
 import torch
+from datasets import Dataset
 from torch import Tensor, nn
 
 from .types import RetrieverOutput
+
+_REFRESH_EXECUTOR = ThreadPoolExecutor(max_workers=1)
+
+
+@dataclass(frozen=True)
+class _DatasetSnapshot:
+    """Dataset snapshot used for retrieval.
+
+    Args:
+        dataset: Hugging Face dataset with an attached nearest-neighbor index.
+        index_name: Name of the attached index on ``dataset``.
+    """
+
+    dataset: Dataset
+    index_name: str
 
 
 class Retriever(nn.Module, ABC):
@@ -87,7 +110,7 @@ class InMemoryRetriever(Retriever):
 
         Args:
             query_embeddings: Query tensor with shape ``(B, R, D_ret)`` on any
-            device.
+                device.
 
         Returns:
             ``RetrieverOutput`` on same device as ``query_embeddings`` with:
@@ -143,6 +166,243 @@ class InMemoryRetriever(Retriever):
             doc_scores=top_scores,
             doc_ids=retrieved_doc_ids,
             doc_key_embeddings=retrieved_doc_key_embeddings,
+        )
+
+
+class HFDatasetRetriever(Retriever):
+    """Dataset-backed FAISS retriever.
+
+    Uses a Hugging Face dataset as the document store and a FAISS index for
+    nearest-neighbor retrieval. Retrieval always serves from the active
+    snapshot.
+
+    Args:
+        dataset: Hugging Face dataset with an attached nearest-neighbor index.
+        index_name: Name of the attached index on ``dataset``.
+        doc_tokens_column: Column containing document token ids.
+        doc_attention_mask_column: Column containing document attention masks.
+        k: Number of documents to return per query.
+        doc_ids_column: Optional column containing document ids.
+        doc_key_embeddings_column: Optional column containing document key
+            embeddings.
+    """
+
+    def __init__(
+        self,
+        *,
+        dataset: Dataset,
+        index_name: str,
+        doc_tokens_column: str,
+        doc_attention_mask_column: str,
+        k: int = 1,
+        doc_ids_column: str | None = None,
+        doc_key_embeddings_column: str | None = None,
+    ) -> None:
+        super().__init__()
+
+        if k < 1 or k > len(dataset):
+            raise ValueError("k must be between 1 and the number of dataset rows")
+
+        dataset_columns = set(dataset.column_names)
+        required_columns = {doc_tokens_column, doc_attention_mask_column}
+        missing_required = required_columns - dataset_columns
+        if missing_required:
+            raise ValueError(f"dataset is missing required columns: {sorted(missing_required)}")
+
+        optional_columns = [doc_ids_column, doc_key_embeddings_column]
+        missing_optional = [col for col in optional_columns if col is not None and col not in dataset_columns]
+        if missing_optional:
+            raise ValueError(f"dataset is missing optional columns: {sorted(missing_optional)}")
+
+        self.k = k
+        self._doc_tokens_column = doc_tokens_column
+        self._doc_attention_mask_column = doc_attention_mask_column
+        self._doc_ids_column = doc_ids_column
+        self._doc_key_embeddings_column = doc_key_embeddings_column
+
+        self._active_snapshot = self._build_snapshot(lambda: dataset, index_name=index_name)
+        self._refresh_job: Future[_DatasetSnapshot] | None = None
+
+    def _build_snapshot(
+        self,
+        build_dataset: Callable[[], Dataset],
+        *,
+        index_name: str,
+    ) -> _DatasetSnapshot:
+        dataset = build_dataset()
+        try:
+            dataset.get_index(index_name)
+        except Exception as exc:
+            raise ValueError(f"dataset does not have a FAISS index named {index_name!r}") from exc
+        return _DatasetSnapshot(dataset=dataset, index_name=index_name)
+
+    def start_refresh(self, *, build_dataset: Callable[[], Dataset]) -> bool:
+        """Start a background refresh job.
+
+        Args:
+            build_dataset: Callable returning a fresh Hugging Face dataset with
+                the attached index.
+
+        Returns:
+            ``False`` if a refresh job is already running.
+
+        Examples:
+            >>> retriever = HFDatasetRetriever(
+            ...     dataset=FakeIndexedDataset(
+            ...         doc_tokens=[[10, 11], [20, 21]],
+            ...         doc_attention_mask=[[True, True], [True, False]],
+            ...         doc_ids=[7, 8],
+            ...     ),
+            ...     index_name="embeddings",
+            ...     doc_tokens_column="doc_tokens",
+            ...     doc_attention_mask_column="doc_attention_mask",
+            ...     doc_ids_column="doc_ids",
+            ...     k=1,
+            ... )
+            >>> def build_dataset():
+            ...     time.sleep(0.05)
+            ...     return FakeIndexedDataset(
+            ...         doc_tokens=[[30, 31], [40, 41]],
+            ...         doc_attention_mask=[[True, True], [True, True]],
+            ...         doc_ids=[17, 18],
+            ...     )
+            >>> retriever.start_refresh(build_dataset=build_dataset)
+            True
+            >>> retriever.start_refresh(build_dataset=build_dataset)
+            False
+            >>> time.sleep(0.1)
+            >>> retriever.retrieve(torch.ones((1, 1, 4), dtype=torch.float32)).doc_ids.tolist()
+            [[[17]]]
+        """
+        if self._refresh_job is not None:
+            return False
+        index_name = self._active_snapshot.index_name
+        self._refresh_job = _REFRESH_EXECUTOR.submit(
+            self._build_snapshot,
+            build_dataset,
+            index_name=index_name,
+        )
+        return True
+
+    def _poll_refresh(self) -> bool:
+        """Swap in a finished refresh snapshot if one is available."""
+        if self._refresh_job is None:
+            return False
+        if not self._refresh_job.done():
+            return False
+
+        new_snapshot = self._refresh_job.result()
+        try:
+            new_snapshot.dataset.get_index(new_snapshot.index_name)
+        except Exception as exc:
+            self._refresh_job = None
+            raise RuntimeError(
+                f"refreshed dataset does not have a FAISS index named {new_snapshot.index_name!r}"
+            ) from exc
+
+        self._active_snapshot = new_snapshot
+        self._refresh_job = None
+        return True
+
+    def _search_index(self, query_embeddings: Tensor) -> tuple[Tensor, Tensor]:
+        """Search the active dataset index."""
+        batch_size, n_retrieval_steps, d_ret = query_embeddings.shape
+        snapshot = self._active_snapshot
+
+        flat_queries = (
+            query_embeddings.detach()
+            .to(torch.float32)
+            .cpu()
+            .reshape(batch_size * n_retrieval_steps, d_ret)
+            .numpy()
+        )
+
+        total_scores, total_indices = snapshot.dataset.search_batch(
+            snapshot.index_name,
+            flat_queries,
+            k=self.k,
+        )
+
+        scores = torch.as_tensor(total_scores, dtype=torch.float32).reshape(
+            batch_size,
+            n_retrieval_steps,
+            self.k,
+        )
+        row_indices = torch.as_tensor(total_indices, dtype=torch.long).reshape(
+            batch_size,
+            n_retrieval_steps,
+            self.k,
+        )
+        return scores, row_indices
+
+    def _materialize_output(
+        self,
+        *,
+        row_indices: Tensor,
+        scores: Tensor,
+        output_device: torch.device,
+    ) -> RetrieverOutput:
+        """Materialize retrieved dataset rows into ``RetrieverOutput``."""
+        if row_indices.ndim != 3:
+            raise ValueError("row_indices must have shape (B, R, K)")
+        if scores.shape != row_indices.shape:
+            raise ValueError("scores must have the same shape as row_indices")
+        if (row_indices < 0).any():
+            raise RuntimeError("retrieval returned invalid dataset row indices")
+
+        batch_size, n_retrieval_steps, k = row_indices.shape
+        snapshot = self._active_snapshot
+        flat_row_indices = row_indices.reshape(-1).tolist()
+        rows = snapshot.dataset[flat_row_indices]
+
+        doc_tokens = torch.as_tensor(
+            rows[self._doc_tokens_column],
+            dtype=torch.long,
+            device=output_device,
+        ).reshape(batch_size, n_retrieval_steps, k, -1)
+
+        doc_attention_mask = torch.as_tensor(
+            rows[self._doc_attention_mask_column],
+            dtype=torch.bool,
+            device=output_device,
+        ).reshape(batch_size, n_retrieval_steps, k, -1)
+
+        doc_ids = None
+        if self._doc_ids_column is not None:
+            doc_ids = torch.as_tensor(
+                rows[self._doc_ids_column],
+                dtype=torch.long,
+                device=output_device,
+            ).reshape(batch_size, n_retrieval_steps, k)
+
+        doc_key_embeddings = None
+        if self._doc_key_embeddings_column is not None:
+            doc_key_embeddings = torch.as_tensor(
+                rows[self._doc_key_embeddings_column],
+                dtype=torch.float32,
+                device=output_device,
+            ).reshape(batch_size, n_retrieval_steps, k, -1)
+
+        return RetrieverOutput(
+            doc_tokens=doc_tokens,
+            doc_attention_mask=doc_attention_mask,
+            doc_scores=scores.to(output_device),
+            doc_ids=doc_ids,
+            doc_key_embeddings=doc_key_embeddings,
+        )
+
+    def retrieve(self, query_embeddings: Tensor) -> RetrieverOutput:
+        """Retrieve top-k documents for queries of shape ``(B, R, D_ret)``."""
+        if query_embeddings.ndim != 3:
+            raise ValueError("query_embeddings must have shape (B, R, D_ret)")
+
+        self._poll_refresh()
+
+        scores, row_indices = self._search_index(query_embeddings)
+        return self._materialize_output(
+            row_indices=row_indices,
+            scores=scores,
+            output_device=query_embeddings.device,
         )
 
 
