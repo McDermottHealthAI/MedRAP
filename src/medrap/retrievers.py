@@ -1,9 +1,6 @@
-"""Retrieval backends for RAP pipeline composition.
+"""Retrieval backends for RAP pipeline composition."""
 
-This module provides a local top-k payload retriever for small in-memory
-corpora and a small factory for loading those payloads from ``.pt`` bundles.
-"""
-
+from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import cast
 
@@ -13,17 +10,32 @@ from torch import Tensor, nn
 from .types import RetrieverOutput
 
 
-class TopKPayloadRetriever(nn.Module):
-    """Top-k retriever over fixed document keys and payloads.
+class Retriever(nn.Module, ABC):
+    """Abstract base class for retrievers.
 
-    This module stores document key embeddings together with payload tensors and
-    returns the top-k documents for each query under a chosen similarity
-    function. It is a good fit for synthetic and semi-synthetic experiments
-    where the corpus is small and can be kept directly in memory.
+    Subclasses must implement :meth:`retrieve`. The ``forward`` method
+    delegates to ``retrieve`` so retrievers can be used as standard
+    ``nn.Module`` objects.
+    """
 
-    The document keys are fixed buffers rather than trainable parameters. This
-    makes retrieval query-dependent but not end-to-end differentiable through
-    the hard top-k selection step.
+    @abstractmethod
+    def retrieve(self, query_embeddings: Tensor) -> RetrieverOutput:
+        """Retrieve documents for the given query embeddings.
+
+        Args:
+            query_embeddings: Query tensor with shape ``(B, R, D_ret)``.
+
+        Returns:
+            A ``RetrieverOutput``.
+        """
+
+    def forward(self, query_embeddings: Tensor) -> RetrieverOutput:
+        """Call ``retrieve``."""
+        return self.retrieve(query_embeddings)
+
+
+class InMemoryTopKRetriever(Retriever):
+    """In-memory top-k retriever over fixed document keys.
 
     Args:
         doc_key_embeddings: Document key matrix with shape ``(N_docs, D_ret)``.
@@ -71,22 +83,21 @@ class TopKPayloadRetriever(nn.Module):
         self.register_buffer("_doc_ids", doc_ids.to(torch.long))
 
     def retrieve(self, query_embeddings: Tensor) -> RetrieverOutput:
-        """Retrieve the top-k payload documents for each query.
+        """Retrieve top-k documents for each query.
 
         Args:
             query_embeddings: Query tensor with shape ``(B, R, D_ret)``.
 
         Returns:
             ``RetrieverOutput`` with:
-                - ``doc_tokens``: ``(B, R, K, S_doc)``
-                - ``doc_attention_mask``: ``(B, R, K, S_doc)``
-                - ``doc_scores``: ``(B, R, K)``
-                - ``doc_ids``: ``(B, R, K)``
-                - ``doc_key_embeddings``: ``(B, R, K, D_ret)``
+                - ``doc_tokens`` shaped ``(B, R, K, S_doc)``
+                - ``doc_attention_mask`` shaped ``(B, R, K, S_doc)``
+                - ``doc_scores`` shaped ``(B, R, K)``
+                - ``doc_ids`` shaped ``(B, R, K)``
+                - ``doc_key_embeddings`` shaped ``(B, R, K, D_ret)``
 
         Examples:
-            >>> import torch
-            >>> retriever = TopKPayloadRetriever(
+            >>> retriever = InMemoryTopKRetriever(
             ...     doc_key_embeddings=torch.FloatTensor([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]),
             ...     doc_tokens=torch.LongTensor([[10, 11], [20, 21], [30, 31]]),
             ...     doc_attention_mask=torch.BoolTensor([[True, True], [True, True], [True, False]]),
@@ -133,18 +144,14 @@ class TopKPayloadRetriever(nn.Module):
             doc_key_embeddings=retrieved_doc_key_embeddings,
         )
 
-    def forward(self, query_embeddings: Tensor) -> RetrieverOutput:
-        """Call ``retrieve``."""
-        return self.retrieve(query_embeddings)
 
-
-def build_topk_payload_retriever_from_pt(
+def load_in_memory_topk_retriever_from_pt(
     *,
     bundle_path: str | Path,
     k: int = 1,
     similarity: str = "dot",
-) -> TopKPayloadRetriever:
-    """Load a ``TopKPayloadRetriever`` from a serialized ``.pt`` bundle.
+) -> InMemoryTopKRetriever:
+    """Load an ``InMemoryTopKRetriever`` from a serialized ``.pt`` bundle.
 
     Args:
         bundle_path: Path to a ``torch.save``-produced bundle containing
@@ -155,7 +162,7 @@ def build_topk_payload_retriever_from_pt(
             ``"dot"`` and ``"cosine"``.
 
     Returns:
-        A configured ``TopKPayloadRetriever``.
+        A configured ``InMemoryTopKRetriever``.
 
     Examples:
         >>> import tempfile
@@ -172,12 +179,12 @@ def build_topk_payload_retriever_from_pt(
         ...         },
         ...         bundle_path,
         ...     )
-        ...     retriever = build_topk_payload_retriever_from_pt(bundle_path=bundle_path, k=1)
+        ...     retriever = load_in_memory_topk_retriever_from_pt(bundle_path=bundle_path, k=1)
         >>> tuple(retriever.retrieve(torch.FloatTensor([[[1.0, 0.0]]])).doc_ids.shape)
         (1, 1, 1)
     """
     bundle = torch.load(bundle_path, map_location="cpu", weights_only=False)
-    return TopKPayloadRetriever(
+    return InMemoryTopKRetriever(
         doc_key_embeddings=torch.as_tensor(bundle["doc_key_embeddings"], dtype=torch.float32),
         doc_tokens=torch.as_tensor(bundle["doc_tokens"], dtype=torch.long),
         doc_attention_mask=torch.as_tensor(bundle["doc_attention_mask"], dtype=torch.bool),

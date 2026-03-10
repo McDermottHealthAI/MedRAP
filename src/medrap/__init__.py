@@ -1,8 +1,8 @@
 from .configs import (
-    DemoTopKPayloadRetrieverConfig,
+    DemoInMemoryTopKRetrieverConfig,
+    InMemoryTopKRetrieverConfig,
     PipelineConfig,
     RAPAppConfig,
-    TopKPayloadRetrieverConfig,
     default_pipeline_config,
     float_tensor_config,
     instantiate_model,
@@ -14,7 +14,7 @@ from .losses import MarginalizedRetrievalLoss
 from .model import RetrievalAugmentedModel
 from .pooling import IdentityPooling, MaskedMeanPooling
 from .query_projection import LinearQueryProjector, QueryProjector, SequenceMeanQueryProjector
-from .retrievers import TopKPayloadRetriever, build_topk_payload_retriever_from_pt
+from .retrievers import InMemoryTopKRetriever, Retriever, load_in_memory_topk_retriever_from_pt
 from .types import (
     EncoderOutput,
     FusionInput,
@@ -27,11 +27,13 @@ from .types import (
 
 __all__ = [
     "ConcatFusion",
-    "DemoTopKPayloadRetrieverConfig",
+    "DemoInMemoryTopKRetrieverConfig",
     "EncoderOutput",
     "FusionInput",
     "FusionOutput",
     "IdentityPooling",
+    "InMemoryTopKRetriever",
+    "InMemoryTopKRetrieverConfig",
     "LinearHead",
     "LinearQueryProjector",
     "MEDSCodeEncoder",
@@ -46,14 +48,13 @@ __all__ = [
     "ReplaceFusion",
     "RetrievalAugmentedModel",
     "RetrievalEncoderOutput",
+    "Retriever",
     "RetrieverOutput",
     "SequenceMeanQueryProjector",
     "TabularEncoder",
     "TokenEmbeddingEncoder",
-    "TopKPayloadRetriever",
-    "TopKPayloadRetrieverConfig",
-    "build_topk_payload_retriever_from_pt",
     "default_pipeline_config",
     "float_tensor_config",
     "instantiate_model",
+    "load_in_memory_topk_retriever_from_pt",
 ]
