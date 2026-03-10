@@ -1,4 +1,4 @@
-_target_: medrap.retrievers.TopKPayloadRetriever
+_target_: medrap.retrievers.InMemoryTopKRetriever
 doc_key_embeddings:
   _target_: torch.FloatTensor
   _args_:

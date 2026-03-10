@@ -5,7 +5,7 @@ from meds_torchdata import MEDSTorchBatch
 
 from medrap.configs import RAPAppConfig
 from medrap.model import RetrievalAugmentedModel
-from medrap.retrievers import TopKPayloadRetriever
+from medrap.retrievers import InMemoryTopKRetriever
 from medrap.runtime import build_model_from_cfg
 
 
@@ -25,7 +25,7 @@ def test_train_config_composes_and_instantiates_model() -> None:
     model = build_model_from_cfg(cfg)
 
     assert isinstance(model, RetrievalAugmentedModel)
-    assert isinstance(model.retriever, TopKPayloadRetriever)
+    assert isinstance(model.retriever, InMemoryTopKRetriever)
     out = model.forward(_example_batch())
     assert out.logits.shape == (2, 2)
     assert out.logits.dtype == torch.float32

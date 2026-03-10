@@ -1,4 +1,4 @@
-_target_: medrap.retrievers.build_topk_payload_retriever_from_pt
+_target_: medrap.retrievers.load_in_memory_topk_retriever_from_pt
 bundle_path: ${oc.env:MEDRAP_RETRIEVER_BUNDLE}
 k: 1
 similarity: dot
