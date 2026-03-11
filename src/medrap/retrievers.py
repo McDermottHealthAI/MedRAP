@@ -1,7 +1,7 @@
 """Retrieval backends for RAP pipeline composition.
 
-This module provides retriever implementations for small in-memory corpora and
-for dataset-backed corpora with attached nearest-neighbor indexes.
+This module provides retriever implementations for small in-memory corpora and for dataset-backed corpora with
+attached nearest-neighbor indexes.
 """
 
 from abc import ABC, abstractmethod
@@ -16,8 +16,6 @@ from datasets import Dataset
 from torch import Tensor, nn
 
 from .types import RetrieverOutput
-
-_REFRESH_EXECUTOR = ThreadPoolExecutor(max_workers=1)
 
 
 @dataclass(frozen=True)
@@ -169,6 +167,92 @@ class InMemoryRetriever(Retriever):
         )
 
 
+@dataclass
+class HFDatasetSnapshotBuilder:
+    """Build fresh dataset snapshots for ``HFDatasetRetriever``.
+
+    Builds a fresh dataset snapshot and does not modify the active snapshot in
+    place.
+
+    Args:
+        source_dataset: Source Hugging Face dataset used to build snapshots.
+        index_name: Name of the FAISS index to attach to built snapshots.
+        key_embedding_column: Column containing rebuilt document key
+            embeddings.
+        encode_documents: Callable that returns one document key embedding per
+            row in a batched dataset mapping input.
+        batch_size: Batch size used when rebuilding the key embedding column.
+    """
+
+    source_dataset: Dataset
+    index_name: str
+    key_embedding_column: str
+    encode_documents: Callable[[dict[str, list[object]], object | None], list[list[float]]]
+    batch_size: int = 256
+
+    def build_snapshot(self, refresh_context: object | None = None) -> _DatasetSnapshot:
+        """Build a fresh indexed dataset snapshot.
+
+        Args:
+            refresh_context: Optional build input passed to
+                ``encode_documents``.
+
+        Returns:
+            A fresh ``_DatasetSnapshot`` with rebuilt document key embeddings
+            and a rebuilt FAISS index.
+
+        Examples:
+            >>> source = Dataset.from_dict(
+            ...     {
+            ...         "doc_tokens": [[10, 11], [20, 21]],
+            ...         "doc_attention_mask": [[True, True], [True, False]],
+            ...         "text": ["alpha", "beta"],
+            ...     }
+            ... )
+            >>> original_add_faiss_index = Dataset.add_faiss_index
+            >>> def fake_add_faiss_index(self, column, index_name):
+            ...     def get_index(name):
+            ...         if name != index_name:
+            ...             raise KeyError(name)
+            ...         return object()
+            ...
+            ...     self.get_index = get_index
+            ...     return self
+            >>> Dataset.add_faiss_index = fake_add_faiss_index
+            >>> builder = HFDatasetSnapshotBuilder(
+            ...     source_dataset=source,
+            ...     index_name="retrieval",
+            ...     key_embedding_column="doc_key_embeddings",
+            ...     encode_documents=lambda batch, refresh_context: [[1.0, 0.0], [0.0, 1.0]],
+            ... )
+            >>> snapshot = builder.build_snapshot()
+            >>> "doc_key_embeddings" in snapshot.dataset.column_names
+            True
+            >>> snapshot.index_name
+            'retrieval'
+            >>> Dataset.add_faiss_index = original_add_faiss_index
+        """
+        dataset = self.source_dataset
+        if self.key_embedding_column in dataset.column_names:
+            dataset = dataset.remove_columns(self.key_embedding_column)
+
+        def add_key_embeddings(batch: dict[str, list[object]]) -> dict[str, list[list[float]]]:
+            return {
+                self.key_embedding_column: self.encode_documents(
+                    batch,
+                    refresh_context,
+                )
+            }
+
+        dataset = dataset.map(
+            add_key_embeddings,
+            batched=True,
+            batch_size=self.batch_size,
+        )
+        dataset.add_faiss_index(column=self.key_embedding_column, index_name=self.index_name)
+        return _DatasetSnapshot(dataset=dataset, index_name=self.index_name)
+
+
 class HFDatasetRetriever(Retriever):
     """Dataset-backed FAISS retriever.
 
@@ -177,8 +261,9 @@ class HFDatasetRetriever(Retriever):
     snapshot.
 
     Args:
-        dataset: Hugging Face dataset with an attached nearest-neighbor index.
-        index_name: Name of the attached index on ``dataset``.
+        active_snapshot: Active dataset snapshot used for retrieval.
+        snapshot_builder: Optional builder used to construct refreshed
+            snapshots.
         doc_tokens_column: Column containing document token ids.
         doc_attention_mask_column: Column containing document attention masks.
         k: Number of documents to return per query.
@@ -190,8 +275,8 @@ class HFDatasetRetriever(Retriever):
     def __init__(
         self,
         *,
-        dataset: Dataset,
-        index_name: str,
+        active_snapshot: _DatasetSnapshot,
+        snapshot_builder: HFDatasetSnapshotBuilder | None = None,
         doc_tokens_column: str,
         doc_attention_mask_column: str,
         k: int = 1,
@@ -200,89 +285,102 @@ class HFDatasetRetriever(Retriever):
     ) -> None:
         super().__init__()
 
-        if k < 1 or k > len(dataset):
-            raise ValueError("k must be between 1 and the number of dataset rows")
-
-        dataset_columns = set(dataset.column_names)
-        required_columns = {doc_tokens_column, doc_attention_mask_column}
-        missing_required = required_columns - dataset_columns
-        if missing_required:
-            raise ValueError(f"dataset is missing required columns: {sorted(missing_required)}")
-
-        optional_columns = [doc_ids_column, doc_key_embeddings_column]
-        missing_optional = [col for col in optional_columns if col is not None and col not in dataset_columns]
-        if missing_optional:
-            raise ValueError(f"dataset is missing optional columns: {sorted(missing_optional)}")
-
         self.k = k
         self._doc_tokens_column = doc_tokens_column
         self._doc_attention_mask_column = doc_attention_mask_column
         self._doc_ids_column = doc_ids_column
         self._doc_key_embeddings_column = doc_key_embeddings_column
 
-        self._active_snapshot = self._build_snapshot(lambda: dataset, index_name=index_name)
+        self._snapshot_builder = snapshot_builder
+        self._active_snapshot = active_snapshot
+        self._validate_snapshot(self._active_snapshot)
+        if snapshot_builder is not None:
+            self._refresh_executor = ThreadPoolExecutor(max_workers=1)
+        else:
+            self._refresh_executor = None
         self._refresh_job: Future[_DatasetSnapshot] | None = None
 
-    def _build_snapshot(
-        self,
-        build_dataset: Callable[[], Dataset],
-        *,
-        index_name: str,
-    ) -> _DatasetSnapshot:
-        dataset = build_dataset()
-        try:
-            dataset.get_index(index_name)
-        except Exception as exc:
-            raise ValueError(f"dataset does not have a FAISS index named {index_name!r}") from exc
-        return _DatasetSnapshot(dataset=dataset, index_name=index_name)
+    def _validate_snapshot(self, snapshot: _DatasetSnapshot) -> None:
+        dataset = snapshot.dataset
 
-    def start_refresh(self, *, build_dataset: Callable[[], Dataset]) -> bool:
+        if self.k < 1 or self.k > len(dataset):
+            raise ValueError("k must be between 1 and the number of dataset rows")
+
+        dataset_columns = set(dataset.column_names)
+        required_columns = {self._doc_tokens_column, self._doc_attention_mask_column}
+        missing_required = required_columns - dataset_columns
+        if missing_required:
+            raise ValueError(f"dataset is missing required columns: {sorted(missing_required)}")
+
+        optional_columns = [self._doc_ids_column, self._doc_key_embeddings_column]
+        missing_optional = [col for col in optional_columns if col is not None and col not in dataset_columns]
+        if missing_optional:
+            raise ValueError(f"dataset is missing optional columns: {sorted(missing_optional)}")
+
+        try:
+            dataset.get_index(snapshot.index_name)
+        except Exception as exc:
+            raise ValueError(f"dataset does not have a FAISS index named {snapshot.index_name!r}") from exc
+
+    def start_refresh(self, *, refresh_context: object | None = None) -> bool:
         """Start a background refresh job.
 
         Args:
-            build_dataset: Callable returning a fresh Hugging Face dataset with
-                the attached index.
+            refresh_context: Optional build input passed to the snapshot
+                builder.
 
         Returns:
             ``False`` if a refresh job is already running.
 
         Examples:
-            >>> retriever = HFDatasetRetriever(
+            >>> initial_snapshot = _DatasetSnapshot(
             ...     dataset=FakeIndexedDataset(
             ...         doc_tokens=[[10, 11], [20, 21]],
             ...         doc_attention_mask=[[True, True], [True, False]],
             ...         doc_ids=[7, 8],
             ...     ),
             ...     index_name="embeddings",
+            ... )
+            >>> builder = FakeSnapshotBuilder(
+            ...     snapshot=_DatasetSnapshot(
+            ...         dataset=FakeIndexedDataset(
+            ...             doc_tokens=[[30, 31], [40, 41]],
+            ...             doc_attention_mask=[[True, True], [True, True]],
+            ...             doc_ids=[17, 18],
+            ...         ),
+            ...         index_name="embeddings",
+            ...     )
+            ... )
+            >>> retriever = HFDatasetRetriever(
+            ...     active_snapshot=initial_snapshot,
+            ...     snapshot_builder=builder,
             ...     doc_tokens_column="doc_tokens",
             ...     doc_attention_mask_column="doc_attention_mask",
             ...     doc_ids_column="doc_ids",
             ...     k=1,
             ... )
-            >>> def build_dataset():
-            ...     time.sleep(0.05)
-            ...     return FakeIndexedDataset(
-            ...         doc_tokens=[[30, 31], [40, 41]],
-            ...         doc_attention_mask=[[True, True], [True, True]],
-            ...         doc_ids=[17, 18],
-            ...     )
-            >>> retriever.start_refresh(build_dataset=build_dataset)
+            >>> retriever.start_refresh()
             True
-            >>> retriever.start_refresh(build_dataset=build_dataset)
+            >>> retriever.start_refresh()
             False
             >>> time.sleep(0.1)
             >>> retriever.retrieve(torch.ones((1, 1, 4), dtype=torch.float32)).doc_ids.tolist()
             [[[17]]]
         """
+        if self._snapshot_builder is None or self._refresh_executor is None:
+            raise RuntimeError("refresh is not available without a snapshot builder")
         if self._refresh_job is not None:
             return False
-        index_name = self._active_snapshot.index_name
-        self._refresh_job = _REFRESH_EXECUTOR.submit(
-            self._build_snapshot,
-            build_dataset,
-            index_name=index_name,
+        self._refresh_job = self._refresh_executor.submit(
+            self._snapshot_builder.build_snapshot,
+            refresh_context,
         )
         return True
+
+    def close(self) -> None:
+        """Shut down the refresh executor."""
+        if self._refresh_executor is not None:
+            self._refresh_executor.shutdown(wait=False, cancel_futures=False)
 
     def _poll_refresh(self) -> bool:
         """Swap in a finished refresh snapshot if one is available."""
@@ -292,13 +390,7 @@ class HFDatasetRetriever(Retriever):
             return False
 
         new_snapshot = self._refresh_job.result()
-        try:
-            new_snapshot.dataset.get_index(new_snapshot.index_name)
-        except Exception as exc:
-            self._refresh_job = None
-            raise RuntimeError(
-                f"refreshed dataset does not have a FAISS index named {new_snapshot.index_name!r}"
-            ) from exc
+        self._validate_snapshot(new_snapshot)
 
         self._active_snapshot = new_snapshot
         self._refresh_job = None
@@ -392,7 +484,41 @@ class HFDatasetRetriever(Retriever):
         )
 
     def retrieve(self, query_embeddings: Tensor) -> RetrieverOutput:
-        """Retrieve top-k documents for queries of shape ``(B, R, D_ret)``."""
+        """Retrieve top-k documents for each query.
+
+        Args:
+            query_embeddings: Query tensor with shape ``(B, R, D_ret)``.
+
+        Returns:
+            ``RetrieverOutput`` with:
+                - ``doc_tokens`` shaped ``(B, R, K, S_doc)``
+                - ``doc_attention_mask`` shaped ``(B, R, K, S_doc)``
+                - ``doc_scores`` shaped ``(B, R, K)``
+                - optional ``doc_ids`` shaped ``(B, R, K)``
+                - optional ``doc_key_embeddings`` shaped ``(B, R, K, D_ret)``
+
+        Examples:
+            >>> snapshot = _DatasetSnapshot(
+            ...     dataset=FakeIndexedDataset(
+            ...         doc_tokens=[[10, 11], [20, 21]],
+            ...         doc_attention_mask=[[True, True], [True, False]],
+            ...         doc_ids=[7, 8],
+            ...     ),
+            ...     index_name="embeddings",
+            ... )
+            >>> retriever = HFDatasetRetriever(
+            ...     active_snapshot=snapshot,
+            ...     doc_tokens_column="doc_tokens",
+            ...     doc_attention_mask_column="doc_attention_mask",
+            ...     doc_ids_column="doc_ids",
+            ...     k=1,
+            ... )
+            >>> out = retriever.retrieve(torch.ones((1, 1, 4), dtype=torch.float32))
+            >>> out.doc_ids.tolist()
+            [[[7]]]
+            >>> tuple(out.doc_tokens.shape)
+            (1, 1, 1, 2)
+        """
         if query_embeddings.ndim != 3:
             raise ValueError("query_embeddings must have shape (B, R, D_ret)")
 

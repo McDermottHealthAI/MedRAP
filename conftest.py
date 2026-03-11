@@ -10,6 +10,8 @@ import pytest
 import torch
 from meds_torchdata import MEDSTorchBatch
 
+from medrap.retrievers import _DatasetSnapshot
+
 
 class FakeIndexedDataset:
     def __init__(
@@ -47,6 +49,14 @@ class FakeIndexedDataset:
         }
 
 
+class FakeSnapshotBuilder:
+    def __init__(self, *, snapshot: _DatasetSnapshot) -> None:
+        self._snapshot = snapshot
+
+    def build_snapshot(self, refresh_context=None) -> _DatasetSnapshot:
+        return self._snapshot
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _setup_doctest_namespace(
     doctest_namespace: dict[str, Any],
@@ -56,8 +66,10 @@ def _setup_doctest_namespace(
         {
             "datetime": datetime,
             "FakeIndexedDataset": FakeIndexedDataset,
+            "FakeSnapshotBuilder": FakeSnapshotBuilder,
             "tempfile": tempfile,
             "Path": Path,
+            "_DatasetSnapshot": _DatasetSnapshot,
             "time": time,
             "torch": torch,
             "MEDSTorchBatch": MEDSTorchBatch,
