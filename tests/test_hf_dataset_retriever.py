@@ -33,6 +33,14 @@ class _FailedFuture:
         raise self._exc
 
 
+class _PendingFuture:
+    def done(self) -> bool:
+        return False
+
+    def result(self) -> _DatasetSnapshot:
+        raise AssertionError("result() should not be called on a pending future")
+
+
 @dataclass
 class _StubSnapshotBuilder:
     snapshot: _DatasetSnapshot
@@ -221,6 +229,23 @@ def test_start_refresh_raises_without_snapshot_builder() -> None:
     retriever.close()
 
 
+def test_start_refresh_submits_refresh_job() -> None:
+    snapshot = _build_fake_snapshot(doc_tokens=[[10, 11]], doc_ids=[7])
+    retriever = HFDatasetRetriever(
+        active_snapshot=snapshot,
+        snapshot_builder=_StubSnapshotBuilder(snapshot=snapshot),
+        doc_tokens_column="doc_tokens",
+        doc_attention_mask_column="doc_attention_mask",
+        doc_ids_column="doc_ids",
+        k=1,
+    )
+
+    assert retriever.start_refresh() is True
+    assert retriever._refresh_job is not None
+
+    retriever.close()
+
+
 def test_validate_snapshot_rejects_missing_optional_columns() -> None:
     snapshot = _build_fake_snapshot(
         doc_tokens=[[10, 11]],
@@ -241,6 +266,39 @@ def test_validate_snapshot_rejects_missing_optional_columns() -> None:
         )
 
 
+def test_validate_snapshot_rejects_invalid_k() -> None:
+    snapshot = _build_fake_snapshot(doc_tokens=[[10, 11]], doc_ids=[7])
+
+    with pytest.raises(ValueError, match="k must be between 1 and the number of dataset rows"):
+        HFDatasetRetriever(
+            active_snapshot=snapshot,
+            snapshot_builder=None,
+            doc_tokens_column="doc_tokens",
+            doc_attention_mask_column="doc_attention_mask",
+            doc_ids_column="doc_ids",
+            k=2,
+        )
+
+
+def test_validate_snapshot_rejects_missing_required_columns() -> None:
+    snapshot = _build_fake_snapshot(
+        doc_tokens=[[10, 11]],
+        doc_ids=[7],
+        doc_attention_mask=None,
+    )
+    snapshot.dataset.column_names.remove("doc_tokens")
+
+    with pytest.raises(ValueError, match="missing required columns"):
+        HFDatasetRetriever(
+            active_snapshot=snapshot,
+            snapshot_builder=None,
+            doc_tokens_column="doc_tokens",
+            doc_attention_mask_column="doc_attention_mask",
+            doc_ids_column="doc_ids",
+            k=1,
+        )
+
+
 def test_validate_snapshot_rejects_missing_index() -> None:
     snapshot = _build_fake_snapshot(doc_tokens=[[10, 11]], doc_ids=[7], index_name="retrieval")
     snapshot = _DatasetSnapshot(dataset=snapshot.dataset, index_name="other")
@@ -254,6 +312,24 @@ def test_validate_snapshot_rejects_missing_index() -> None:
             doc_ids_column="doc_ids",
             k=1,
         )
+
+
+def test_poll_refresh_returns_false_for_incomplete_job() -> None:
+    retriever = HFDatasetRetriever(
+        active_snapshot=_build_fake_snapshot(doc_tokens=[[10, 11]], doc_ids=[7]),
+        snapshot_builder=None,
+        doc_tokens_column="doc_tokens",
+        doc_attention_mask_column="doc_attention_mask",
+        doc_ids_column="doc_ids",
+        k=1,
+    )
+
+    retriever._refresh_job = _PendingFuture()
+
+    assert retriever._poll_refresh() is False
+    assert retriever._refresh_job is not None
+
+    retriever.close()
 
 
 def test_materialize_output_validates_shapes_and_indices() -> None:
@@ -290,5 +366,51 @@ def test_materialize_output_validates_shapes_and_indices() -> None:
             scores=torch.zeros((1, 1, 1), dtype=torch.float32),
             output_device=torch.device("cpu"),
         )
+
+    retriever.close()
+
+
+def test_materialize_output_includes_doc_key_embeddings() -> None:
+    snapshot = _build_fake_snapshot(
+        doc_tokens=[[10, 11]],
+        doc_ids=[7],
+        include_doc_key_embeddings=True,
+        doc_key_embeddings=[[1.0, 2.0, 3.0, 4.0]],
+    )
+    retriever = HFDatasetRetriever(
+        active_snapshot=snapshot,
+        snapshot_builder=None,
+        doc_tokens_column="doc_tokens",
+        doc_attention_mask_column="doc_attention_mask",
+        doc_ids_column="doc_ids",
+        doc_key_embeddings_column="doc_key_embeddings",
+        k=1,
+    )
+
+    out = retriever._materialize_output(
+        snapshot=snapshot,
+        row_indices=torch.zeros((1, 1, 1), dtype=torch.long),
+        scores=torch.zeros((1, 1, 1), dtype=torch.float32),
+        output_device=torch.device("cpu"),
+    )
+
+    assert out.doc_key_embeddings is not None
+    assert tuple(out.doc_key_embeddings.shape) == (1, 1, 1, 4)
+
+    retriever.close()
+
+
+def test_retrieve_rejects_wrong_query_rank() -> None:
+    retriever = HFDatasetRetriever(
+        active_snapshot=_build_fake_snapshot(doc_tokens=[[10, 11]], doc_ids=[7]),
+        snapshot_builder=None,
+        doc_tokens_column="doc_tokens",
+        doc_attention_mask_column="doc_attention_mask",
+        doc_ids_column="doc_ids",
+        k=1,
+    )
+
+    with pytest.raises(ValueError, match="query_embeddings must have shape"):
+        retriever.retrieve(torch.ones((1, 4), dtype=torch.float32))
 
     retriever.close()
