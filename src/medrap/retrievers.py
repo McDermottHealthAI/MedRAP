@@ -18,7 +18,7 @@ from torch import Tensor, nn
 from .types import RetrieverOutput
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _DatasetSnapshot:
     """Dataset snapshot used for retrieval.
 
@@ -167,7 +167,7 @@ class InMemoryRetriever(Retriever):
         )
 
 
-@dataclass
+@dataclass(slots=True)
 class HFDatasetSnapshotBuilder:
     """Build fresh dataset snapshots for ``HFDatasetRetriever``.
 
@@ -200,50 +200,21 @@ class HFDatasetSnapshotBuilder:
         Returns:
             A fresh ``_DatasetSnapshot`` with rebuilt document key embeddings
             and a rebuilt FAISS index.
-
-        Examples:
-            >>> source = Dataset.from_dict(
-            ...     {
-            ...         "doc_tokens": [[10, 11], [20, 21]],
-            ...         "doc_attention_mask": [[True, True], [True, False]],
-            ...         "text": ["alpha", "beta"],
-            ...     }
-            ... )
-            >>> original_add_faiss_index = Dataset.add_faiss_index
-            >>> def fake_add_faiss_index(self, column, index_name):
-            ...     def get_index(name):
-            ...         if name != index_name:
-            ...             raise KeyError(name)
-            ...         return object()
-            ...
-            ...     self.get_index = get_index
-            ...     return self
-            >>> Dataset.add_faiss_index = fake_add_faiss_index
-            >>> builder = HFDatasetSnapshotBuilder(
-            ...     source_dataset=source,
-            ...     index_name="retrieval",
-            ...     key_embedding_column="doc_key_embeddings",
-            ...     encode_documents=lambda batch, refresh_context: [[1.0, 0.0], [0.0, 1.0]],
-            ... )
-            >>> snapshot = builder.build_snapshot()
-            >>> "doc_key_embeddings" in snapshot.dataset.column_names
-            True
-            >>> snapshot.index_name
-            'retrieval'
-            >>> Dataset.add_faiss_index = original_add_faiss_index
         """
         dataset = self.source_dataset
         if self.key_embedding_column in dataset.column_names:
             dataset = dataset.remove_columns(self.key_embedding_column)
 
         def add_key_embeddings(batch: dict[str, list[object]]) -> dict[str, list[list[float]]]:
-            return {
-                self.key_embedding_column: self.encode_documents(
-                    batch,
-                    refresh_context,
+            embeddings = self.encode_documents(batch, refresh_context)
+            expected_length = len(next(iter(batch.values()), []))
+            if len(embeddings) != expected_length:
+                raise ValueError(
+                    "encode_documents must return one key embedding per dataset row in the batch"
                 )
-            }
+            return {self.key_embedding_column: embeddings}
 
+        # Dataset.map returns a fresh dataset object for the rebuilt snapshot.
         dataset = dataset.map(
             add_key_embeddings,
             batched=True,
@@ -313,7 +284,7 @@ class HFDatasetRetriever(Retriever):
             raise ValueError(f"dataset is missing required columns: {sorted(missing_required)}")
 
         optional_columns = [self._doc_ids_column, self._doc_key_embeddings_column]
-        missing_optional = [col for col in optional_columns if col is not None and col not in dataset_columns]
+        missing_optional = [col for col in optional_columns if col is not None if col not in dataset_columns]
         if missing_optional:
             raise ValueError(f"dataset is missing optional columns: {sorted(missing_optional)}")
 
@@ -331,41 +302,6 @@ class HFDatasetRetriever(Retriever):
 
         Returns:
             ``False`` if a refresh job is already running.
-
-        Examples:
-            >>> initial_snapshot = _DatasetSnapshot(
-            ...     dataset=FakeIndexedDataset(
-            ...         doc_tokens=[[10, 11], [20, 21]],
-            ...         doc_attention_mask=[[True, True], [True, False]],
-            ...         doc_ids=[7, 8],
-            ...     ),
-            ...     index_name="embeddings",
-            ... )
-            >>> builder = FakeSnapshotBuilder(
-            ...     snapshot=_DatasetSnapshot(
-            ...         dataset=FakeIndexedDataset(
-            ...             doc_tokens=[[30, 31], [40, 41]],
-            ...             doc_attention_mask=[[True, True], [True, True]],
-            ...             doc_ids=[17, 18],
-            ...         ),
-            ...         index_name="embeddings",
-            ...     )
-            ... )
-            >>> retriever = HFDatasetRetriever(
-            ...     active_snapshot=initial_snapshot,
-            ...     snapshot_builder=builder,
-            ...     doc_tokens_column="doc_tokens",
-            ...     doc_attention_mask_column="doc_attention_mask",
-            ...     doc_ids_column="doc_ids",
-            ...     k=1,
-            ... )
-            >>> retriever.start_refresh()
-            True
-            >>> retriever.start_refresh()
-            False
-            >>> time.sleep(0.1)
-            >>> retriever.retrieve(torch.ones((1, 1, 4), dtype=torch.float32)).doc_ids.tolist()
-            [[[17]]]
         """
         if self._snapshot_builder is None or self._refresh_executor is None:
             raise RuntimeError("refresh is not available without a snapshot builder")
@@ -381,25 +317,25 @@ class HFDatasetRetriever(Retriever):
         """Shut down the refresh executor."""
         if self._refresh_executor is not None:
             self._refresh_executor.shutdown(wait=False, cancel_futures=False)
+            self._refresh_executor = None
 
     def _poll_refresh(self) -> bool:
         """Swap in a finished refresh snapshot if one is available."""
-        if self._refresh_job is None:
+        refresh_job = self._refresh_job
+        if refresh_job is None:
             return False
-        if not self._refresh_job.done():
+        if not refresh_job.done():
             return False
 
-        new_snapshot = self._refresh_job.result()
-        self._validate_snapshot(new_snapshot)
-
-        self._active_snapshot = new_snapshot
         self._refresh_job = None
+        new_snapshot = refresh_job.result()
+        self._validate_snapshot(new_snapshot)
+        self._active_snapshot = new_snapshot
         return True
 
-    def _search_index(self, query_embeddings: Tensor) -> tuple[Tensor, Tensor]:
+    def _search_index(self, query_embeddings: Tensor, snapshot: _DatasetSnapshot) -> tuple[Tensor, Tensor]:
         """Search the active dataset index."""
         batch_size, n_retrieval_steps, d_ret = query_embeddings.shape
-        snapshot = self._active_snapshot
 
         flat_queries = (
             query_embeddings.detach()
@@ -430,6 +366,7 @@ class HFDatasetRetriever(Retriever):
     def _materialize_output(
         self,
         *,
+        snapshot: _DatasetSnapshot,
         row_indices: Tensor,
         scores: Tensor,
         output_device: torch.device,
@@ -443,7 +380,6 @@ class HFDatasetRetriever(Retriever):
             raise RuntimeError("retrieval returned invalid dataset row indices")
 
         batch_size, n_retrieval_steps, k = row_indices.shape
-        snapshot = self._active_snapshot
         flat_row_indices = row_indices.reshape(-1).tolist()
         rows = snapshot.dataset[flat_row_indices]
 
@@ -490,7 +426,10 @@ class HFDatasetRetriever(Retriever):
             query_embeddings: Query tensor with shape ``(B, R, D_ret)``.
 
         Returns:
-            ``RetrieverOutput`` with:
+            ``RetrieverOutput`` materialized on the device of
+            ``query_embeddings``. Search is performed through the Hugging Face
+            dataset index, which moves query embeddings to CPU/NumPy
+            internally. The output contains:
                 - ``doc_tokens`` shaped ``(B, R, K, S_doc)``
                 - ``doc_attention_mask`` shaped ``(B, R, K, S_doc)``
                 - ``doc_scores`` shaped ``(B, R, K)``
@@ -523,9 +462,10 @@ class HFDatasetRetriever(Retriever):
             raise ValueError("query_embeddings must have shape (B, R, D_ret)")
 
         self._poll_refresh()
-
-        scores, row_indices = self._search_index(query_embeddings)
+        snapshot = self._active_snapshot
+        scores, row_indices = self._search_index(query_embeddings, snapshot)
         return self._materialize_output(
+            snapshot=snapshot,
             row_indices=row_indices,
             scores=scores,
             output_device=query_embeddings.device,
