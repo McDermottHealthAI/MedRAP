@@ -45,14 +45,29 @@ def _build_fake_snapshot(
     *,
     doc_tokens: list[list[int]],
     doc_ids: list[int],
+    doc_attention_mask: list[list[bool]] | None = None,
+    include_doc_ids: bool = True,
+    include_doc_key_embeddings: bool = False,
+    doc_key_embeddings: list[list[float]] | None = None,
     index_name: str = "retrieval",
 ) -> _DatasetSnapshot:
     class _FakeIndexedDataset:
         def __init__(self) -> None:
-            self.column_names = ["doc_tokens", "doc_attention_mask", "doc_ids"]
+            self.column_names = ["doc_tokens", "doc_attention_mask"]
+            if include_doc_ids:
+                self.column_names.append("doc_ids")
+            if include_doc_key_embeddings:
+                self.column_names.append("doc_key_embeddings")
             self._doc_tokens = doc_tokens
-            self._doc_attention_mask = [[True] * len(tokens) for tokens in doc_tokens]
+            self._doc_attention_mask = (
+                doc_attention_mask
+                if doc_attention_mask is not None
+                else [[True] * len(tokens) for tokens in doc_tokens]
+            )
             self._doc_ids = doc_ids
+            self._doc_key_embeddings = (
+                doc_key_embeddings if doc_key_embeddings is not None else [[1.0] * 4 for _ in doc_tokens]
+            )
             self._index_name = index_name
 
         def __len__(self) -> int:
@@ -68,11 +83,15 @@ def _build_fake_snapshot(
             return [[1.0] * k for _ in range(len(queries))], [[0] * k for _ in range(len(queries))]
 
         def __getitem__(self, row_indices):
-            return {
+            rows = {
                 "doc_tokens": [self._doc_tokens[i] for i in row_indices],
                 "doc_attention_mask": [self._doc_attention_mask[i] for i in row_indices],
-                "doc_ids": [self._doc_ids[i] for i in row_indices],
             }
+            if include_doc_ids:
+                rows["doc_ids"] = [self._doc_ids[i] for i in row_indices]
+            if include_doc_key_embeddings:
+                rows["doc_key_embeddings"] = [self._doc_key_embeddings[i] for i in row_indices]
+            return rows
 
     return _DatasetSnapshot(dataset=_FakeIndexedDataset(), index_name=index_name)
 
@@ -183,4 +202,93 @@ def test_start_refresh_returns_false_when_job_is_running() -> None:
     retriever._refresh_job = _CompletedFuture(snapshot)
 
     assert retriever.start_refresh() is False
+    retriever.close()
+
+
+def test_start_refresh_raises_without_snapshot_builder() -> None:
+    retriever = HFDatasetRetriever(
+        active_snapshot=_build_fake_snapshot(doc_tokens=[[10, 11]], doc_ids=[7]),
+        snapshot_builder=None,
+        doc_tokens_column="doc_tokens",
+        doc_attention_mask_column="doc_attention_mask",
+        doc_ids_column="doc_ids",
+        k=1,
+    )
+
+    with pytest.raises(RuntimeError, match="refresh is not available"):
+        retriever.start_refresh()
+
+    retriever.close()
+
+
+def test_validate_snapshot_rejects_missing_optional_columns() -> None:
+    snapshot = _build_fake_snapshot(
+        doc_tokens=[[10, 11]],
+        doc_ids=[7],
+        include_doc_ids=False,
+        include_doc_key_embeddings=False,
+    )
+
+    with pytest.raises(ValueError, match="missing optional columns"):
+        HFDatasetRetriever(
+            active_snapshot=snapshot,
+            snapshot_builder=None,
+            doc_tokens_column="doc_tokens",
+            doc_attention_mask_column="doc_attention_mask",
+            doc_ids_column="doc_ids",
+            doc_key_embeddings_column="doc_key_embeddings",
+            k=1,
+        )
+
+
+def test_validate_snapshot_rejects_missing_index() -> None:
+    snapshot = _build_fake_snapshot(doc_tokens=[[10, 11]], doc_ids=[7], index_name="retrieval")
+    snapshot = _DatasetSnapshot(dataset=snapshot.dataset, index_name="other")
+
+    with pytest.raises(ValueError, match="does not have a FAISS index"):
+        HFDatasetRetriever(
+            active_snapshot=snapshot,
+            snapshot_builder=None,
+            doc_tokens_column="doc_tokens",
+            doc_attention_mask_column="doc_attention_mask",
+            doc_ids_column="doc_ids",
+            k=1,
+        )
+
+
+def test_materialize_output_validates_shapes_and_indices() -> None:
+    retriever = HFDatasetRetriever(
+        active_snapshot=_build_fake_snapshot(doc_tokens=[[10, 11]], doc_ids=[7]),
+        snapshot_builder=None,
+        doc_tokens_column="doc_tokens",
+        doc_attention_mask_column="doc_attention_mask",
+        doc_ids_column="doc_ids",
+        k=1,
+    )
+    snapshot = retriever._active_snapshot
+
+    with pytest.raises(ValueError, match="row_indices must have shape"):
+        retriever._materialize_output(
+            snapshot=snapshot,
+            row_indices=torch.zeros((1, 1), dtype=torch.long),
+            scores=torch.zeros((1, 1, 1), dtype=torch.float32),
+            output_device=torch.device("cpu"),
+        )
+
+    with pytest.raises(ValueError, match="same shape as row_indices"):
+        retriever._materialize_output(
+            snapshot=snapshot,
+            row_indices=torch.zeros((1, 1, 1), dtype=torch.long),
+            scores=torch.zeros((1, 1, 2), dtype=torch.float32),
+            output_device=torch.device("cpu"),
+        )
+
+    with pytest.raises(RuntimeError, match="invalid dataset row indices"):
+        retriever._materialize_output(
+            snapshot=snapshot,
+            row_indices=-torch.ones((1, 1, 1), dtype=torch.long),
+            scores=torch.zeros((1, 1, 1), dtype=torch.float32),
+            output_device=torch.device("cpu"),
+        )
+
     retriever.close()
