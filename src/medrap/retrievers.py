@@ -146,7 +146,7 @@ class InMemoryRetriever(Retriever):
         )
 
 
-def load_in_memory_retriever_from_pt(
+def load_in_memory_retriever(
     *,
     bundle_path: str | Path,
     k: int = 1,
@@ -179,7 +179,7 @@ def load_in_memory_retriever_from_pt(
         ...         },
         ...         bundle_path,
         ...     )
-        ...     retriever = load_in_memory_retriever_from_pt(bundle_path=bundle_path, k=1)
+        ...     retriever = load_in_memory_retriever(bundle_path=bundle_path, k=1)
         >>> tuple(retriever.retrieve(torch.FloatTensor([[[1.0, 0.0]]])).doc_ids.shape)
         (1, 1, 1)
     """
