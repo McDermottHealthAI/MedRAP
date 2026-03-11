@@ -1,7 +1,7 @@
 defaults:
   - encoder: meds_code
   - query_projector: sequence_mean
-  - retriever: in_memory_topk
+  - retriever: in_memory
   - retrieval_encoder: mean_pooled
   - fusion: replace
   - pooling: identity

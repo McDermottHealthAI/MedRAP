@@ -8,7 +8,7 @@ from medrap.model import RetrievalAugmentedModel
 from medrap.pooling import IdentityPooling
 from medrap.query_projection import SequenceMeanQueryProjector
 from medrap.retrieval_encoder import MeanPooledRetrievalEncoder, TokenFeatureRetrievalEncoder
-from medrap.retrievers import InMemoryTopKRetriever
+from medrap.retrievers import InMemoryRetriever
 from medrap.types import FusionInput, RetrieverOutput
 
 
@@ -37,7 +37,7 @@ def test_trainable_stage_parameters_are_registered_on_model() -> None:
     model = RetrievalAugmentedModel(
         encoder=MEDSCodeEncoder(),
         query_projector=SequenceMeanQueryProjector(in_dim=1, out_dim=4),
-        retriever=InMemoryTopKRetriever(
+        retriever=InMemoryRetriever(
             doc_key_embeddings=torch.FloatTensor([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]]),
             doc_tokens=torch.LongTensor([[1, 2, 3, 4], [4, 3, 2, 1]]),
             doc_attention_mask=torch.BoolTensor([[True, True, True, True], [True, True, True, True]]),
@@ -107,8 +107,8 @@ def test_stage_forward_aliases_named_methods() -> None:
     assert torch.equal(p_via_method, p_via_forward)
 
 
-def test_in_memory_topk_retriever_returns_query_dependent_payloads() -> None:
-    retriever = InMemoryTopKRetriever(
+def test_in_memory_retriever_returns_query_dependent_payloads() -> None:
+    retriever = InMemoryRetriever(
         doc_key_embeddings=torch.FloatTensor([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]),
         doc_tokens=torch.LongTensor([[10, 11], [20, 21], [30, 31]]),
         doc_attention_mask=torch.BoolTensor([[True, True], [True, True], [True, False]]),

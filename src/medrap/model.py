@@ -67,11 +67,11 @@ class RetrievalAugmentedModel(nn.Module):
             >>> from medrap.pooling import IdentityPooling
             >>> from medrap.query_projection import SequenceMeanQueryProjector
             >>> from medrap.retrieval_encoder import MeanPooledRetrievalEncoder
-            >>> from medrap.retrievers import InMemoryTopKRetriever
+            >>> from medrap.retrievers import InMemoryRetriever
             >>> model = RetrievalAugmentedModel(
             ...     encoder=MEDSCodeEncoder(),
             ...     query_projector=SequenceMeanQueryProjector(in_dim=1, out_dim=4),
-            ...     retriever=InMemoryTopKRetriever(
+            ...     retriever=InMemoryRetriever(
             ...         doc_key_embeddings=torch.FloatTensor([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]]),
             ...         doc_tokens=torch.LongTensor([[1, 2], [3, 4]]),
             ...         doc_attention_mask=torch.BoolTensor([[True, True], [True, True]]),

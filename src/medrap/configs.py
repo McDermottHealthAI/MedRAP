@@ -18,7 +18,7 @@ from .model import RetrievalAugmentedModel
 from .pooling import IdentityPooling, MaskedMeanPooling
 from .query_projection import LinearQueryProjector, SequenceMeanQueryProjector
 from .retrieval_encoder import MeanPooledRetrievalEncoder, TokenFeatureRetrievalEncoder
-from .retrievers import InMemoryTopKRetriever
+from .retrievers import InMemoryRetriever
 
 ComponentConfig = Any
 builds_any = cast("Any", builds)
@@ -68,13 +68,13 @@ SequenceMeanQueryProjectorConfig = builds_any(
     out_dim=4,
     zen_dataclass={"cls_name": "SequenceMeanQueryProjectorConfig"},
 )
-InMemoryTopKRetrieverConfig = builds_any(
-    InMemoryTopKRetriever,
+InMemoryRetrieverConfig = builds_any(
+    InMemoryRetriever,
     populate_full_signature=True,
-    zen_dataclass={"cls_name": "InMemoryTopKRetrieverConfig"},
+    zen_dataclass={"cls_name": "InMemoryRetrieverConfig"},
 )
-DemoInMemoryTopKRetrieverConfig = builds_any(
-    InMemoryTopKRetriever,
+DemoInMemoryRetrieverConfig = builds_any(
+    InMemoryRetriever,
     populate_full_signature=True,
     doc_key_embeddings=float_tensor_config(
         [
@@ -84,7 +84,7 @@ DemoInMemoryTopKRetrieverConfig = builds_any(
     ),
     doc_tokens=long_tensor_config([[1, 2], [3, 4]]),
     doc_attention_mask=bool_tensor_config([[True, True], [True, True]]),
-    zen_dataclass={"cls_name": "DemoInMemoryTopKRetrieverConfig"},
+    zen_dataclass={"cls_name": "DemoInMemoryRetrieverConfig"},
 )
 TokenFeatureRetrievalEncoderConfig = builds_any(
     TokenFeatureRetrievalEncoder,
@@ -130,7 +130,7 @@ class PipelineConfig:
     # allowing stage-specific hydra-zen config objects.
     encoder: ComponentConfig = field(default_factory=MEDSCodeEncoderConfig)
     query_projector: ComponentConfig = field(default_factory=SequenceMeanQueryProjectorConfig)
-    retriever: ComponentConfig = field(default_factory=DemoInMemoryTopKRetrieverConfig)
+    retriever: ComponentConfig = field(default_factory=DemoInMemoryRetrieverConfig)
     retrieval_encoder: ComponentConfig = field(default_factory=MeanPooledRetrievalEncoderConfig)
     fusion: ComponentConfig = field(default_factory=ReplaceFusionConfig)
     pooling: ComponentConfig = field(default_factory=IdentityPoolingConfig)

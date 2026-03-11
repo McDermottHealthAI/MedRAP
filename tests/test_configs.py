@@ -3,7 +3,7 @@ from meds_torchdata import MEDSTorchBatch
 
 from medrap.configs import (
     ConcatFusionConfig,
-    InMemoryTopKRetrieverConfig,
+    InMemoryRetrieverConfig,
     LinearHeadConfig,
     LinearQueryProjectorConfig,
     MaskedMeanPoolingConfig,
@@ -22,7 +22,7 @@ from medrap.model import RetrievalAugmentedModel
 from medrap.pooling import IdentityPooling, MaskedMeanPooling
 from medrap.query_projection import LinearQueryProjector, SequenceMeanQueryProjector
 from medrap.retrieval_encoder import MeanPooledRetrievalEncoder
-from medrap.retrievers import InMemoryTopKRetriever
+from medrap.retrievers import InMemoryRetriever
 
 
 def _example_batch() -> MEDSTorchBatch:
@@ -42,7 +42,7 @@ def test_default_pipeline_config_instantiates_default_components() -> None:
     assert isinstance(model, RetrievalAugmentedModel)
     assert isinstance(model.encoder, MEDSCodeEncoder)
     assert isinstance(model.query_projector, SequenceMeanQueryProjector)
-    assert isinstance(model.retriever, InMemoryTopKRetriever)
+    assert isinstance(model.retriever, InMemoryRetriever)
     assert isinstance(model.retrieval_encoder, MeanPooledRetrievalEncoder)
     assert isinstance(model.fusion, ReplaceFusion)
     assert isinstance(model.pooling, IdentityPooling)
@@ -51,7 +51,7 @@ def test_default_pipeline_config_instantiates_default_components() -> None:
 
 def test_pipeline_config_allows_overriding_retriever_values() -> None:
     cfg = PipelineConfig(
-        retriever=InMemoryTopKRetrieverConfig(
+        retriever=InMemoryRetrieverConfig(
             doc_key_embeddings=float_tensor_config([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]]),
             doc_tokens=long_tensor_config([[9, 8], [7, 6]]),
             doc_attention_mask=bool_tensor_config([[True, True], [True, True]]),
@@ -69,7 +69,7 @@ def test_pipeline_config_allows_meaningful_module_overrides() -> None:
     cfg = PipelineConfig(
         encoder=TokenEmbeddingEncoderConfig(vocab_size=32, embedding_dim=3),
         query_projector=LinearQueryProjectorConfig(in_dim=3, out_dim=2),
-        retriever=InMemoryTopKRetrieverConfig(
+        retriever=InMemoryRetrieverConfig(
             doc_key_embeddings=float_tensor_config([[1.0, 0.0], [0.0, 1.0]]),
             doc_tokens=long_tensor_config([[1, 2, 0], [3, 4, 0]]),
             doc_attention_mask=bool_tensor_config([[True, True, False], [True, True, False]]),

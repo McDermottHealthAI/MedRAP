@@ -34,7 +34,7 @@ class Retriever(nn.Module, ABC):
         return self.retrieve(query_embeddings)
 
 
-class InMemoryTopKRetriever(Retriever):
+class InMemoryRetriever(Retriever):
     """In-memory top-k retriever over fixed document keys.
 
     Args:
@@ -98,7 +98,7 @@ class InMemoryTopKRetriever(Retriever):
                 - ``doc_key_embeddings`` shaped ``(B, R, K, D_ret)``
 
         Examples:
-            >>> retriever = InMemoryTopKRetriever(
+            >>> retriever = InMemoryRetriever(
             ...     doc_key_embeddings=torch.FloatTensor([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]),
             ...     doc_tokens=torch.LongTensor([[10, 11], [20, 21], [30, 31]]),
             ...     doc_attention_mask=torch.BoolTensor([[True, True], [True, True], [True, False]]),
@@ -146,13 +146,13 @@ class InMemoryTopKRetriever(Retriever):
         )
 
 
-def load_in_memory_topk_retriever_from_pt(
+def load_in_memory_retriever_from_pt(
     *,
     bundle_path: str | Path,
     k: int = 1,
     similarity: str = "dot",
-) -> InMemoryTopKRetriever:
-    """Load an ``InMemoryTopKRetriever`` from a serialized ``.pt`` bundle.
+) -> InMemoryRetriever:
+    """Load an ``InMemoryRetriever`` from a serialized ``.pt`` bundle.
 
     Args:
         bundle_path: Path to a ``torch.save``-produced bundle containing
@@ -163,10 +163,9 @@ def load_in_memory_topk_retriever_from_pt(
             ``"dot"`` and ``"cosine"``.
 
     Returns:
-        A configured ``InMemoryTopKRetriever``.
+        A configured ``InMemoryRetriever``.
 
     Examples:
-        >>> import tempfile
         >>> from pathlib import Path
         >>> import torch
         >>> with tempfile.TemporaryDirectory() as tmp_dir:
@@ -180,12 +179,12 @@ def load_in_memory_topk_retriever_from_pt(
         ...         },
         ...         bundle_path,
         ...     )
-        ...     retriever = load_in_memory_topk_retriever_from_pt(bundle_path=bundle_path, k=1)
+        ...     retriever = load_in_memory_retriever_from_pt(bundle_path=bundle_path, k=1)
         >>> tuple(retriever.retrieve(torch.FloatTensor([[[1.0, 0.0]]])).doc_ids.shape)
         (1, 1, 1)
     """
     bundle = torch.load(bundle_path, map_location="cpu", weights_only=False)
-    return InMemoryTopKRetriever(
+    return InMemoryRetriever(
         doc_key_embeddings=torch.as_tensor(bundle["doc_key_embeddings"], dtype=torch.float32),
         doc_tokens=torch.as_tensor(bundle["doc_tokens"], dtype=torch.long),
         doc_attention_mask=torch.as_tensor(bundle["doc_attention_mask"], dtype=torch.bool),
