@@ -169,17 +169,18 @@ class InMemoryRetriever(Retriever):
 
 @dataclass(slots=True)
 class HFDatasetSnapshotBuilder:
-    """Build fresh dataset snapshots for ``HFDatasetRetriever``.
+    """Build fresh indexed dataset for ``HFDatasetRetriever``.
 
-    Builds a fresh dataset snapshot and does not modify the active snapshot in
-    place.
+    This builder recomputes document key embeddings, writes them to a fresh
+    dataset state, and rebuilds and attaches a FAISS index on the rebuilt key
+    column. It does not modify the active retriever dataset in place.
 
     Args:
-        source_dataset: Source Hugging Face dataset used to build snapshots.
-        index_name: Name of the FAISS index to attach to built snapshots.
-        key_embedding_column: Column containing rebuilt document key
-            embeddings.
-        encode_documents: Callable that returns one document key embedding per
+        source_dataset: Source Hugging Face dataset used as the source document
+            table.
+        index_name: Name of the FAISS index built on the rebuilt key embedding column
+        key_embedding_column: Column that stores rebuilt document key embeddings.
+        encode_documents: Callable that returns one key embedding per
             row in a batched dataset mapping input.
         batch_size: Batch size used when rebuilding the key embedding column.
     """
@@ -199,7 +200,30 @@ class HFDatasetSnapshotBuilder:
 
         Returns:
             A fresh ``_DatasetSnapshot`` with rebuilt document key embeddings
-            and a rebuilt FAISS index.
+            and a FAISS index on the rebuilt key column.
+
+        Examples:
+            >>> dataset = FakeBuildDataset(
+            ...     columns={
+            ...         "doc_tokens": [[10, 11], [20, 21]],
+            ...         "doc_attention_mask": [[1, 1], [1, 0]],
+            ...         "doc_key_embeddings": [[9.0, 9.0], [9.0, 9.0]],
+            ...     }
+            ... )
+            >>> builder = HFDatasetSnapshotBuilder(
+            ...     source_dataset=dataset,
+            ...     index_name="retrieval",
+            ...     key_embedding_column="doc_key_embeddings",
+            ...     encode_documents=lambda batch, _refresh_context: (
+            ...         [[1.0, 0.0] for _ in batch["doc_tokens"]]
+            ...     ),
+            ...     batch_size=1,
+            ... )
+            >>> snapshot = builder.build_snapshot()
+            >>> snapshot.index_name
+            'retrieval'
+            >>> snapshot.dataset["doc_key_embeddings"]
+            [[1.0, 0.0], [1.0, 0.0]]
         """
         dataset = self.source_dataset
         if self.key_embedding_column in dataset.column_names:
@@ -228,13 +252,14 @@ class HFDatasetRetriever(Retriever):
     """Dataset-backed FAISS retriever.
 
     Uses a Hugging Face dataset as the document store and a FAISS index for
-    nearest-neighbor retrieval. Retrieval always serves from the active
-    snapshot.
+    nearest-neighbor retrieval. Retrieval serves from the current indexed
+    dataset. If a refresh builder is provided, a new indexed dataset can be
+    built in the background and swapped in when ready.
 
     Args:
-        active_snapshot: Active dataset snapshot used for retrieval.
+        active_snapshot: Current indexed dataset state used for retrieval.
         snapshot_builder: Optional builder used to construct refreshed
-            snapshots.
+            indexed dataset states.
         doc_tokens_column: Column containing document token ids.
         doc_attention_mask_column: Column containing document attention masks.
         k: Number of documents to return per query.
@@ -294,14 +319,14 @@ class HFDatasetRetriever(Retriever):
             raise ValueError(f"dataset does not have a FAISS index named {snapshot.index_name!r}") from exc
 
     def start_refresh(self, *, refresh_context: object | None = None) -> bool:
-        """Start a background refresh job.
+        """Start a background snapshot rebuild.
 
         Args:
-            refresh_context: Optional build input passed to the snapshot
-                builder.
+            refresh_context: Optional input forwarded to the snapshot builder.
 
         Returns:
-            ``False`` if a refresh job is already running.
+            ``True`` if a new refresh job was started, or ``False`` if a refresh
+            job is already running
         """
         if self._snapshot_builder is None or self._refresh_executor is None:
             raise RuntimeError("refresh is not available without a snapshot builder")
@@ -423,18 +448,21 @@ class HFDatasetRetriever(Retriever):
         """Retrieve top-k documents for each query.
 
         Args:
-            query_embeddings: Query tensor with shape ``(B, R, D_ret)``.
+            query_embeddings: Query tensor with shape ``(B, R, D_ret)``. Queries
+            maybe on any PyTorch device.
 
         Returns:
-            ``RetrieverOutput`` materialized on the device of
-            ``query_embeddings``. Search is performed through the Hugging Face
-            dataset index, which moves query embeddings to CPU/NumPy
-            internally. The output contains:
+            ``RetrieverOutput`` on the same device as
+            ``query_embeddings`` with:
                 - ``doc_tokens`` shaped ``(B, R, K, S_doc)``
                 - ``doc_attention_mask`` shaped ``(B, R, K, S_doc)``
                 - ``doc_scores`` shaped ``(B, R, K)``
                 - optional ``doc_ids`` shaped ``(B, R, K)``
                 - optional ``doc_key_embeddings`` shaped ``(B, R, K, D_ret)``
+
+        Search is performed through the Hugging Face dataset index. Query
+        embeddings are moved to CPU/NumPy internally for search, and retrieved
+        tensors are materialized back on the query device.
 
         Examples:
             >>> snapshot = _DatasetSnapshot(

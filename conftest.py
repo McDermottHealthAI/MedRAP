@@ -48,6 +48,47 @@ class FakeIndexedDataset:
         }
 
 
+class FakeBuildDataset:
+    def __init__(
+        self,
+        *,
+        columns: dict[str, list[object]],
+        index_name: str | None = None,
+    ) -> None:
+        self._columns = columns
+        self.column_names = list(columns.keys())
+        self._index_name = index_name
+
+    def __len__(self) -> int:
+        return len(next(iter(self._columns.values()), []))
+
+    def __getitem__(self, column_name: str) -> list[object]:
+        return self._columns[column_name]
+
+    def remove_columns(self, column_name: str):
+        columns = {name: values for name, values in self._columns.items() if name != column_name}
+        return FakeBuildDataset(columns=columns, index_name=self._index_name)
+
+    def map(self, function, *, batched: bool, batch_size: int):
+        assert batched is True
+        updated_columns = {name: list(values) for name, values in self._columns.items()}
+        row_count = len(self)
+        for start in range(0, row_count, batch_size):
+            stop = min(start + batch_size, row_count)
+            batch = {name: values[start:stop] for name, values in self._columns.items()}
+            mapped = function(batch)
+            for name, values in mapped.items():
+                updated_columns.setdefault(name, [None] * row_count)
+                updated_columns[name][start:stop] = values
+        return FakeBuildDataset(columns=updated_columns, index_name=self._index_name)
+
+    def add_faiss_index(self, *, column: str, index_name: str):
+        if column not in self._columns:
+            raise KeyError(column)
+        self._index_name = index_name
+        return self
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _setup_doctest_namespace(
     doctest_namespace: dict[str, Any],
@@ -56,6 +97,7 @@ def _setup_doctest_namespace(
     doctest_namespace.update(
         {
             "datetime": datetime,
+            "FakeBuildDataset": FakeBuildDataset,
             "FakeIndexedDataset": FakeIndexedDataset,
             "tempfile": tempfile,
             "Path": Path,
