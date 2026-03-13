@@ -6,7 +6,13 @@ defaults:
   - fusion: replace
   - pooling: identity
   - head: linear
+  - training/module: supervised_lightning
+  - training/task: binary_classification
+  - training/trainer: lightning_demo
   - _self_
+
+head:
+  out_dim: ${training.task.output_dim}
 
 hydra:
   run:

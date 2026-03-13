@@ -2,27 +2,36 @@ import torch
 from meds_torchdata import MEDSTorchBatch
 
 from medrap.configs import (
+    BinaryClassificationTaskConfig,
     ConcatFusionConfig,
     InMemoryRetrieverConfig,
+    LightningDemoTrainerConfig,
     LinearHeadConfig,
     LinearQueryProjectorConfig,
     MaskedMeanPoolingConfig,
+    MedRAPSupervisedLightningModuleConfig,
     PipelineConfig,
+    RAPTrainConfig,
     TokenEmbeddingEncoderConfig,
+    TrainingConfig,
     bool_tensor_config,
     default_pipeline_config,
     float_tensor_config,
     instantiate_model,
+    instantiate_trainer,
+    instantiate_training_module,
     long_tensor_config,
 )
 from medrap.encoders import MEDSCodeEncoder, TokenEmbeddingEncoder
 from medrap.fusion import ConcatFusion, ReplaceFusion
 from medrap.heads import LinearHead
+from medrap.lightning_module import MedRAPSupervisedLightningModule
 from medrap.model import RetrievalAugmentedModel
 from medrap.pooling import IdentityPooling, MaskedMeanPooling
 from medrap.query_projection import LinearQueryProjector, SequenceMeanQueryProjector
 from medrap.retrieval_encoder import MeanPooledRetrievalEncoder
 from medrap.retrievers import InMemoryRetriever
+from medrap.task import BinaryClassificationTask
 
 
 def _example_batch() -> MEDSTorchBatch:
@@ -85,3 +94,36 @@ def test_pipeline_config_allows_meaningful_module_overrides() -> None:
     assert isinstance(model.fusion, ConcatFusion)
     assert isinstance(model.pooling, MaskedMeanPooling)
     assert isinstance(model.head, LinearHead)
+
+
+def test_train_config_instantiates_supervised_lightning_stack() -> None:
+    cfg = RAPTrainConfig(
+        training=TrainingConfig(
+            module=MedRAPSupervisedLightningModuleConfig(),
+            task=BinaryClassificationTaskConfig(),
+            trainer=LightningDemoTrainerConfig(),
+        )
+    )
+
+    lightning_module = instantiate_training_module(cfg)
+    trainer = instantiate_trainer(cfg)
+
+    assert isinstance(lightning_module, MedRAPSupervisedLightningModule)
+    assert isinstance(lightning_module.model, RetrievalAugmentedModel)
+    assert isinstance(lightning_module.task, BinaryClassificationTask)
+    assert trainer.__class__.__name__ == "Trainer"
+
+
+def test_default_train_config_aligns_head_with_binary_task() -> None:
+    cfg = RAPTrainConfig()
+
+    lightning_module = instantiate_training_module(cfg)
+    batch = _example_batch()
+    batch.boolean_value = torch.BoolTensor([True, False])
+
+    out = lightning_module.model.forward(batch)
+    targets = lightning_module.task.extract_targets(batch)
+    loss = lightning_module.task.loss(out.logits, targets)
+
+    assert out.logits.shape == (2, 1)
+    assert loss.ndim == 0

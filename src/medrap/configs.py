@@ -7,6 +7,7 @@ from concrete components.
 from dataclasses import dataclass, field
 from typing import Any, cast
 
+import lightning
 import torch
 from hydra.core.config_store import ConfigStore
 from hydra_zen import builds, instantiate
@@ -14,11 +15,13 @@ from hydra_zen import builds, instantiate
 from .encoders import MEDSCodeEncoder, TabularEncoder, TokenEmbeddingEncoder
 from .fusion import ConcatFusion, ReplaceFusion
 from .heads import LinearHead
+from .lightning_module import MedRAPSupervisedLightningModule
 from .model import RetrievalAugmentedModel
 from .pooling import IdentityPooling, MaskedMeanPooling
 from .query_projection import LinearQueryProjector, SequenceMeanQueryProjector
 from .retrieval_encoder import MeanPooledRetrievalEncoder, TokenFeatureRetrievalEncoder
 from .retrievers import InMemoryRetriever
+from .task import BinaryClassificationTask
 
 ComponentConfig = Any
 builds_any = cast("Any", builds)
@@ -120,6 +123,26 @@ LinearHeadConfig = builds_any(
     out_dim=2,
     zen_dataclass={"cls_name": "LinearHeadConfig"},
 )
+BinaryClassificationTaskConfig = builds_any(
+    BinaryClassificationTask,
+    zen_dataclass={"cls_name": "BinaryClassificationTaskConfig"},
+)
+MedRAPSupervisedLightningModuleConfig = builds_any(
+    MedRAPSupervisedLightningModule,
+    zen_dataclass={"cls_name": "MedRAPSupervisedLightningModuleConfig"},
+)
+LightningDemoTrainerConfig = builds_any(
+    lightning.Trainer,
+    max_epochs=1,
+    accelerator="cpu",
+    devices=1,
+    logger=False,
+    enable_checkpointing=False,
+    enable_model_summary=False,
+    enable_progress_bar=False,
+    log_every_n_steps=1,
+    zen_dataclass={"cls_name": "LightningDemoTrainerConfig"},
+)
 
 
 @dataclass
@@ -152,6 +175,23 @@ class RAPAppConfig(PipelineConfig):
         cs.store(name=cls.__name__, group=group, node=cls)
 
 
+@dataclass
+class TrainingConfig:
+    """Minimal training config layer on top of the plain RAP model config."""
+
+    module: ComponentConfig = field(default_factory=MedRAPSupervisedLightningModuleConfig)
+    task: ComponentConfig = field(default_factory=BinaryClassificationTaskConfig)
+    trainer: ComponentConfig = field(default_factory=LightningDemoTrainerConfig)
+
+
+@dataclass
+class RAPTrainConfig(PipelineConfig):
+    """Top-level training config that preserves ``PipelineConfig`` as model composition."""
+
+    head: ComponentConfig = field(default_factory=lambda: LinearHeadConfig(out_dim=1))
+    training: TrainingConfig = field(default_factory=TrainingConfig)
+
+
 def default_pipeline_config() -> PipelineConfig:
     """Return a default, fully-instantiable pipeline config."""
     return PipelineConfig()
@@ -168,3 +208,49 @@ def instantiate_model(config: Any) -> RetrievalAugmentedModel:
         pooling=instantiate_any(config.pooling),
         head=instantiate_any(config.head),
     )
+
+
+def instantiate_training_module(config: RAPTrainConfig) -> MedRAPSupervisedLightningModule:
+    """Instantiate the configured training wrapper around the plain RAP model.
+
+    Args:
+        config: Training config containing the plain RAP model composition under the
+            top-level pipeline fields and the supervised wrapper/task under
+            ``config.training``.
+
+    Returns:
+        MedRAPSupervisedLightningModule: Lightning wrapper whose plain model returns
+        logits shaped ``(B, config.training.task.output_dim)`` for a batch of size
+        ``B``.
+
+    Examples:
+        >>> module = instantiate_training_module(RAPTrainConfig())
+        >>> module.__class__.__name__
+        'MedRAPSupervisedLightningModule'
+        >>> module.task.output_dim
+        1
+    """
+    plain_model = instantiate_model(config)
+    task = instantiate_any(config.training.task)
+    return instantiate_any(config.training.module, model=plain_model, task=task)
+
+
+def instantiate_trainer(config: RAPTrainConfig) -> lightning.Trainer:
+    """Instantiate the configured Lightning trainer.
+
+    Args:
+        config: Training config containing the trainer settings under
+            ``config.training.trainer``.
+
+    Returns:
+        lightning.Trainer: Configured Trainer instance. In the default demo config,
+        this uses CPU execution with ``max_epochs=1``.
+
+    Examples:
+        >>> trainer = instantiate_trainer(RAPTrainConfig())
+        >>> trainer.__class__.__name__
+        'Trainer'
+        >>> trainer.max_epochs
+        1
+    """
+    return instantiate_any(config.training.trainer)
