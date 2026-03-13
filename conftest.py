@@ -15,6 +15,41 @@ from typing import Any
 import pytest
 import torch
 from meds_torchdata import MEDSTorchBatch
+from torch import nn
+
+from medrap.types import ModelOutput
+
+
+def make_supervised_batch() -> MEDSTorchBatch:
+    """Return a tiny labeled MEDS batch for doctests and trainer smoke tests."""
+    batch = MEDSTorchBatch(
+        code=torch.LongTensor([[1, 2, 3], [3, 2, 1]]),
+        numeric_value=torch.zeros((2, 3), dtype=torch.float32),
+        numeric_value_mask=torch.zeros((2, 3), dtype=torch.bool),
+        time_delta_days=torch.zeros((2, 3), dtype=torch.float32),
+    )
+    batch.boolean_value = torch.BoolTensor([True, False])
+    return batch
+
+
+class TensorBinaryModel(nn.Module):
+    """Tiny binary model returning logits directly."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.layer_norm = nn.LayerNorm(3)
+        self.linear = nn.Linear(3, 1)
+
+    def forward(self, batch: MEDSTorchBatch) -> torch.Tensor:
+        features = self.layer_norm(batch.code.float())
+        return self.linear(features)
+
+
+class ModelOutputBinaryModel(TensorBinaryModel):
+    """Tiny binary model returning a ``ModelOutput``."""
+
+    def forward(self, batch: MEDSTorchBatch) -> ModelOutput:
+        return ModelOutput(logits=super().forward(batch))
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -29,5 +64,9 @@ def _setup_doctest_namespace(
             "Path": Path,
             "torch": torch,
             "MEDSTorchBatch": MEDSTorchBatch,
+            "make_supervised_batch": make_supervised_batch,
+            "TensorBinaryModel": TensorBinaryModel,
+            "ModelOutput": ModelOutput,
+            "ModelOutputBinaryModel": ModelOutputBinaryModel,
         }
     )
