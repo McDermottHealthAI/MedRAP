@@ -8,7 +8,13 @@ from meds_torchdata import MEDSTorchBatch
 from torch import Tensor, nn
 from torch.optim import Optimizer
 
-from .task import BinaryClassificationTask, SupervisedTask, TaskTargets
+from .task import (
+    BinaryClassificationLoss,
+    BinaryClassificationTask,
+    SupervisedLoss,
+    SupervisedTask,
+    TaskPredictions,
+)
 from .types import ModelOutput
 
 
@@ -18,6 +24,7 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
     Args:
         model: Plain PyTorch model returning ``ModelOutput`` or logits.
         task: Supervised task object.
+        loss_fn: Supervised loss object.
         optimizer: Optimizer factory taking grouped parameter configs.
     """
 
@@ -26,11 +33,13 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
         *,
         model: nn.Module,
         task: SupervisedTask | None = None,
+        loss_fn: SupervisedLoss | None = None,
         optimizer: Callable[[list[dict[str, object]]], Optimizer] | None = None,
     ) -> None:
         super().__init__()
         self.model = model
         self.task = task or BinaryClassificationTask()
+        self.loss_fn = loss_fn or BinaryClassificationLoss()
         self.optimizer_factory = optimizer or (
             lambda params: torch.optim.AdamW(params, lr=1e-3, weight_decay=0.01)
         )
@@ -57,17 +66,6 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
             (2, 1)
         """
         return self.model(batch)
-
-    @staticmethod
-    def _extract_logits(model_output: Tensor | ModelOutput | object) -> Tensor:
-        if isinstance(model_output, Tensor):
-            return model_output
-        if isinstance(model_output, ModelOutput):
-            return model_output.logits
-        logits = getattr(model_output, "logits", None)
-        if isinstance(logits, Tensor):
-            return logits
-        raise TypeError(f"Unexpected model output type: {type(model_output)!r}")
 
     def _iter_no_decay_names(self) -> set[str]:
         no_decay_names: set[str] = set()
@@ -110,13 +108,15 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
         return groups
 
     def _run_supervised_step(self, raw_batch: MEDSTorchBatch, *, stage: str) -> Tensor:
-        logits = self._extract_logits(self.forward(raw_batch))
-        targets: TaskTargets = self.task.extract_targets(raw_batch)
-        loss = self.task.loss(logits, targets)
+        predictions: TaskPredictions = self.forward(raw_batch)
+        targets = self.task.extract_targets(raw_batch)
+        loss = self.loss_fn(predictions, targets)
 
         batch_size = getattr(raw_batch, "batch_size", None)
         if not isinstance(batch_size, int):
-            batch_size = logits.shape[0]
+            batch_size = (
+                predictions.shape[0] if isinstance(predictions, Tensor) else predictions.logits.shape[0]
+            )
 
         is_train = stage == "train"
         self.log(
@@ -127,7 +127,7 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
             prog_bar=True,
             batch_size=batch_size,
         )
-        for metric_name, metric_value in self.task.metrics(logits, targets).items():
+        for metric_name, metric_value in self.task.metrics(predictions, targets).items():
             self.log(
                 f"{stage}/{metric_name}",
                 metric_value,

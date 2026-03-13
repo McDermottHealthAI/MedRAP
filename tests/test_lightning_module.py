@@ -6,7 +6,8 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from medrap.lightning_module import MedRAPSupervisedLightningModule
-from medrap.task import BinaryClassificationTask, SupervisedTask
+from medrap.task import BinaryClassificationTask, SupervisedLoss, SupervisedTask
+from medrap.types import ModelOutput
 
 
 @pytest.fixture
@@ -34,6 +35,22 @@ def tensor_binary_model() -> nn.Module:
             return self.linear(features)
 
     return TensorBinaryModel()
+
+
+@pytest.fixture
+def model_output_binary_model() -> nn.Module:
+    class ModelOutputBinaryModel(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.layer_norm = nn.LayerNorm(3)
+            self.linear = nn.Linear(3, 1)
+
+        def forward(self, batch: MEDSTorchBatch) -> ModelOutput:
+            features = self.layer_norm(batch.code.float())
+            logits = self.linear(features)
+            return ModelOutput(logits=logits, metadata={"extra": logits.square()})
+
+    return ModelOutputBinaryModel()
 
 
 def test_lightning_module_trainer_smoke(
@@ -72,22 +89,31 @@ def test_lightning_module_supports_structured_task_targets(
                 "mask": torch.ones_like(batch.boolean_value, dtype=torch.bool),
             }
 
-        def loss(self, logits: torch.Tensor, targets: torch.Tensor | dict[str, torch.Tensor]) -> torch.Tensor:
+        def metrics(
+            self, predictions: torch.Tensor | ModelOutput, targets: torch.Tensor | dict[str, torch.Tensor]
+        ) -> dict[str, torch.Tensor]:
             assert isinstance(targets, dict)
+            assert isinstance(predictions, torch.Tensor)
+            predicted_labels = predictions.squeeze(1) >= 0
+            labels = targets["labels"].bool()
+            return {"accuracy": (predicted_labels == labels).float().mean()}
+
+    class StructuredBinaryLoss(SupervisedLoss):
+        def forward(
+            self, predictions: torch.Tensor | ModelOutput, targets: torch.Tensor | dict[str, torch.Tensor]
+        ) -> torch.Tensor:
+            assert isinstance(targets, dict)
+            assert isinstance(predictions, torch.Tensor)
             return torch.nn.functional.binary_cross_entropy_with_logits(
-                logits.squeeze(1),
+                predictions.squeeze(1),
                 targets["labels"],
             )
 
-        def metrics(
-            self, logits: torch.Tensor, targets: torch.Tensor | dict[str, torch.Tensor]
-        ) -> dict[str, torch.Tensor]:
-            assert isinstance(targets, dict)
-            predictions = logits.squeeze(1) >= 0
-            labels = targets["labels"].bool()
-            return {"accuracy": (predictions == labels).float().mean()}
-
-    module = MedRAPSupervisedLightningModule(model=tensor_binary_model, task=StructuredBinaryTask())
+    module = MedRAPSupervisedLightningModule(
+        model=tensor_binary_model,
+        task=StructuredBinaryTask(),
+        loss_fn=StructuredBinaryLoss(),
+    )
     trainer = lightning.Trainer(
         max_epochs=1,
         logger=False,
@@ -117,20 +143,67 @@ def test_configure_optimizers_includes_task_parameters(
         def extract_targets(self, batch: MEDSTorchBatch) -> torch.Tensor:
             return batch.boolean_value.float()
 
-        def loss(self, logits: torch.Tensor, targets: torch.Tensor | dict[str, torch.Tensor]) -> torch.Tensor:
-            assert isinstance(targets, torch.Tensor)
-            return torch.nn.functional.binary_cross_entropy_with_logits(
-                self.scale * logits.squeeze(1),
-                targets,
-            )
-
         def metrics(
-            self, logits: torch.Tensor, targets: torch.Tensor | dict[str, torch.Tensor]
+            self, predictions: torch.Tensor | ModelOutput, targets: torch.Tensor | dict[str, torch.Tensor]
         ) -> dict[str, torch.Tensor]:
             return {}
 
-    module = MedRAPSupervisedLightningModule(model=tensor_binary_model, task=LearnableTask())
+    class LearnableLoss(SupervisedLoss):
+        def __init__(self, task: LearnableTask) -> None:
+            super().__init__()
+            self.task = task
+
+        def forward(
+            self, predictions: torch.Tensor | ModelOutput, targets: torch.Tensor | dict[str, torch.Tensor]
+        ) -> torch.Tensor:
+            assert isinstance(predictions, torch.Tensor)
+            assert isinstance(targets, torch.Tensor)
+            return torch.nn.functional.binary_cross_entropy_with_logits(
+                self.task.scale * predictions.squeeze(1),
+                targets,
+            )
+
+    task = LearnableTask()
+    module = MedRAPSupervisedLightningModule(
+        model=tensor_binary_model,
+        task=task,
+        loss_fn=LearnableLoss(task),
+    )
     optimizer = module.configure_optimizers()
     optimized_params = {id(parameter) for group in optimizer.param_groups for parameter in group["params"]}
 
     assert id(module.task.scale) in optimized_params
+
+
+def test_lightning_module_supports_custom_loss_over_model_output_metadata(
+    supervised_batch: MEDSTorchBatch,
+    model_output_binary_model: nn.Module,
+) -> None:
+    class MetadataLoss(SupervisedLoss):
+        def forward(
+            self, predictions: torch.Tensor | ModelOutput, targets: torch.Tensor | dict[str, torch.Tensor]
+        ) -> torch.Tensor:
+            assert isinstance(predictions, ModelOutput)
+            assert isinstance(targets, torch.Tensor)
+            extra = predictions.metadata["extra"]
+            assert isinstance(extra, torch.Tensor)
+            return predictions.logits.square().mean() + extra.mean() + targets.mean()
+
+    module = MedRAPSupervisedLightningModule(
+        model=model_output_binary_model,
+        task=BinaryClassificationTask(),
+        loss_fn=MetadataLoss(),
+    )
+    trainer = lightning.Trainer(
+        max_epochs=1,
+        logger=False,
+        enable_checkpointing=False,
+        enable_model_summary=False,
+        enable_progress_bar=False,
+        limit_train_batches=1,
+    )
+    dataloader = DataLoader([supervised_batch], batch_size=None)
+
+    trainer.fit(module, train_dataloaders=dataloader)
+
+    assert trainer.callback_metrics["train/loss"].ndim == 0

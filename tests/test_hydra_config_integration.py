@@ -43,6 +43,7 @@ def test_train_config_composes_training_layer() -> None:
     assert isinstance(lightning_module, MedRAPSupervisedLightningModule)
     assert isinstance(lightning_module.model, RetrievalAugmentedModel)
     assert isinstance(lightning_module.task, nn.Module)
+    assert lightning_module.loss_fn.__class__.__name__ == "BinaryClassificationLoss"
     assert cfg.training.task.output_dim == 1
     assert cfg.head.out_dim == cfg.training.task.output_dim
 
@@ -56,6 +57,7 @@ def test_eval_config_composes_training_layer() -> None:
     assert isinstance(lightning_module, MedRAPSupervisedLightningModule)
     assert isinstance(lightning_module.model, RetrievalAugmentedModel)
     assert isinstance(lightning_module.task, nn.Module)
+    assert lightning_module.loss_fn.__class__.__name__ == "BinaryClassificationLoss"
     assert cfg.head.out_dim == cfg.training.task.output_dim
 
 
@@ -71,4 +73,5 @@ def test_supervised_task_is_not_exported_from_package_root() -> None:
     import medrap
 
     assert not hasattr(medrap, "SupervisedTask")
+    assert not hasattr(medrap, "SupervisedLoss")
     assert SupervisedTask.__name__ == "SupervisedTask"

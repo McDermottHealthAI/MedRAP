@@ -21,7 +21,7 @@ from .pooling import IdentityPooling, MaskedMeanPooling
 from .query_projection import LinearQueryProjector, SequenceMeanQueryProjector
 from .retrieval_encoder import MeanPooledRetrievalEncoder, TokenFeatureRetrievalEncoder
 from .retrievers import InMemoryRetriever
-from .task import BinaryClassificationTask
+from .task import BinaryClassificationLoss, BinaryClassificationTask
 
 ComponentConfig = Any
 builds_any = cast("Any", builds)
@@ -127,6 +127,10 @@ BinaryClassificationTaskConfig = builds_any(
     BinaryClassificationTask,
     zen_dataclass={"cls_name": "BinaryClassificationTaskConfig"},
 )
+BinaryClassificationLossConfig = builds_any(
+    BinaryClassificationLoss,
+    zen_dataclass={"cls_name": "BinaryClassificationLossConfig"},
+)
 MedRAPSupervisedLightningModuleConfig = builds_any(
     MedRAPSupervisedLightningModule,
     zen_dataclass={"cls_name": "MedRAPSupervisedLightningModuleConfig"},
@@ -181,6 +185,7 @@ class TrainingConfig:
 
     module: ComponentConfig = field(default_factory=MedRAPSupervisedLightningModuleConfig)
     task: ComponentConfig = field(default_factory=BinaryClassificationTaskConfig)
+    loss: ComponentConfig = field(default_factory=BinaryClassificationLossConfig)
     trainer: ComponentConfig = field(default_factory=LightningDemoTrainerConfig)
 
 
@@ -229,10 +234,13 @@ def instantiate_training_module(config: RAPTrainConfig) -> MedRAPSupervisedLight
         'MedRAPSupervisedLightningModule'
         >>> module.task.output_dim
         1
+        >>> module.loss_fn.__class__.__name__
+        'BinaryClassificationLoss'
     """
     plain_model = instantiate_model(config)
     task = instantiate_any(config.training.task)
-    return instantiate_any(config.training.module, model=plain_model, task=task)
+    loss_fn = instantiate_any(config.training.loss)
+    return instantiate_any(config.training.module, model=plain_model, task=task, loss_fn=loss_fn)
 
 
 def instantiate_trainer(config: RAPTrainConfig) -> lightning.Trainer:

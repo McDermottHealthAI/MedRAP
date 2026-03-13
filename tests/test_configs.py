@@ -2,6 +2,7 @@ import torch
 from meds_torchdata import MEDSTorchBatch
 
 from medrap.configs import (
+    BinaryClassificationLossConfig,
     BinaryClassificationTaskConfig,
     ConcatFusionConfig,
     InMemoryRetrieverConfig,
@@ -31,7 +32,7 @@ from medrap.pooling import IdentityPooling, MaskedMeanPooling
 from medrap.query_projection import LinearQueryProjector, SequenceMeanQueryProjector
 from medrap.retrieval_encoder import MeanPooledRetrievalEncoder
 from medrap.retrievers import InMemoryRetriever
-from medrap.task import BinaryClassificationTask
+from medrap.task import BinaryClassificationLoss, BinaryClassificationTask
 
 
 def _example_batch() -> MEDSTorchBatch:
@@ -101,6 +102,7 @@ def test_train_config_instantiates_supervised_lightning_stack() -> None:
         training=TrainingConfig(
             module=MedRAPSupervisedLightningModuleConfig(),
             task=BinaryClassificationTaskConfig(),
+            loss=BinaryClassificationLossConfig(),
             trainer=LightningDemoTrainerConfig(),
         )
     )
@@ -111,6 +113,7 @@ def test_train_config_instantiates_supervised_lightning_stack() -> None:
     assert isinstance(lightning_module, MedRAPSupervisedLightningModule)
     assert isinstance(lightning_module.model, RetrievalAugmentedModel)
     assert isinstance(lightning_module.task, BinaryClassificationTask)
+    assert isinstance(lightning_module.loss_fn, BinaryClassificationLoss)
     assert trainer.__class__.__name__ == "Trainer"
 
 
@@ -123,7 +126,7 @@ def test_default_train_config_aligns_head_with_binary_task() -> None:
 
     out = lightning_module.model.forward(batch)
     targets = lightning_module.task.extract_targets(batch)
-    loss = lightning_module.task.loss(out.logits, targets)
+    loss = lightning_module.loss_fn(out, targets)
 
     assert out.logits.shape == (2, 1)
     assert loss.ndim == 0

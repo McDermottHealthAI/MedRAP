@@ -8,6 +8,7 @@ defaults:
   - head: linear
   - training/module: supervised_lightning
   - training/task: binary_classification
+  - training/loss: binary_bce
   - training/trainer: lightning_demo
   - _self_
 

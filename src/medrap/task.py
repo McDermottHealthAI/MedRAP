@@ -7,7 +7,36 @@ import torch
 from meds_torchdata import MEDSTorchBatch
 from torch import Tensor, nn
 
+from .types import ModelOutput
+
+type TaskPredictions = Tensor | ModelOutput
 type TaskTargets = Tensor | dict[str, Tensor]
+
+
+def _extract_logits(predictions: TaskPredictions) -> Tensor:
+    if isinstance(predictions, Tensor):
+        return predictions
+    return predictions.logits
+
+
+def _require_tensor_targets(targets: TaskTargets, *, owner: str) -> Tensor:
+    if isinstance(targets, Tensor):
+        return targets
+    raise ValueError(f"{owner} expects tensor targets, not structured targets.")
+
+
+def _flatten_binary_logits(predictions: TaskPredictions, *, owner: str) -> Tensor:
+    logits = _extract_logits(predictions)
+    if logits.ndim == 2 and logits.shape[1] == 1:
+        return logits.squeeze(1)
+    raise ValueError(f"{owner} expects logits shaped (B, 1); got {tuple(logits.shape)}")
+
+
+def _flatten_binary_targets(targets: TaskTargets, *, owner: str) -> Tensor:
+    tensor_targets = _require_tensor_targets(targets, owner=owner)
+    if tensor_targets.ndim == 1:
+        return tensor_targets.float()
+    raise ValueError(f"{owner} expects targets shaped (B,); got {tuple(tensor_targets.shape)}")
 
 
 class SupervisedTask(nn.Module, ABC):
@@ -33,27 +62,31 @@ class SupervisedTask(nn.Module, ABC):
         """
 
     @abstractmethod
-    def loss(self, logits: Tensor, targets: TaskTargets) -> Tensor:
-        """Compute the task loss from model logits and task targets.
-
-        Args:
-            logits: Model logits for the current minibatch.
-            targets: Task targets returned by :meth:`extract_targets`.
-
-        Returns:
-            Tensor: Scalar loss tensor with shape ``()``.
-        """
-
-    @abstractmethod
-    def metrics(self, logits: Tensor, targets: TaskTargets) -> Mapping[str, Tensor]:
+    def metrics(self, predictions: TaskPredictions, targets: TaskTargets) -> Mapping[str, Tensor]:
         """Return scalar task metrics derived from logits and targets.
 
         Args:
-            logits: Model logits for the current minibatch.
+            predictions: Model predictions for the current minibatch.
             targets: Task targets returned by :meth:`extract_targets`.
 
         Returns:
             Mapping[str, Tensor]: Scalar metric tensors keyed by metric name.
+        """
+
+
+class SupervisedLoss(nn.Module, ABC):
+    """Abstract base for supervised training objectives."""
+
+    @abstractmethod
+    def forward(self, predictions: TaskPredictions, targets: TaskTargets) -> Tensor:
+        """Compute a scalar training loss from predictions and task targets.
+
+        Args:
+            predictions: Model predictions for the current minibatch.
+            targets: Task targets returned by ``SupervisedTask.extract_targets``.
+
+        Returns:
+            Tensor: Scalar loss tensor with shape ``()``.
         """
 
 
@@ -68,8 +101,8 @@ class BinaryClassificationTask(SupervisedTask):
 
     Returns:
         BinaryClassificationTask: Task helper that extracts labels from a MEDS batch,
-        computes BCE-with-logits loss from logits shaped ``(B, 1)``, and reports
-        scalar accuracy metrics.
+        reports scalar accuracy metrics from predictions with logits shaped
+        ``(B, 1)``.
     """
 
     def __init__(self, *, label_field: str = "boolean_value", output_dim: int = 1) -> None:
@@ -109,54 +142,11 @@ class BinaryClassificationTask(SupervisedTask):
             )
         return targets.float()
 
-    @staticmethod
-    def _flatten_logits(logits: Tensor) -> Tensor:
-        if logits.ndim == 2 and logits.shape[1] == 1:
-            return logits.squeeze(1)
-        raise ValueError(f"BinaryClassificationTask expects logits shaped (B, 1); got {tuple(logits.shape)}")
-
-    @staticmethod
-    def _flatten_targets(targets: Tensor) -> Tensor:
-        if targets.ndim == 1:
-            return targets.float()
-        raise ValueError(f"BinaryClassificationTask expects targets shaped (B,); got {tuple(targets.shape)}")
-
-    @staticmethod
-    def _require_tensor_targets(targets: TaskTargets) -> Tensor:
-        if isinstance(targets, Tensor):
-            return targets
-        raise ValueError("BinaryClassificationTask expects tensor targets, not structured targets.")
-
-    def loss(self, logits: Tensor, targets: TaskTargets) -> Tensor:
-        """Compute BCE-with-logits loss.
-
-        Args:
-            logits: Model logits with shape ``(B, 1)``.
-            targets: Binary targets with shape ``(B,)``.
-
-        Returns:
-            Tensor: Scalar loss tensor with shape ``()``.
-
-        Examples:
-            >>> import torch
-            >>> task = BinaryClassificationTask()
-            >>> logits = torch.FloatTensor([[0.0], [2.0]])
-            >>> targets = torch.BoolTensor([False, True])
-            >>> round(float(task.loss(logits, targets)), 4)
-            0.41
-        """
-        flat_logits = self._flatten_logits(logits)
-        flat_targets = self._flatten_targets(self._require_tensor_targets(targets))
-        return torch.nn.functional.binary_cross_entropy_with_logits(
-            flat_logits,
-            flat_targets,
-        )
-
-    def metrics(self, logits: Tensor, targets: TaskTargets) -> Mapping[str, Tensor]:
+    def metrics(self, predictions: TaskPredictions, targets: TaskTargets) -> Mapping[str, Tensor]:
         """Return binary-accuracy metrics derived from logits.
 
         Args:
-            logits: Model logits with shape ``(B, 1)``.
+            predictions: Model predictions whose logits have shape ``(B, 1)``.
             targets: Binary targets with shape ``(B,)``.
 
         Returns:
@@ -172,7 +162,40 @@ class BinaryClassificationTask(SupervisedTask):
             >>> float(metrics["accuracy"])
             1.0
         """
-        flat_logits = self._flatten_logits(logits)
-        flat_targets = self._flatten_targets(self._require_tensor_targets(targets)).bool()
+        flat_logits = _flatten_binary_logits(predictions, owner="BinaryClassificationTask")
+        flat_targets = _flatten_binary_targets(targets, owner="BinaryClassificationTask").bool()
         predictions = flat_logits >= 0
         return {"accuracy": (predictions == flat_targets).float().mean()}
+
+
+class BinaryClassificationLoss(SupervisedLoss):
+    """Binary BCE-with-logits loss for scalar binary predictions.
+
+    Returns:
+        BinaryClassificationLoss: Loss helper that accepts ``Tensor`` or
+        ``ModelOutput`` predictions with logits shaped ``(B, 1)`` and binary
+        tensor targets shaped ``(B,)``.
+    """
+
+    def forward(self, predictions: TaskPredictions, targets: TaskTargets) -> Tensor:
+        """Compute BCE-with-logits loss from binary predictions and targets.
+
+        Args:
+            predictions: ``Tensor`` or ``ModelOutput`` predictions with logits
+                shaped ``(B, 1)``.
+            targets: Binary tensor targets shaped ``(B,)``.
+
+        Returns:
+            Tensor: Scalar loss tensor with shape ``()``.
+
+        Examples:
+            >>> import torch
+            >>> loss_fn = BinaryClassificationLoss()
+            >>> predictions = ModelOutput(logits=torch.FloatTensor([[0.0], [2.0]]))
+            >>> targets = torch.BoolTensor([False, True])
+            >>> round(float(loss_fn(predictions, targets)), 4)
+            0.41
+        """
+        flat_logits = _flatten_binary_logits(predictions, owner="BinaryClassificationLoss")
+        flat_targets = _flatten_binary_targets(targets, owner="BinaryClassificationLoss")
+        return torch.nn.functional.binary_cross_entropy_with_logits(flat_logits, flat_targets)
