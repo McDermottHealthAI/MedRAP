@@ -175,6 +175,38 @@ def test_configure_optimizers_includes_task_parameters(
     assert id(module.task.scale) in optimized_params
 
 
+def test_configure_optimizers_skips_frozen_parameters(tensor_binary_model: nn.Module) -> None:
+    tensor_binary_model.linear.bias.requires_grad = False
+
+    module = MedRAPSupervisedLightningModule(model=tensor_binary_model, task=BinaryClassificationTask())
+    optimizer = module.configure_optimizers()
+    optimized_params = {id(parameter) for group in optimizer.param_groups for parameter in group["params"]}
+
+    assert id(tensor_binary_model.linear.bias) not in optimized_params
+    assert id(tensor_binary_model.linear.weight) in optimized_params
+
+
+def test_training_step_uses_batch_size_fallback_without_batch_size() -> None:
+    class SimpleBatch:
+        def __init__(self) -> None:
+            self.code = torch.LongTensor([[1, 2, 3], [3, 2, 1]])
+            self.boolean_value = torch.BoolTensor([True, False])
+
+    class SimpleBinaryModel(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.linear = nn.Linear(3, 1)
+
+        def forward(self, batch: object) -> torch.Tensor:
+            return self.linear(batch.code.float())
+
+    module = MedRAPSupervisedLightningModule(model=SimpleBinaryModel(), task=BinaryClassificationTask())
+
+    loss = module._run_supervised_step(SimpleBatch(), stage="train")
+
+    assert loss.ndim == 0
+
+
 def test_lightning_module_supports_custom_loss_over_model_output_metadata(
     supervised_batch: MEDSTorchBatch,
     model_output_binary_model: nn.Module,
@@ -207,3 +239,24 @@ def test_lightning_module_supports_custom_loss_over_model_output_metadata(
     trainer.fit(module, train_dataloaders=dataloader)
 
     assert trainer.callback_metrics["train/loss"].ndim == 0
+
+
+def test_lightning_module_test_step_runs(
+    supervised_batch: MEDSTorchBatch,
+    tensor_binary_model: nn.Module,
+) -> None:
+    module = MedRAPSupervisedLightningModule(model=tensor_binary_model, task=BinaryClassificationTask())
+    trainer = lightning.Trainer(
+        max_epochs=1,
+        logger=False,
+        enable_checkpointing=False,
+        enable_model_summary=False,
+        enable_progress_bar=False,
+        limit_test_batches=1,
+    )
+    dataloader = DataLoader([supervised_batch], batch_size=None)
+
+    metrics = trainer.test(module, dataloaders=dataloader)
+
+    assert len(metrics) == 1
+    assert "test/loss" in metrics[0]
