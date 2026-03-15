@@ -1,45 +1,68 @@
 """Pooling modules for reducing fused representations before prediction."""
 
+from abc import ABC, abstractmethod
+
 from torch import Tensor, nn
 
 
-class IdentityPooling(nn.Module):
-    """Tabular pooling module that returns fused state unchanged.
+class PoolingModule(nn.Module, ABC):
+    """Abstract base for all pooling modules.
 
-    For this no-op pooling module, ``D_pool = D_fused``.
+    Subclasses must implement :meth:`pool`, which reduces a fused state tensor
+    to a fixed-size ``(B, D_pool)`` vector.  The ``forward`` method delegates
+    to ``pool``.
     """
 
-    def __init__(self) -> None:
-        super().__init__()
-
+    @abstractmethod
     def pool(self, fused_state: Tensor, attention_mask: Tensor | None = None) -> Tensor:
-        """Return fused_state unchanged.
+        """Reduce fused state to a pooled vector.
 
         Args:
-            fused_state: Tensor with shape ``(B, D_fused)``.
-            attention_mask: Optional mask tensor, ignored by this module.
+            fused_state: Tensor with shape ``(B, S_ehr, D_fused)``.
+            attention_mask: Optional mask tensor.
 
         Returns:
-            The unchanged ``fused_state`` tensor, with shape ``(B, D_fused)``.
-
-        Examples:
-            >>> import torch
-            >>> pooling = IdentityPooling()
-            >>> fused_state = torch.randn(2, 4)
-            >>> out = pooling.pool(fused_state)
-            >>> out.shape
-            torch.Size([2, 4])
-            >>> torch.equal(out, fused_state)
-            True
+            Tensor with shape ``(B, D_pool)``.
         """
-        return fused_state
 
     def forward(self, fused_state: Tensor, attention_mask: Tensor | None = None) -> Tensor:
         """Call ``pool``."""
         return self.pool(fused_state, attention_mask=attention_mask)
 
 
-class MaskedMeanPooling(nn.Module):
+class IdentityPooling(PoolingModule):
+    """Tabular pooling that squeezes the singleton sequence dimension.
+
+    Expects input shaped ``(B, 1, D_fused)`` and returns ``(B, D_pool)``
+    where ``D_pool = D_fused``.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+
+    def pool(self, fused_state: Tensor, attention_mask: Tensor | None = None) -> Tensor:
+        """Squeeze the singleton sequence dim from a tabular fused state.
+
+        Args:
+            fused_state: Tensor with shape ``(B, 1, D_fused)``.
+            attention_mask: Ignored.
+
+        Returns:
+            Tensor with shape ``(B, D_pool)``.
+
+        Examples:
+            >>> pooling = IdentityPooling()
+            >>> fused_state = torch.randn(2, 1, 4)
+            >>> out = pooling.pool(fused_state)
+            >>> tuple(out.shape)
+            (2, 4)
+            >>> tuple(pooling(fused_state).shape)
+            (2, 4)
+        """
+        return fused_state.squeeze(1)
+
+
+class MaskedMeanPooling(PoolingModule):
     """Sequence pooling module that averages over the sequence dimension."""
 
     def __init__(self) -> None:
@@ -49,15 +72,13 @@ class MaskedMeanPooling(nn.Module):
         """Average over the sequence dimension with an optional mask.
 
         Args:
-            fused_state: Tensor with shape ``(B, S_fused, D_fused)``.
-            attention_mask: Optional boolean mask with shape ``(B, S_fused)``.
+            fused_state: Tensor with shape ``(B, S_ehr, D_fused)``.
+            attention_mask: Optional boolean mask with shape ``(B, S_ehr)``.
 
         Returns:
-            A tensor with shape ``(B, D_fused)``. For this module,
-            ``D_pool = D_fused``.
+            Tensor with shape ``(B, D_pool)``.
 
         Examples:
-            >>> import torch
             >>> pooling = MaskedMeanPooling()
             >>> fused_state = torch.FloatTensor(
             ...     [
@@ -69,6 +90,18 @@ class MaskedMeanPooling(nn.Module):
             >>> out = pooling.pool(fused_state, attention_mask=attention_mask)
             >>> out.tolist()
             [[2.0, 3.0], [7.0, 8.0]]
+            >>> tuple(out.shape)
+            (2, 2)
+            >>> tuple(pooling(fused_state).shape)
+            (2, 2)
+            >>> pooling.pool(torch.randn(2, 4))  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: MaskedMeanPooling expects fused_state shaped (B, S, D), ...
+            >>> pooling.pool(fused_state, attention_mask=torch.ones(3, 3, dtype=torch.bool))  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: attention_mask must match the first two fused_state dimensions. ...
         """
         if fused_state.ndim != 3:
             raise ValueError(
@@ -86,7 +119,3 @@ class MaskedMeanPooling(nn.Module):
         expanded_mask = mask.unsqueeze(-1)
         counts = expanded_mask.sum(dim=1).clamp_min(1).to(dtype=fused_state.dtype)
         return (fused_state.float() * expanded_mask).sum(dim=1) / counts
-
-    def forward(self, fused_state: Tensor, attention_mask: Tensor | None = None) -> Tensor:
-        """Call ``pool``."""
-        return self.pool(fused_state, attention_mask=attention_mask)
