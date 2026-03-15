@@ -89,7 +89,7 @@ class RetrievalAugmentedModel(nn.Module):
             ... )
             >>> out = model.forward(batch=batch)
             >>> tuple(out.logits.shape)
-            (2, 1, 1, 1, 2)
+            (2, 1, 2)
             >>> sorted(out.metadata)
             ['fusion_output', 'query_output', 'retrieval_encoder_output', 'retriever_output']
         """

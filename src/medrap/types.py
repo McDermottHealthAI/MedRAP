@@ -6,9 +6,9 @@ Shape notation:
     - ``B``: batch size.
     - ``S_ehr``: EHR sequence length (1 in tabular mode).
     - ``D_ehr``: EHR hidden / embedding dimension (1 for scaffold encoders).
-    - ``*F``: per-sample fused-state shape produced by the fusion module.
-      It depends on configuration (for example ``(S_ehr, D_fused)``,
-      ``(D_ehr + D_mem,)``, or ``(D_mem,)``).
+    - ``S_fused``: fused sequence length (equals ``S_ehr``).
+    - ``D_fused``: fused hidden dimension (``D_ehr + D_mem`` for concat,
+      ``D_mem`` for replace).
 """
 
 from dataclasses import dataclass, field
@@ -100,7 +100,8 @@ class FusionOutput:
     """Output of fusion.
 
     Attributes:
-        fused_state: Fused representation with shape ``(B, *F)``.
+        fused_state: Fused representation with shape
+            ``(B, S_ehr, D_fused)``.
     """
 
     fused_state: Tensor
