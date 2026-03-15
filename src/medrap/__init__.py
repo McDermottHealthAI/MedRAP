@@ -8,7 +8,7 @@ from .configs import (
     instantiate_model,
 )
 from .encoders import MEDSCodeEncoder, PatientEncoder, TabularEncoder, TokenEmbeddingEncoder
-from .fusion import ConcatFusion, ReplaceFusion
+from .fusion import ConcatFusion, FusionModule, ReplaceFusion
 from .heads import LinearHead
 from .losses import MarginalizedRetrievalLoss
 from .model import RetrievalAugmentedModel
@@ -35,6 +35,7 @@ __all__ = [
     "DemoInMemoryRetrieverConfig",
     "EncoderOutput",
     "FusionInput",
+    "FusionModule",
     "FusionOutput",
     "HFDatasetRetriever",
     "IdentityPooling",
