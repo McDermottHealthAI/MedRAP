@@ -70,7 +70,7 @@ class RetrievalEncoderOutput:
         retrieval_memory: Encoded retrieval memory.
             Supported scaffold shapes include:
             - sequence-style token features: ``(B, R, K, S_doc, D_mem)``
-            - tabular pooled memory: ``(B, D_mem)``
+            - tabular pooled memory: ``(B, 1, 1, 1, D_mem)``
     """
 
     retrieval_memory: Tensor

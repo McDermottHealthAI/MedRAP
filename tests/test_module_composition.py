@@ -51,7 +51,7 @@ def test_trainable_stage_parameters_are_registered_on_model() -> None:
     out = model(_example_batch())
 
     assert isinstance(out.logits, torch.Tensor)
-    assert out.logits.shape == (2, 2)
+    assert out.logits.shape == (2, 1, 1, 1, 2)
     assert "head.linear.weight" in model.state_dict()
 
 
@@ -83,7 +83,7 @@ def test_stage_forward_aliases_named_methods() -> None:
     pooled_via_method = pooled_retrieval_encoder.encode(retrieval_out)
     pooled_via_forward = pooled_retrieval_encoder(retrieval_out)
     assert torch.equal(pooled_via_method.retrieval_memory, pooled_via_forward.retrieval_memory)
-    assert pooled_via_method.retrieval_memory.shape == (2, 2)
+    assert pooled_via_method.retrieval_memory.shape == (2, 1, 1, 1, 2)
     assert pooled_via_method.retrieval_memory.dtype == torch.float32
 
     fusion = ReplaceFusion()
