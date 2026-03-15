@@ -9,10 +9,10 @@ from .configs import (
 )
 from .encoders import MEDSCodeEncoder, PatientEncoder, TabularEncoder, TokenEmbeddingEncoder
 from .fusion import ConcatFusion, FusionModule, ReplaceFusion
-from .heads import LinearHead
+from .heads import LinearHead, PredictionHead
 from .losses import MarginalizedRetrievalLoss
 from .model import RetrievalAugmentedModel
-from .pooling import IdentityPooling, MaskedMeanPooling
+from .pooling import IdentityPooling, MaskedMeanPooling, PoolingModule
 from .query_projection import LinearQueryProjector, QueryProjector, SequenceMeanQueryProjector
 from .retrievers import (
     HFDatasetRetriever,
@@ -49,6 +49,8 @@ __all__ = [
     "ModelOutput",
     "PatientEncoder",
     "PipelineConfig",
+    "PoolingModule",
+    "PredictionHead",
     "QueryOutput",
     "QueryProjector",
     "RAPAppConfig",
