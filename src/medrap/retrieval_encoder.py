@@ -35,7 +35,6 @@ class TokenFeatureRetrievalEncoder(nn.Module):
             ``(B, R, K, S_doc, D_mem)``.
 
         Examples:
-            >>> import torch
             >>> retrieval = RetrieverOutput(
             ...     doc_tokens=torch.LongTensor([[[[1, 2, 3]]], [[[4, 5, 6]]]]),
             ...     doc_attention_mask=torch.BoolTensor([[[[True, True, True]]], [[[True, True, True]]]]),
@@ -82,7 +81,6 @@ class MeanPooledRetrievalEncoder(nn.Module):
             ``(B, 1, 1, 1, D_mem)``.
 
         Examples:
-            >>> import torch
             >>> retrieval = RetrieverOutput(
             ...     doc_tokens=torch.LongTensor([[[[1, 2, 0]]], [[[4, 0, 0]]]]),
             ...     doc_attention_mask=torch.BoolTensor([[[[True, True, False]]], [[[True, False, False]]]]),
