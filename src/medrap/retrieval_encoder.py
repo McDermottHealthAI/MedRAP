@@ -35,7 +35,6 @@ class TokenFeatureRetrievalEncoder(nn.Module):
             ``(B, R, K, S_doc, D_mem)``.
 
         Examples:
-            >>> import torch
             >>> retrieval = RetrieverOutput(
             ...     doc_tokens=torch.LongTensor([[[[1, 2, 3]]], [[[4, 5, 6]]]]),
             ...     doc_attention_mask=torch.BoolTensor([[[[True, True, True]]], [[[True, True, True]]]]),
@@ -79,10 +78,9 @@ class MeanPooledRetrievalEncoder(nn.Module):
 
         Returns:
             ``RetrievalEncoderOutput`` where ``retrieval_memory`` has shape
-            ``(B, D_mem)``.
+            ``(B, 1, 1, 1, D_mem)``.
 
         Examples:
-            >>> import torch
             >>> retrieval = RetrieverOutput(
             ...     doc_tokens=torch.LongTensor([[[[1, 2, 0]]], [[[4, 0, 0]]]]),
             ...     doc_attention_mask=torch.BoolTensor([[[[True, True, False]]], [[[True, False, False]]]]),
@@ -90,7 +88,7 @@ class MeanPooledRetrievalEncoder(nn.Module):
             >>> encoder = MeanPooledRetrievalEncoder(vocab_size=8, embedding_dim=2)
             >>> out = encoder.encode(retrieval)
             >>> tuple(out.retrieval_memory.shape)
-            (2, 2)
+            (2, 1, 1, 1, 2)
             >>> out.retrieval_memory.dtype
             torch.float32
         """
@@ -100,7 +98,7 @@ class MeanPooledRetrievalEncoder(nn.Module):
         reduce_dims = tuple(range(1, token_features.ndim - 1))
         counts = mask.sum(dim=reduce_dims).clamp_min(1).to(dtype=token_features.dtype)
         pooled = masked_features.sum(dim=reduce_dims) / counts
-        return RetrievalEncoderOutput(retrieval_memory=pooled)
+        return RetrievalEncoderOutput(retrieval_memory=pooled[:, None, None, None, :])
 
     def forward(self, retrieval: RetrieverOutput) -> RetrievalEncoderOutput:
         """Call ``encode``."""
