@@ -16,7 +16,6 @@ from .pooling import IdentityPooling, MaskedMeanPooling
 from .query_projection import LinearQueryProjector, QueryProjector, SequenceMeanQueryProjector
 from .retrievers import (
     HFDatasetRetriever,
-    HFDatasetSnapshotBuilder,
     InMemoryRetriever,
     Retriever,
     load_in_memory_retriever,
@@ -38,7 +37,6 @@ __all__ = [
     "FusionInput",
     "FusionOutput",
     "HFDatasetRetriever",
-    "HFDatasetSnapshotBuilder",
     "IdentityPooling",
     "InMemoryRetriever",
     "InMemoryRetrieverConfig",
