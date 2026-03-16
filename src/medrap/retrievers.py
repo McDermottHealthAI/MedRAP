@@ -198,6 +198,88 @@ class HFDatasetRetriever(Retriever):
             ValueError: If ``k`` is out of range, required payload columns are
                 missing, configured optional columns are missing, or the FAISS
                 index is not attached.
+
+        Examples:
+            >>> from datasets import Dataset
+            >>> dataset = Dataset.from_dict(
+            ...     {
+            ...         "doc_tokens": [[10, 11], [20, 21]],
+            ...         "doc_attention_mask": [[1, 1], [1, 0]],
+            ...         "index_embeddings": [[1.0, 0.0], [0.0, 1.0]],
+            ...     }
+            ... )
+            >>> dataset.add_faiss_index(column="index_embeddings", index_name="retrieval")
+            Dataset({
+                ...
+            })
+            >>> HFDatasetRetriever(
+            ...     dataset=dataset,
+            ...     index_name="retrieval",
+            ...     doc_tokens_column="doc_tokens",
+            ...     doc_attention_mask_column="doc_attention_mask",
+            ...     k=3,
+            ... )  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: k must be between 1 and the number of dataset rows
+
+            >>> missing_required = Dataset.from_dict(
+            ...     {
+            ...         "doc_attention_mask": [[1, 1]],
+            ...         "index_embeddings": [[1.0, 0.0]],
+            ...     }
+            ... )
+            >>> missing_required.add_faiss_index(column="index_embeddings", index_name="retrieval")
+            Dataset({
+                ...
+            })
+            >>> HFDatasetRetriever(
+            ...     dataset=missing_required,
+            ...     index_name="retrieval",
+            ...     doc_tokens_column="doc_tokens",
+            ...     doc_attention_mask_column="doc_attention_mask",
+            ... )  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: dataset is missing required columns: ['doc_tokens']
+
+            >>> missing_optional = Dataset.from_dict(
+            ...     {
+            ...         "doc_tokens": [[10, 11]],
+            ...         "doc_attention_mask": [[1, 1]],
+            ...         "index_embeddings": [[1.0, 0.0]],
+            ...     }
+            ... )
+            >>> missing_optional.add_faiss_index(column="index_embeddings", index_name="retrieval")
+            Dataset({
+                ...
+            })
+            >>> HFDatasetRetriever(
+            ...     dataset=missing_optional,
+            ...     index_name="retrieval",
+            ...     doc_tokens_column="doc_tokens",
+            ...     doc_attention_mask_column="doc_attention_mask",
+            ...     doc_ids_column="doc_ids",
+            ... )  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: dataset is missing optional columns: ['doc_ids']
+
+            >>> no_index = Dataset.from_dict(
+            ...     {
+            ...         "doc_tokens": [[10, 11]],
+            ...         "doc_attention_mask": [[1, 1]],
+            ...     }
+            ... )
+            >>> HFDatasetRetriever(
+            ...     dataset=no_index,
+            ...     index_name="retrieval",
+            ...     doc_tokens_column="doc_tokens",
+            ...     doc_attention_mask_column="doc_attention_mask",
+            ... )  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: dataset does not have a FAISS index named 'retrieval'
         """
         dataset = self._dataset
 
@@ -280,13 +362,6 @@ class HFDatasetRetriever(Retriever):
                 - optional ``doc_ids`` shaped ``(B, R, K)``
                 - optional ``doc_key_embeddings`` shaped ``(B, R, K, D_ret)``
         """
-        if row_indices.ndim != 3:
-            raise ValueError("row_indices must have shape (B, R, K)")
-        if scores.shape != row_indices.shape:
-            raise ValueError("scores must have the same shape as row_indices")
-        if (row_indices < 0).any():
-            raise RuntimeError("retrieval returned invalid dataset row indices")
-
         batch_size, n_retrieval_steps, k = row_indices.shape
         flat_row_indices = row_indices.reshape(-1).tolist()
         rows = self._dataset[flat_row_indices]
@@ -355,15 +430,20 @@ class HFDatasetRetriever(Retriever):
             ...         "doc_attention_mask": [[1, 1], [1, 0]],
             ...         "doc_ids": [7, 8],
             ...         "index_embeddings": [[1.0, 0.0], [0.0, 1.0]],
+            ...         "doc_key_embeddings": [[1.0, 0.0], [0.0, 1.0]],
             ...     }
             ... )
-            >>> _ = dataset.add_faiss_index(column="index_embeddings", index_name="retrieval")
+            >>> dataset.add_faiss_index(column="index_embeddings", index_name="retrieval")
+            Dataset({
+                ...
+            })
             >>> retriever = HFDatasetRetriever(
             ...     dataset=dataset,
             ...     index_name="retrieval",
             ...     doc_tokens_column="doc_tokens",
             ...     doc_attention_mask_column="doc_attention_mask",
             ...     doc_ids_column="doc_ids",
+            ...     doc_key_embeddings_column="doc_key_embeddings",
             ...     k=1,
             ... )
             >>> out = retriever(torch.FloatTensor([[[1.0, 0.0]], [[0.0, 1.0]]]))
@@ -371,6 +451,8 @@ class HFDatasetRetriever(Retriever):
             (2, 1, 1, 2)
             >>> out.doc_ids.tolist()
             [[[7]], [[8]]]
+            >>> tuple(out.doc_key_embeddings.shape)
+            (2, 1, 1, 2)
             >>> retriever.retrieve(torch.ones(2, 2))  # doctest: +ELLIPSIS
             Traceback (most recent call last):
                 ...
