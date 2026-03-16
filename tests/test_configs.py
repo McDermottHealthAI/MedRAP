@@ -3,11 +3,16 @@ from meds_torchdata import MEDSTorchBatch
 
 from medrap.configs import (
     ConcatFusionConfig,
+    HFDatasetRetrieverConfig,
     InMemoryRetrieverConfig,
     LinearHeadConfig,
     LinearQueryProjectorConfig,
     MaskedMeanPoolingConfig,
     PipelineConfig,
+    PrepareRetrievalDatasetAppConfig,
+    PrepareRetrievalDatasetConfig,
+    RetrievalDatasetIndexConfig,
+    RetrievalDatasetOutputConfig,
     TokenEmbeddingEncoderConfig,
     bool_tensor_config,
     default_pipeline_config,
@@ -85,3 +90,19 @@ def test_pipeline_config_allows_meaningful_module_overrides() -> None:
     assert isinstance(model.fusion, ConcatFusion)
     assert isinstance(model.pooling, MaskedMeanPooling)
     assert isinstance(model.head, LinearHead)
+
+
+def test_prepare_retrieval_dataset_config_uses_stable_defaults() -> None:
+    cfg = PrepareRetrievalDatasetAppConfig(
+        prep=PrepareRetrievalDatasetConfig(output=RetrievalDatasetOutputConfig(output_dir="/tmp/prepared"))
+    )
+
+    assert cfg.prep.index == RetrievalDatasetIndexConfig()
+    assert cfg.prep.output.output_dir == "/tmp/prepared"
+
+
+def test_pipeline_config_can_use_saved_hf_dataset_retriever_loader() -> None:
+    cfg = PipelineConfig(retriever=HFDatasetRetrieverConfig(dataset_path="/tmp/retrieval-artifact"))
+
+    assert cfg.retriever.dataset_path == "/tmp/retrieval-artifact"
+    assert cfg.retriever.index_name == "retrieval"

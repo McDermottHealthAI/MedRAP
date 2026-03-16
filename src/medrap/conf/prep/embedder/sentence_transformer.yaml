@@ -1,0 +1,3 @@
+_target_: medrap.preparation.load_sentence_transformer
+model_name: ???
+device: cpu

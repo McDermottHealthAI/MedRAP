@@ -1,0 +1,15 @@
+defaults:
+  - prep/source: load_dataset
+  - prep/document: ordered_fields
+  - prep/tokenizer: hf_auto
+  - prep/embedder: sentence_transformer
+  - prep/index: default
+  - prep/output: default
+  - _self_
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: false

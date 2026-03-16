@@ -1,0 +1,4 @@
+_target_: medrap.preparation.OrderedFieldDocumentRenderer
+fields: ???
+separator: "\n"
+include_field_names: false
