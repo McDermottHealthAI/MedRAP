@@ -129,6 +129,12 @@ class BinaryClassificationTask(SupervisedTask):
             (2,)
             >>> targets.dtype
             torch.float32
+            >>> bad_batch = make_supervised_batch()
+            >>> bad_batch.boolean_value = torch.BoolTensor([[True, False], [False, True]])
+            >>> task.extract_targets(bad_batch)  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: BinaryClassificationTask expects boolean_value shaped (B,) or (B, 1); got (2, 2)
         """
         targets = getattr(batch, self.label_field, None)
         if not isinstance(targets, Tensor):
@@ -154,13 +160,19 @@ class BinaryClassificationTask(SupervisedTask):
             to a scalar tensor with shape ``()``.
 
         Examples:
-            >>> import torch
             >>> task = BinaryClassificationTask()
             >>> metrics = task.metrics(torch.FloatTensor([[2.0], [-2.0]]), torch.BoolTensor([True, False]))
             >>> sorted(metrics)
             ['accuracy']
             >>> float(metrics["accuracy"])
             1.0
+            >>> task.metrics(
+            ...     torch.FloatTensor([2.0, -2.0]),
+            ...     torch.BoolTensor([True, False]),
+            ... )  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: BinaryClassificationTask expects logits shaped (B, 1); got (2,)
         """
         flat_logits = _flatten_binary_logits(predictions, owner="BinaryClassificationTask")
         flat_targets = _flatten_binary_targets(targets, owner="BinaryClassificationTask").bool()
@@ -189,12 +201,18 @@ class BinaryClassificationLoss(SupervisedLoss):
             Tensor: Scalar loss tensor with shape ``()``.
 
         Examples:
-            >>> import torch
             >>> loss_fn = BinaryClassificationLoss()
             >>> predictions = ModelOutput(logits=torch.FloatTensor([[0.0], [2.0]]))
             >>> targets = torch.BoolTensor([False, True])
             >>> round(float(loss_fn(predictions, targets)), 4)
             0.41
+            >>> loss_fn(
+            ...     torch.FloatTensor([[0.0], [2.0]]),
+            ...     {"labels": torch.FloatTensor([0.0, 1.0])},
+            ... )  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: BinaryClassificationLoss expects tensor targets, not structured targets.
         """
         flat_logits = _flatten_binary_logits(predictions, owner="BinaryClassificationLoss")
         flat_targets = _flatten_binary_targets(targets, owner="BinaryClassificationLoss")
