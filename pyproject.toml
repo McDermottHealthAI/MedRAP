@@ -19,6 +19,7 @@ classifiers = [
 ]
 dependencies = [
   "datasets>=4.7.0",
+  "faiss-cpu",
   "hydra-core",
   "hydra-zen",
   "meds-torch-data",
@@ -34,8 +35,6 @@ docs = []
 
 [tool.setuptools.package-data]
 medrap = ["conf/**/*.yaml"]
-
-[project.optional-dependencies]
 
 [project.scripts]
 medrap = "medrap.cli:main"
