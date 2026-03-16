@@ -13,7 +13,12 @@ from .heads import LinearHead
 from .model import RetrievalAugmentedModel
 from .pooling import IdentityPooling, MaskedMeanPooling
 from .query_projection import LinearQueryProjector, QueryProjector, SequenceMeanQueryProjector
-from .retrievers import InMemoryRetriever, Retriever, load_in_memory_retriever
+from .retrievers import (
+    HFDatasetRetriever,
+    InMemoryRetriever,
+    Retriever,
+    load_in_memory_retriever,
+)
 from .types import (
     EncoderOutput,
     FusionInput,
@@ -30,6 +35,7 @@ __all__ = [
     "EncoderOutput",
     "FusionInput",
     "FusionOutput",
+    "HFDatasetRetriever",
     "IdentityPooling",
     "InMemoryRetriever",
     "InMemoryRetrieverConfig",

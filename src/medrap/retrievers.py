@@ -1,10 +1,15 @@
-"""Retrieval backends for RAP pipeline composition."""
+"""Retrieval backends for RAP pipeline composition.
+
+This module provides retriever implementations for small in-memory corpora and for prepared Hugging Face
+datasets with attached nearest-neighbor indexes.
+"""
 
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import cast
 
 import torch
+from datasets import Dataset
 from torch import Tensor, nn
 
 from .types import RetrieverOutput
@@ -87,7 +92,7 @@ class InMemoryRetriever(Retriever):
 
         Args:
             query_embeddings: Query tensor with shape ``(B, R, D_ret)`` on any
-            device.
+                device.
 
         Returns:
             ``RetrieverOutput`` on same device as ``query_embeddings`` with:
@@ -143,6 +148,324 @@ class InMemoryRetriever(Retriever):
             doc_scores=top_scores,
             doc_ids=retrieved_doc_ids,
             doc_key_embeddings=retrieved_doc_key_embeddings,
+        )
+
+
+class HFDatasetRetriever(Retriever):
+    """Dataset-backed FAISS retriever.
+
+    Uses a prepared Hugging Face dataset as the document store and an attached
+    FAISS index for nearest-neighbor retrieval.
+
+    Args:
+        dataset: Prepared dataset containing retrieval payload columns and an
+            attached FAISS index.
+        index_name: Name of the attached FAISS index on ``dataset``.
+        doc_tokens_column: Column containing document token ids.
+        doc_attention_mask_column: Column containing document attention masks.
+        k: Number of documents to return per query.
+        doc_ids_column: Optional column containing document ids.
+        doc_key_embeddings_column: Optional column containing document key
+            embeddings.
+    """
+
+    def __init__(
+        self,
+        *,
+        dataset: Dataset,
+        index_name: str,
+        doc_tokens_column: str,
+        doc_attention_mask_column: str,
+        k: int = 1,
+        doc_ids_column: str | None = None,
+        doc_key_embeddings_column: str | None = None,
+    ) -> None:
+        super().__init__()
+
+        self.k = k
+        self._doc_tokens_column = doc_tokens_column
+        self._doc_attention_mask_column = doc_attention_mask_column
+        self._doc_ids_column = doc_ids_column
+        self._doc_key_embeddings_column = doc_key_embeddings_column
+        self._dataset = dataset
+        self._index_name = index_name
+        self._validate_dataset()
+
+    def _validate_dataset(self) -> None:
+        """Validate dataset columns and attached index.
+
+        Raises:
+            ValueError: If ``k`` is out of range, required payload columns are
+                missing, configured optional columns are missing, or the FAISS
+                index is not attached.
+
+        Examples:
+            >>> from datasets import Dataset
+            >>> dataset = Dataset.from_dict(
+            ...     {
+            ...         "doc_tokens": [[10, 11], [20, 21]],
+            ...         "doc_attention_mask": [[1, 1], [1, 0]],
+            ...         "index_embeddings": [[1.0, 0.0], [0.0, 1.0]],
+            ...     }
+            ... )
+            >>> dataset.add_faiss_index(column="index_embeddings", index_name="retrieval")
+            Dataset({
+                ...
+            })
+            >>> HFDatasetRetriever(
+            ...     dataset=dataset,
+            ...     index_name="retrieval",
+            ...     doc_tokens_column="doc_tokens",
+            ...     doc_attention_mask_column="doc_attention_mask",
+            ...     k=3,
+            ... )  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: k must be between 1 and the number of dataset rows
+
+            >>> missing_required = Dataset.from_dict(
+            ...     {
+            ...         "doc_attention_mask": [[1, 1]],
+            ...         "index_embeddings": [[1.0, 0.0]],
+            ...     }
+            ... )
+            >>> missing_required.add_faiss_index(column="index_embeddings", index_name="retrieval")
+            Dataset({
+                ...
+            })
+            >>> HFDatasetRetriever(
+            ...     dataset=missing_required,
+            ...     index_name="retrieval",
+            ...     doc_tokens_column="doc_tokens",
+            ...     doc_attention_mask_column="doc_attention_mask",
+            ... )  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: dataset is missing required columns: ['doc_tokens']
+
+            >>> missing_optional = Dataset.from_dict(
+            ...     {
+            ...         "doc_tokens": [[10, 11]],
+            ...         "doc_attention_mask": [[1, 1]],
+            ...         "index_embeddings": [[1.0, 0.0]],
+            ...     }
+            ... )
+            >>> missing_optional.add_faiss_index(column="index_embeddings", index_name="retrieval")
+            Dataset({
+                ...
+            })
+            >>> HFDatasetRetriever(
+            ...     dataset=missing_optional,
+            ...     index_name="retrieval",
+            ...     doc_tokens_column="doc_tokens",
+            ...     doc_attention_mask_column="doc_attention_mask",
+            ...     doc_ids_column="doc_ids",
+            ... )  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: dataset is missing optional columns: ['doc_ids']
+
+            >>> no_index = Dataset.from_dict(
+            ...     {
+            ...         "doc_tokens": [[10, 11]],
+            ...         "doc_attention_mask": [[1, 1]],
+            ...     }
+            ... )
+            >>> HFDatasetRetriever(
+            ...     dataset=no_index,
+            ...     index_name="retrieval",
+            ...     doc_tokens_column="doc_tokens",
+            ...     doc_attention_mask_column="doc_attention_mask",
+            ... )  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: dataset does not have a FAISS index named 'retrieval'
+        """
+        dataset = self._dataset
+
+        if self.k < 1 or self.k > len(dataset):
+            raise ValueError("k must be between 1 and the number of dataset rows")
+
+        dataset_columns = set(dataset.column_names)
+        required_columns = {self._doc_tokens_column, self._doc_attention_mask_column}
+        missing_required = required_columns - dataset_columns
+        if missing_required:
+            raise ValueError(f"dataset is missing required columns: {sorted(missing_required)}")
+
+        optional_columns = [self._doc_ids_column, self._doc_key_embeddings_column]
+        missing_optional = [col for col in optional_columns if col is not None if col not in dataset_columns]
+        if missing_optional:
+            raise ValueError(f"dataset is missing optional columns: {sorted(missing_optional)}")
+
+        try:
+            dataset.get_index(self._index_name)
+        except Exception as exc:
+            raise ValueError(f"dataset does not have a FAISS index named {self._index_name!r}") from exc
+
+    def _search_index(self, query_embeddings: Tensor) -> tuple[Tensor, Tensor]:
+        """Search the attached dataset FAISS index.
+
+        Args:
+            query_embeddings: Query tensor with shape ``(B, R, D_ret)``.
+
+        Returns:
+            Tuple ``(scores, row_indices)`` where both tensors have shape
+            ``(B, R, K)``.
+        """
+        batch_size, n_retrieval_steps, d_ret = query_embeddings.shape
+
+        flat_queries = (
+            query_embeddings.detach()
+            .to(torch.float32)
+            .cpu()
+            .reshape(batch_size * n_retrieval_steps, d_ret)
+            .numpy()
+        )
+
+        total_scores, total_indices = self._dataset.search_batch(
+            self._index_name,
+            flat_queries,
+            k=self.k,
+        )
+
+        scores = torch.as_tensor(total_scores, dtype=torch.float32).reshape(
+            batch_size,
+            n_retrieval_steps,
+            self.k,
+        )
+        row_indices = torch.as_tensor(total_indices, dtype=torch.long).reshape(
+            batch_size,
+            n_retrieval_steps,
+            self.k,
+        )
+        return scores, row_indices
+
+    def _materialize_output(
+        self,
+        *,
+        row_indices: Tensor,
+        scores: Tensor,
+        output_device: torch.device,
+    ) -> RetrieverOutput:
+        """Materialize retrieved dataset rows into ``RetrieverOutput``.
+
+        Args:
+            row_indices: Retrieved dataset row indices with shape ``(B, R, K)``.
+            scores: Retrieval scores with shape ``(B, R, K)``.
+            output_device: Device to place the materialized tensors on.
+
+        Returns:
+            ``RetrieverOutput`` with:
+                - ``doc_tokens`` shaped ``(B, R, K, S_doc)``
+                - ``doc_attention_mask`` shaped ``(B, R, K, S_doc)``
+                - ``doc_scores`` shaped ``(B, R, K)``
+                - optional ``doc_ids`` shaped ``(B, R, K)``
+                - optional ``doc_key_embeddings`` shaped ``(B, R, K, D_ret)``
+        """
+        batch_size, n_retrieval_steps, k = row_indices.shape
+        flat_row_indices = row_indices.reshape(-1).tolist()
+        rows = self._dataset[flat_row_indices]
+
+        doc_tokens = torch.as_tensor(
+            rows[self._doc_tokens_column],
+            dtype=torch.long,
+            device=output_device,
+        ).reshape(batch_size, n_retrieval_steps, k, -1)
+
+        doc_attention_mask = torch.as_tensor(
+            rows[self._doc_attention_mask_column],
+            dtype=torch.bool,
+            device=output_device,
+        ).reshape(batch_size, n_retrieval_steps, k, -1)
+
+        doc_ids = None
+        if self._doc_ids_column is not None:
+            doc_ids = torch.as_tensor(
+                rows[self._doc_ids_column],
+                dtype=torch.long,
+                device=output_device,
+            ).reshape(batch_size, n_retrieval_steps, k)
+
+        doc_key_embeddings = None
+        if self._doc_key_embeddings_column is not None:
+            doc_key_embeddings = torch.as_tensor(
+                rows[self._doc_key_embeddings_column],
+                dtype=torch.float32,
+                device=output_device,
+            ).reshape(batch_size, n_retrieval_steps, k, -1)
+
+        return RetrieverOutput(
+            doc_tokens=doc_tokens,
+            doc_attention_mask=doc_attention_mask,
+            doc_scores=scores.to(output_device),
+            doc_ids=doc_ids,
+            doc_key_embeddings=doc_key_embeddings,
+        )
+
+    def retrieve(self, query_embeddings: Tensor) -> RetrieverOutput:
+        """Retrieve top-k documents for each query.
+
+        Args:
+            query_embeddings: Query tensor with shape ``(B, R, D_ret)``. Queries
+            maybe on any PyTorch device.
+
+        Returns:
+            ``RetrieverOutput`` on the same device as
+            ``query_embeddings`` with:
+                - ``doc_tokens`` shaped ``(B, R, K, S_doc)``
+                - ``doc_attention_mask`` shaped ``(B, R, K, S_doc)``
+                - ``doc_scores`` shaped ``(B, R, K)``
+                - optional ``doc_ids`` shaped ``(B, R, K)``
+                - optional ``doc_key_embeddings`` shaped ``(B, R, K, D_ret)``
+
+        Search is performed through the Hugging Face dataset index. Query
+        embeddings are moved to CPU/NumPy internally for search, and retrieved
+        tensors are materialized back on the query device.
+
+        Examples:
+            >>> from datasets import Dataset
+            >>> dataset = Dataset.from_dict(
+            ...     {
+            ...         "doc_tokens": [[10, 11], [20, 21]],
+            ...         "doc_attention_mask": [[1, 1], [1, 0]],
+            ...         "doc_ids": [7, 8],
+            ...         "index_embeddings": [[1.0, 0.0], [0.0, 1.0]],
+            ...         "doc_key_embeddings": [[1.0, 0.0], [0.0, 1.0]],
+            ...     }
+            ... )
+            >>> dataset.add_faiss_index(column="index_embeddings", index_name="retrieval")
+            Dataset({
+                ...
+            })
+            >>> retriever = HFDatasetRetriever(
+            ...     dataset=dataset,
+            ...     index_name="retrieval",
+            ...     doc_tokens_column="doc_tokens",
+            ...     doc_attention_mask_column="doc_attention_mask",
+            ...     doc_ids_column="doc_ids",
+            ...     doc_key_embeddings_column="doc_key_embeddings",
+            ...     k=1,
+            ... )
+            >>> out = retriever(torch.FloatTensor([[[1.0, 0.0]], [[0.0, 1.0]]]))
+            >>> tuple(out.doc_tokens.shape)
+            (2, 1, 1, 2)
+            >>> out.doc_ids.tolist()
+            [[[7]], [[8]]]
+            >>> tuple(out.doc_key_embeddings.shape)
+            (2, 1, 1, 2)
+            >>> retriever.retrieve(torch.ones(2, 2))  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: query_embeddings must have shape (B, R, D_ret)
+        """
+        if query_embeddings.ndim != 3:
+            raise ValueError("query_embeddings must have shape (B, R, D_ret)")
+
+        scores, row_indices = self._search_index(query_embeddings)
+        return self._materialize_output(
+            row_indices=row_indices,
+            scores=scores,
+            output_device=query_embeddings.device,
         )
 
 
