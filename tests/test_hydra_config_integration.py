@@ -27,7 +27,7 @@ def test_train_config_composes_and_instantiates_model() -> None:
     assert isinstance(model, RetrievalAugmentedModel)
     assert isinstance(model.retriever, InMemoryRetriever)
     out = model.forward(_example_batch())
-    assert out.logits.shape == (2, 1, 2)
+    assert out.logits.shape == (2, 2)
     assert out.logits.dtype == torch.float32
 
 

@@ -51,7 +51,7 @@ def test_trainable_stage_parameters_are_registered_on_model() -> None:
     out = model(_example_batch())
 
     assert isinstance(out.logits, torch.Tensor)
-    assert out.logits.shape == (2, 1, 2)
+    assert out.logits.shape == (2, 2)
     assert "head.linear.weight" in model.state_dict()
 
 

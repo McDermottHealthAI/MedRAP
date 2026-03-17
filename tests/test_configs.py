@@ -61,7 +61,7 @@ def test_pipeline_config_allows_overriding_retriever_values() -> None:
 
     out = model.forward(_example_batch())
 
-    assert out.logits.shape == (2, 1, 2)
+    assert out.logits.shape == (2, 2)
     assert out.logits.dtype == torch.float32
 
 
