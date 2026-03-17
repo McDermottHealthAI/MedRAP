@@ -112,7 +112,9 @@ class ConcatFusion(FusionModule):
             [[[1.0, 2.0, 10.0, 20.0]], [[3.0, 4.0, 30.0, 40.0]]]
             >>> tuple(fusion(fusion_input).fused_state.shape)
             (2, 1, 4)
-            >>> bad = FusionInput(patient_state=torch.randn(2, 4), retrieval_memory=torch.randn(2, 1, 1, 1, 3))
+            >>> bad = FusionInput(
+            ...     patient_state=torch.randn(2, 4), retrieval_memory=torch.randn(2, 1, 1, 1, 3)
+            ... )
             >>> fusion.fuse(bad)  # doctest: +ELLIPSIS
             Traceback (most recent call last):
                 ...
@@ -122,8 +124,7 @@ class ConcatFusion(FusionModule):
         rm = fusion_input.retrieval_memory
         if ps.ndim != 3 or ps.shape[1] != 1:
             raise ValueError(
-                "ConcatFusion expects patient_state shaped (B, 1, D_ehr), "
-                f"got {tuple(ps.shape)}"
+                f"ConcatFusion expects patient_state shaped (B, 1, D_ehr), got {tuple(ps.shape)}"
             )
         rm = rm.view(rm.shape[0], 1, rm.shape[-1])
         return FusionOutput(fused_state=torch.cat((ps.float(), rm.float()), dim=-1))
