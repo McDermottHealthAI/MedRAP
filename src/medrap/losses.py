@@ -1,7 +1,7 @@
 """This module provides loss functions for retrieval-augmented pretraining."""
 
 import torch
-import torch.nn.functional as F
+import torch.nn.functional as functional
 from torch import Tensor, nn
 
 
@@ -32,7 +32,9 @@ class MarginalizedRetrievalLoss(nn.Module):
         >>> per_doc_logits = torch.randn(4, 1, 5)
         >>> targets = torch.randint(0, 5, (4,))
         >>> loss = MarginalizedRetrievalLoss()(
-        ...     per_doc_logits=per_doc_logits, doc_scores=torch.zeros(4, 1), targets=targets,
+        ...     per_doc_logits=per_doc_logits,
+        ...     doc_scores=torch.zeros(4, 1),
+        ...     targets=targets,
         ... )
         >>> expected = torch.nn.functional.cross_entropy(per_doc_logits.squeeze(1), targets)
         >>> torch.isclose(loss, expected, atol=1e-5)
@@ -45,9 +47,11 @@ class MarginalizedRetrievalLoss(nn.Module):
         >>> doc_scores = torch.tensor([[100.0, -100.0]])
         >>> targets = torch.tensor([0])
         >>> loss = MarginalizedRetrievalLoss()(
-        ...     per_doc_logits=per_doc_logits, doc_scores=doc_scores, targets=targets,
+        ...     per_doc_logits=per_doc_logits,
+        ...     doc_scores=doc_scores,
+        ...     targets=targets,
         ... )
-        >>> expected = F.cross_entropy(per_doc_logits[:, 0, :], targets)
+        >>> expected = functional.cross_entropy(per_doc_logits[:, 0, :], targets)
         >>> torch.isclose(loss, expected, atol=1e-3)
         tensor(True)
 
@@ -56,7 +60,9 @@ class MarginalizedRetrievalLoss(nn.Module):
         >>> per_doc_logits = torch.randn(2, 3, 4, requires_grad=True)
         >>> doc_scores = torch.randn(2, 3, requires_grad=True)
         >>> loss = MarginalizedRetrievalLoss()(
-        ...     per_doc_logits=per_doc_logits, doc_scores=doc_scores, targets=torch.tensor([0, 2]),
+        ...     per_doc_logits=per_doc_logits,
+        ...     doc_scores=doc_scores,
+        ...     targets=torch.tensor([0, 2]),
         ... )
         >>> loss.backward()
         >>> per_doc_logits.grad is not None and doc_scores.grad is not None
@@ -91,12 +97,12 @@ class MarginalizedRetrievalLoss(nn.Module):
             >>> torch.isclose(loss, torch.log(torch.tensor(2.0)), atol=1e-4)
             tensor(True)
         """
-        B, K, C = per_doc_logits.shape
+        batch_size, num_docs, _ = per_doc_logits.shape
 
-        log_p_ret = F.log_softmax(doc_scores, dim=-1)
-        log_p_pred = F.log_softmax(per_doc_logits, dim=-1)
+        log_p_ret = functional.log_softmax(doc_scores, dim=-1)
+        log_p_pred = functional.log_softmax(per_doc_logits, dim=-1)
 
-        target_idx = targets.unsqueeze(1).unsqueeze(2).expand(B, K, 1)
+        target_idx = targets.unsqueeze(1).unsqueeze(2).expand(batch_size, num_docs, 1)
         log_p_pred_y = log_p_pred.gather(2, target_idx).squeeze(2)
 
         log_marginal = torch.logsumexp(log_p_ret + log_p_pred_y, dim=-1)
