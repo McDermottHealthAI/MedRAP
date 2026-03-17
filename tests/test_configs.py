@@ -6,7 +6,6 @@ from medrap.configs import (
     BinaryClassificationTaskConfig,
     ConcatFusionConfig,
     InMemoryRetrieverConfig,
-    LightningDemoTrainerConfig,
     LinearHeadConfig,
     LinearQueryProjectorConfig,
     MaskedMeanPoolingConfig,
@@ -19,7 +18,6 @@ from medrap.configs import (
     default_pipeline_config,
     float_tensor_config,
     instantiate_model,
-    instantiate_trainer,
     instantiate_training_module,
     long_tensor_config,
 )
@@ -103,18 +101,15 @@ def test_train_config_instantiates_supervised_lightning_stack() -> None:
             module=MedRAPSupervisedLightningModuleConfig(),
             task=BinaryClassificationTaskConfig(),
             loss=BinaryClassificationLossConfig(),
-            trainer=LightningDemoTrainerConfig(),
         )
     )
 
     lightning_module = instantiate_training_module(cfg)
-    trainer = instantiate_trainer(cfg)
 
     assert isinstance(lightning_module, MedRAPSupervisedLightningModule)
     assert isinstance(lightning_module.model, RetrievalAugmentedModel)
     assert isinstance(lightning_module.task, BinaryClassificationTask)
     assert isinstance(lightning_module.loss_fn, BinaryClassificationLoss)
-    assert trainer.__class__.__name__ == "Trainer"
 
 
 def test_default_train_config_aligns_head_with_binary_task() -> None:

@@ -7,7 +7,6 @@ from concrete components.
 from dataclasses import dataclass, field
 from typing import Any, cast
 
-import lightning
 import torch
 from hydra.core.config_store import ConfigStore
 from hydra_zen import builds, instantiate
@@ -135,18 +134,6 @@ MedRAPSupervisedLightningModuleConfig = builds_any(
     MedRAPSupervisedLightningModule,
     zen_dataclass={"cls_name": "MedRAPSupervisedLightningModuleConfig"},
 )
-LightningDemoTrainerConfig = builds_any(
-    lightning.Trainer,
-    max_epochs=1,
-    accelerator="cpu",
-    devices=1,
-    logger=False,
-    enable_checkpointing=False,
-    enable_model_summary=False,
-    enable_progress_bar=False,
-    log_every_n_steps=1,
-    zen_dataclass={"cls_name": "LightningDemoTrainerConfig"},
-)
 
 
 @dataclass
@@ -186,7 +173,6 @@ class TrainingConfig:
     module: ComponentConfig = field(default_factory=MedRAPSupervisedLightningModuleConfig)
     task: ComponentConfig = field(default_factory=BinaryClassificationTaskConfig)
     loss: ComponentConfig = field(default_factory=BinaryClassificationLossConfig)
-    trainer: ComponentConfig = field(default_factory=LightningDemoTrainerConfig)
 
 
 @dataclass
@@ -241,24 +227,3 @@ def instantiate_training_module(config: RAPTrainConfig) -> MedRAPSupervisedLight
     task = instantiate_any(config.training.task)
     loss_fn = instantiate_any(config.training.loss)
     return instantiate_any(config.training.module, model=plain_model, task=task, loss_fn=loss_fn)
-
-
-def instantiate_trainer(config: RAPTrainConfig) -> lightning.Trainer:
-    """Instantiate the configured Lightning trainer.
-
-    Args:
-        config: Training config containing the trainer settings under
-            ``config.training.trainer``.
-
-    Returns:
-        lightning.Trainer: Configured Trainer instance. In the default demo config,
-        this uses CPU execution with ``max_epochs=1``.
-
-    Examples:
-        >>> trainer = instantiate_trainer(RAPTrainConfig())
-        >>> trainer.__class__.__name__
-        'Trainer'
-        >>> trainer.max_epochs
-        1
-    """
-    return instantiate_any(config.training.trainer)
