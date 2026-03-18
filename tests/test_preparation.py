@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import types
 from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
-from datasets import Dataset
+from datasets import Dataset, DatasetDict
 from hydra_zen import builds
 
 from medrap.configs import (
@@ -20,6 +21,8 @@ from medrap.preparation import (
     OrderedFieldDocumentRenderer,
     load_hf_dataset_from_disk,
     load_hf_dataset_source,
+    load_hf_tokenizer,
+    load_sentence_transformer,
     prepare_retrieval_dataset,
 )
 from medrap.retrievers import load_hf_dataset_retriever
@@ -70,6 +73,21 @@ def test_load_hf_dataset_source_supports_local_data_files(tmp_path: Path) -> Non
     assert dataset["question"] == ["alpha", "beta"]
 
 
+def test_ordered_field_document_renderer_rejects_empty_fields() -> None:
+    with pytest.raises(ValueError, match="fields must contain at least one field name"):
+        OrderedFieldDocumentRenderer(fields=[])
+
+
+def test_load_hf_dataset_source_rejects_dataset_dict(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "medrap.preparation.load_dataset",
+        lambda **_kwargs: DatasetDict({"train": Dataset.from_dict({"text": ["alpha"]})}),
+    )
+
+    with pytest.raises(TypeError, match="load_dataset must return a datasets.Dataset"):
+        load_hf_dataset_source(path="stub", split="train")
+
+
 def test_load_hf_dataset_from_disk_round_trips_saved_dataset(tmp_path: Path) -> None:
     source_path = tmp_path / "source"
     Dataset.from_dict({"text": ["alpha", "beta"]}).save_to_disk(str(source_path))
@@ -78,6 +96,54 @@ def test_load_hf_dataset_from_disk_round_trips_saved_dataset(tmp_path: Path) -> 
 
     assert len(dataset) == 2
     assert dataset["text"] == ["alpha", "beta"]
+
+
+def test_load_hf_dataset_from_disk_rejects_dataset_dict(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "medrap.preparation.load_from_disk",
+        lambda _path: DatasetDict({"train": Dataset.from_dict({"text": ["alpha"]})}),
+    )
+
+    with pytest.raises(TypeError, match="load_from_disk must return a datasets.Dataset"):
+        load_hf_dataset_from_disk(dataset_path="/tmp/source")
+
+
+def test_load_hf_tokenizer_uses_auto_tokenizer(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class _FakeAutoTokenizer:
+        @staticmethod
+        def from_pretrained(model_name: str) -> str:
+            calls.append(model_name)
+            return "stub-tokenizer"
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "transformers",
+        types.SimpleNamespace(AutoTokenizer=_FakeAutoTokenizer),
+    )
+
+    assert load_hf_tokenizer(model_name="stub-model") == "stub-tokenizer"
+    assert calls == ["stub-model"]
+
+
+def test_load_sentence_transformer_uses_sentence_transformers(monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    class _FakeSentenceTransformer:
+        def __init__(self, model_name: str, *, device: str) -> None:
+            calls.append((model_name, device))
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "sentence_transformers",
+        types.SimpleNamespace(SentenceTransformer=_FakeSentenceTransformer),
+    )
+
+    model = load_sentence_transformer(model_name="stub-model", device="cuda:0")
+
+    assert isinstance(model, _FakeSentenceTransformer)
+    assert calls == [("stub-model", "cuda:0")]
 
 
 def test_prepare_retrieval_dataset_saves_static_artifact(tmp_path: Path) -> None:
