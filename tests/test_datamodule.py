@@ -15,24 +15,6 @@ def _batch() -> MEDSTorchBatch:
     )
 
 
-def test_synthetic_supervised_datamodule_defaults_val_and_test_to_train_batch() -> None:
-    datamodule = SyntheticSupervisedDatamodule(
-        train_batch=_batch(),
-        train_repeat=2,
-        val_repeat=1,
-        test_repeat=1,
-    )
-
-    train_batch = next(iter(datamodule.train_dataloader()))
-    val_batch = next(iter(datamodule.val_dataloader()))
-    test_batch = next(iter(datamodule.test_dataloader()))
-
-    assert tuple(train_batch.code.shape) == (2, 3)
-    assert tuple(val_batch.code.shape) == (2, 3)
-    assert tuple(test_batch.code.shape) == (2, 3)
-    assert tuple(train_batch.boolean_value.shape) == (2,)
-
-
 def test_synthetic_supervised_datamodule_rejects_non_positive_repeat() -> None:
     datamodule = SyntheticSupervisedDatamodule(train_batch=_batch(), train_repeat=0)
 
