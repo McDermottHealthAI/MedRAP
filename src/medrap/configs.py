@@ -310,12 +310,57 @@ class RAPEvalConfig(PipelineConfig):
 
 
 def default_pipeline_config() -> PipelineConfig:
-    """Return a default, fully-instantiable pipeline config."""
+    """Return a default, fully-instantiable pipeline config.
+
+    Examples:
+        >>> model = instantiate_model(default_pipeline_config())
+        >>> model.encoder.__class__.__name__
+        'MEDSCodeEncoder'
+        >>> model.query_projector.__class__.__name__
+        'SequenceMeanQueryProjector'
+        >>> model.retriever.__class__.__name__
+        'InMemoryRetriever'
+        >>> model.retrieval_encoder.__class__.__name__
+        'MeanPooledRetrievalEncoder'
+        >>> model.fusion.__class__.__name__
+        'ReplaceFusion'
+        >>> model.pooling.__class__.__name__
+        'IdentityPooling'
+        >>> model.head.__class__.__name__
+        'LinearHead'
+    """
     return PipelineConfig()
 
 
 def instantiate_model(config: Any) -> RetrievalAugmentedModel:
-    """Instantiate a ``RetrievalAugmentedModel`` from structured config."""
+    """Instantiate a ``RetrievalAugmentedModel`` from structured config.
+
+    Examples:
+        >>> model = instantiate_model(
+        ...     PipelineConfig(
+        ...         encoder=TokenEmbeddingEncoderConfig(vocab_size=32, embedding_dim=3),
+        ...         query_projector=LinearQueryProjectorConfig(in_dim=3, out_dim=2),
+        ...         retriever=InMemoryRetrieverConfig(
+        ...             doc_key_embeddings=float_tensor_config([[1.0, 0.0], [0.0, 1.0]]),
+        ...             doc_tokens=long_tensor_config([[9, 8, 0], [7, 6, 0]]),
+        ...             doc_attention_mask=bool_tensor_config([[True, True, False], [True, True, False]]),
+        ...         ),
+        ...         fusion=ConcatFusionConfig(),
+        ...         pooling=MaskedMeanPoolingConfig(),
+        ...         head=LinearHeadConfig(in_dim=5, out_dim=2),
+        ...     )
+        ... )
+        >>> (
+        ...     model.encoder.__class__.__name__,
+        ...     model.query_projector.__class__.__name__,
+        ...     model.fusion.__class__.__name__,
+        ...     model.pooling.__class__.__name__,
+        ...     model.head.__class__.__name__,
+        ... )
+        ('TokenEmbeddingEncoder', 'LinearQueryProjector', 'ConcatFusion', 'MaskedMeanPooling', 'LinearHead')
+        >>> model.head.linear.in_features
+        5
+    """
     return RetrievalAugmentedModel(
         encoder=instantiate_any(config.encoder),
         query_projector=instantiate_any(config.query_projector),
