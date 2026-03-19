@@ -116,13 +116,34 @@ class InMemoryRetriever(Retriever):
             (1, 1, 2, 2)
             >>> tuple(out.doc_key_embeddings.shape)
             (1, 1, 2, 2)
+            >>> meta_out = retriever.retrieve(torch.ones((1, 1, 2), device="meta"))
+            >>> meta_out.doc_tokens.device.type
+            'meta'
+            >>> meta_out.doc_attention_mask.device.type
+            'meta'
+            >>> meta_out.doc_scores.device.type
+            'meta'
+            >>> meta_out.doc_ids.device.type
+            'meta'
+            >>> meta_out.doc_key_embeddings.device.type
+            'meta'
         """
         if query_embeddings.ndim != 3:
             raise ValueError("query_embeddings must have shape (B, R, D_ret)")
+        query_device = query_embeddings.device
         doc_key_embeddings = cast("Tensor", self._doc_key_embeddings)
         doc_tokens = cast("Tensor", self._doc_tokens)
         doc_attention_mask = cast("Tensor", self._doc_attention_mask)
         doc_ids = cast("Tensor", self._doc_ids)
+
+        if doc_key_embeddings.device != query_device:
+            doc_key_embeddings = doc_key_embeddings.to(query_device)
+        if doc_tokens.device != query_device:
+            doc_tokens = doc_tokens.to(query_device)
+        if doc_attention_mask.device != query_device:
+            doc_attention_mask = doc_attention_mask.to(query_device)
+        if doc_ids.device != query_device:
+            doc_ids = doc_ids.to(query_device)
 
         if query_embeddings.shape[-1] != doc_key_embeddings.shape[-1]:
             raise ValueError("query_embeddings last dimension must match document key dimension")
