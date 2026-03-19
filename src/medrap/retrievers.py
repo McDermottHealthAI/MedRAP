@@ -6,13 +6,27 @@ datasets with attached nearest-neighbor indexes.
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import cast
 
 import torch
 from datasets import Dataset
 from torch import Tensor, nn
 
 from .types import RetrieverOutput
+
+
+def _move_tensors_to_device(device: torch.device, *tensors: Tensor) -> tuple[Tensor, ...]:
+    """Return tensors on ``device`` while preserving the no-op fast path.
+
+    Examples:
+        >>> cpu_tensor = torch.tensor([1, 2])
+        >>> (same_device,) = _move_tensors_to_device(torch.device("cpu"), cpu_tensor)
+        >>> same_device is cpu_tensor
+        True
+        >>> (moved,) = _move_tensors_to_device(torch.device("meta"), cpu_tensor)
+        >>> moved.device.type
+        'meta'
+    """
+    return tuple(tensor if tensor.device == device else tensor.to(device) for tensor in tensors)
 
 
 class Retriever(nn.Module, ABC):
@@ -116,13 +130,27 @@ class InMemoryRetriever(Retriever):
             (1, 1, 2, 2)
             >>> tuple(out.doc_key_embeddings.shape)
             (1, 1, 2, 2)
+            >>> meta_out = retriever.retrieve(torch.ones((1, 1, 2), device="meta"))
+            >>> meta_out.doc_tokens.device.type
+            'meta'
+            >>> meta_out.doc_attention_mask.device.type
+            'meta'
+            >>> meta_out.doc_scores.device.type
+            'meta'
+            >>> meta_out.doc_ids.device.type
+            'meta'
+            >>> meta_out.doc_key_embeddings.device.type
+            'meta'
         """
         if query_embeddings.ndim != 3:
             raise ValueError("query_embeddings must have shape (B, R, D_ret)")
-        doc_key_embeddings = cast("Tensor", self._doc_key_embeddings)
-        doc_tokens = cast("Tensor", self._doc_tokens)
-        doc_attention_mask = cast("Tensor", self._doc_attention_mask)
-        doc_ids = cast("Tensor", self._doc_ids)
+        doc_key_embeddings, doc_tokens, doc_attention_mask, doc_ids = _move_tensors_to_device(
+            query_embeddings.device,
+            self._doc_key_embeddings,
+            self._doc_tokens,
+            self._doc_attention_mask,
+            self._doc_ids,
+        )
 
         if query_embeddings.shape[-1] != doc_key_embeddings.shape[-1]:
             raise ValueError("query_embeddings last dimension must match document key dimension")
