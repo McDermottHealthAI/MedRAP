@@ -31,20 +31,6 @@ def make_supervised_batch() -> MEDSTorchBatch:
     )
 
 
-class TensorBinaryModel(nn.Module):
-    """Tiny binary model returning logits directly."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.layer_norm = nn.LayerNorm(3)
-        self.linear = nn.Linear(3, 1)
-
-    def forward(self, batch: MEDSTorchBatch) -> torch.Tensor:
-        assert batch.code is not None, "This model expects a 'code' tensor in the batch."
-        features = self.layer_norm(batch.code.float())
-        return self.linear(features)
-
-
 class ModelOutputBinaryModel(nn.Module):
     """Tiny binary model returning a ``ModelOutput``."""
 
@@ -72,7 +58,6 @@ def _setup_doctest_namespace(
             "torch": torch,
             "MEDSTorchBatch": MEDSTorchBatch,
             "make_supervised_batch": make_supervised_batch,
-            "TensorBinaryModel": TensorBinaryModel,
             "ModelOutput": ModelOutput,
             "ModelOutputBinaryModel": ModelOutputBinaryModel,
         }

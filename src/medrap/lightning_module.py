@@ -22,7 +22,7 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
     """Supervised Lightning wrapper around a plain RAP model.
 
     Args:
-        model: Plain PyTorch model returning ``ModelOutput`` or logits.
+        model: Plain PyTorch model returning ``ModelOutput``.
         task: Supervised task object.
         loss_fn: Supervised loss object.
         optimizer: Optimizer factory taking grouped parameter configs.
@@ -44,18 +44,15 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
             lambda params: torch.optim.AdamW(params, lr=1e-3, weight_decay=0.01)
         )
 
-    def forward(self, batch: MEDSTorchBatch) -> Tensor | ModelOutput:
+    def forward(self, batch: MEDSTorchBatch) -> ModelOutput:
         """Run the wrapped plain model on a MEDS batch.
 
         Args:
             batch: Input ``MEDSTorchBatch``.
 
         Returns:
-            Tensor | ModelOutput: Wrapped model output for a batch of size ``B``.
-            When the plain model returns a tensor, it is expected to have shape
-            ``(B, D)`` where ``D`` is the task output width. When the plain model
-            returns ``ModelOutput``, its ``logits`` field is expected to have the
-            same shape ``(B, D)``.
+            ModelOutput: Wrapped model output for a batch of size ``B`` with logits
+            shaped ``(B, D)`` where ``D`` is the task output width.
 
         Examples:
             >>> module = MedRAPSupervisedLightningModule(model=ModelOutputBinaryModel())
@@ -114,9 +111,7 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
 
         batch_size = getattr(raw_batch, "batch_size", None)
         if not isinstance(batch_size, int):
-            batch_size = (
-                predictions.shape[0] if isinstance(predictions, Tensor) else predictions.logits.shape[0]
-            )
+            batch_size = predictions.logits.shape[0]
 
         is_train = stage == "train"
         self.log(
@@ -181,7 +176,7 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
             Configured optimizer with grouped weight decay.
 
         Examples:
-            >>> module = MedRAPSupervisedLightningModule(model=TensorBinaryModel())
+            >>> module = MedRAPSupervisedLightningModule(model=ModelOutputBinaryModel())
             >>> optimizer = module.configure_optimizers()
             >>> isinstance(optimizer, torch.optim.AdamW)
             True

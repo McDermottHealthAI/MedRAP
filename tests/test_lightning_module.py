@@ -23,21 +23,6 @@ def supervised_batch() -> MEDSTorchBatch:
 
 
 @pytest.fixture
-def tensor_binary_model() -> nn.Module:
-    class TensorBinaryModel(nn.Module):
-        def __init__(self) -> None:
-            super().__init__()
-            self.layer_norm = nn.LayerNorm(3)
-            self.linear = nn.Linear(3, 1)
-
-        def forward(self, batch: MEDSTorchBatch) -> torch.Tensor:
-            features = self.layer_norm(batch.code.float())
-            return self.linear(features)
-
-    return TensorBinaryModel()
-
-
-@pytest.fixture
 def model_output_binary_model() -> nn.Module:
     class ModelOutputBinaryModel(nn.Module):
         def __init__(self) -> None:
@@ -55,9 +40,12 @@ def model_output_binary_model() -> nn.Module:
 
 def test_lightning_module_trainer_smoke(
     supervised_batch: MEDSTorchBatch,
-    tensor_binary_model: nn.Module,
+    model_output_binary_model: nn.Module,
 ) -> None:
-    module = MedRAPSupervisedLightningModule(model=tensor_binary_model, task=BinaryClassificationTask())
+    module = MedRAPSupervisedLightningModule(
+        model=model_output_binary_model,
+        task=BinaryClassificationTask(),
+    )
     trainer = lightning.Trainer(
         max_epochs=1,
         logger=False,
@@ -77,7 +65,7 @@ def test_lightning_module_trainer_smoke(
 
 def test_lightning_module_supports_structured_task_targets(
     supervised_batch: MEDSTorchBatch,
-    tensor_binary_model: nn.Module,
+    model_output_binary_model: nn.Module,
 ) -> None:
     class StructuredBinaryTask(SupervisedTask):
         def __init__(self) -> None:
@@ -90,27 +78,25 @@ def test_lightning_module_supports_structured_task_targets(
             }
 
         def metrics(
-            self, predictions: torch.Tensor | ModelOutput, targets: torch.Tensor | dict[str, torch.Tensor]
+            self, predictions: ModelOutput, targets: torch.Tensor | dict[str, torch.Tensor]
         ) -> dict[str, torch.Tensor]:
             assert isinstance(targets, dict)
-            assert isinstance(predictions, torch.Tensor)
-            predicted_labels = predictions.squeeze(1) >= 0
+            predicted_labels = predictions.logits.squeeze(1) >= 0
             labels = targets["labels"].bool()
             return {"accuracy": (predicted_labels == labels).float().mean()}
 
     class StructuredBinaryLoss(SupervisedLoss):
         def forward(
-            self, predictions: torch.Tensor | ModelOutput, targets: torch.Tensor | dict[str, torch.Tensor]
+            self, predictions: ModelOutput, targets: torch.Tensor | dict[str, torch.Tensor]
         ) -> torch.Tensor:
             assert isinstance(targets, dict)
-            assert isinstance(predictions, torch.Tensor)
             return torch.nn.functional.binary_cross_entropy_with_logits(
-                predictions.squeeze(1),
+                predictions.logits.squeeze(1),
                 targets["labels"],
             )
 
     module = MedRAPSupervisedLightningModule(
-        model=tensor_binary_model,
+        model=model_output_binary_model,
         task=StructuredBinaryTask(),
         loss_fn=StructuredBinaryLoss(),
     )
@@ -133,7 +119,7 @@ def test_lightning_module_supports_structured_task_targets(
 
 def test_configure_optimizers_includes_task_parameters(
     supervised_batch: MEDSTorchBatch,
-    tensor_binary_model: nn.Module,
+    model_output_binary_model: nn.Module,
 ) -> None:
     class LearnableTask(SupervisedTask):
         def __init__(self) -> None:
@@ -144,7 +130,7 @@ def test_configure_optimizers_includes_task_parameters(
             return batch.boolean_value.float()
 
         def metrics(
-            self, predictions: torch.Tensor | ModelOutput, targets: torch.Tensor | dict[str, torch.Tensor]
+            self, predictions: ModelOutput, targets: torch.Tensor | dict[str, torch.Tensor]
         ) -> dict[str, torch.Tensor]:
             return {}
 
@@ -154,18 +140,17 @@ def test_configure_optimizers_includes_task_parameters(
             self.task = task
 
         def forward(
-            self, predictions: torch.Tensor | ModelOutput, targets: torch.Tensor | dict[str, torch.Tensor]
+            self, predictions: ModelOutput, targets: torch.Tensor | dict[str, torch.Tensor]
         ) -> torch.Tensor:
-            assert isinstance(predictions, torch.Tensor)
             assert isinstance(targets, torch.Tensor)
             return torch.nn.functional.binary_cross_entropy_with_logits(
-                self.task.scale * predictions.squeeze(1),
+                self.task.scale * predictions.logits.squeeze(1),
                 targets,
             )
 
     task = LearnableTask()
     module = MedRAPSupervisedLightningModule(
-        model=tensor_binary_model,
+        model=model_output_binary_model,
         task=task,
         loss_fn=LearnableLoss(task),
     )
@@ -175,15 +160,18 @@ def test_configure_optimizers_includes_task_parameters(
     assert id(module.task.scale) in optimized_params
 
 
-def test_configure_optimizers_skips_frozen_parameters(tensor_binary_model: nn.Module) -> None:
-    tensor_binary_model.linear.bias.requires_grad = False
+def test_configure_optimizers_skips_frozen_parameters(model_output_binary_model: nn.Module) -> None:
+    model_output_binary_model.linear.bias.requires_grad = False
 
-    module = MedRAPSupervisedLightningModule(model=tensor_binary_model, task=BinaryClassificationTask())
+    module = MedRAPSupervisedLightningModule(
+        model=model_output_binary_model,
+        task=BinaryClassificationTask(),
+    )
     optimizer = module.configure_optimizers()
     optimized_params = {id(parameter) for group in optimizer.param_groups for parameter in group["params"]}
 
-    assert id(tensor_binary_model.linear.bias) not in optimized_params
-    assert id(tensor_binary_model.linear.weight) in optimized_params
+    assert id(model_output_binary_model.linear.bias) not in optimized_params
+    assert id(model_output_binary_model.linear.weight) in optimized_params
 
 
 def test_training_step_uses_batch_size_fallback_without_batch_size() -> None:
@@ -197,8 +185,8 @@ def test_training_step_uses_batch_size_fallback_without_batch_size() -> None:
             super().__init__()
             self.linear = nn.Linear(3, 1)
 
-        def forward(self, batch: object) -> torch.Tensor:
-            return self.linear(batch.code.float())
+        def forward(self, batch: object) -> ModelOutput:
+            return ModelOutput(logits=self.linear(batch.code.float()))
 
     module = MedRAPSupervisedLightningModule(model=SimpleBinaryModel(), task=BinaryClassificationTask())
 
@@ -213,9 +201,8 @@ def test_lightning_module_supports_custom_loss_over_model_output_metadata(
 ) -> None:
     class MetadataLoss(SupervisedLoss):
         def forward(
-            self, predictions: torch.Tensor | ModelOutput, targets: torch.Tensor | dict[str, torch.Tensor]
+            self, predictions: ModelOutput, targets: torch.Tensor | dict[str, torch.Tensor]
         ) -> torch.Tensor:
-            assert isinstance(predictions, ModelOutput)
             assert isinstance(targets, torch.Tensor)
             extra = predictions.metadata["extra"]
             assert isinstance(extra, torch.Tensor)
@@ -243,9 +230,12 @@ def test_lightning_module_supports_custom_loss_over_model_output_metadata(
 
 def test_lightning_module_test_step_runs(
     supervised_batch: MEDSTorchBatch,
-    tensor_binary_model: nn.Module,
+    model_output_binary_model: nn.Module,
 ) -> None:
-    module = MedRAPSupervisedLightningModule(model=tensor_binary_model, task=BinaryClassificationTask())
+    module = MedRAPSupervisedLightningModule(
+        model=model_output_binary_model,
+        task=BinaryClassificationTask(),
+    )
     trainer = lightning.Trainer(
         max_epochs=1,
         logger=False,

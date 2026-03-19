@@ -9,31 +9,21 @@ from torch import Tensor, nn
 
 from .types import ModelOutput
 
-type TaskPredictions = Tensor | ModelOutput
+type TaskPredictions = ModelOutput
 type TaskTargets = Tensor | dict[str, Tensor]
 
 
-def _extract_logits(predictions: TaskPredictions) -> Tensor:
-    if isinstance(predictions, Tensor):
-        return predictions
-    return predictions.logits
-
-
-def _require_tensor_targets(targets: TaskTargets, *, owner: str) -> Tensor:
-    if isinstance(targets, Tensor):
-        return targets
-    raise ValueError(f"{owner} expects tensor targets, not structured targets.")
-
-
 def _flatten_binary_logits(predictions: TaskPredictions, *, owner: str) -> Tensor:
-    logits = _extract_logits(predictions)
+    logits = predictions.logits
     if logits.ndim == 2 and logits.shape[1] == 1:
         return logits.squeeze(1)
     raise ValueError(f"{owner} expects logits shaped (B, 1); got {tuple(logits.shape)}")
 
 
 def _flatten_binary_targets(targets: TaskTargets, *, owner: str) -> Tensor:
-    tensor_targets = _require_tensor_targets(targets, owner=owner)
+    if not isinstance(targets, Tensor):
+        raise ValueError(f"{owner} expects tensor targets, not structured targets.")
+    tensor_targets = targets
     if tensor_targets.ndim == 1:
         return tensor_targets.float()
     raise ValueError(f"{owner} expects targets shaped (B,); got {tuple(tensor_targets.shape)}")
@@ -181,13 +171,16 @@ class BinaryClassificationTask(SupervisedTask):
 
         Examples:
             >>> task = BinaryClassificationTask()
-            >>> metrics = task.metrics(torch.FloatTensor([[2.0], [-2.0]]), torch.BoolTensor([True, False]))
+            >>> metrics = task.metrics(
+            ...     ModelOutput(logits=torch.FloatTensor([[2.0], [-2.0]])),
+            ...     torch.BoolTensor([True, False]),
+            ... )
             >>> sorted(metrics)
             ['accuracy']
             >>> float(metrics["accuracy"])
             1.0
             >>> task.metrics(
-            ...     torch.FloatTensor([2.0, -2.0]),
+            ...     ModelOutput(logits=torch.FloatTensor([2.0, -2.0])),
             ...     torch.BoolTensor([True, False]),
             ... )  # doctest: +ELLIPSIS
             Traceback (most recent call last):
@@ -204,17 +197,17 @@ class BinaryClassificationLoss(SupervisedLoss):
     """Binary BCE-with-logits loss for scalar binary predictions.
 
     Returns:
-        BinaryClassificationLoss: Loss helper that accepts ``Tensor`` or
-        ``ModelOutput`` predictions with logits shaped ``(B, 1)`` and binary
-        tensor targets shaped ``(B,)``.
+        BinaryClassificationLoss: Loss helper that accepts ``ModelOutput``
+        predictions with logits shaped ``(B, 1)`` and binary tensor targets
+        shaped ``(B,)``.
     """
 
     def forward(self, predictions: TaskPredictions, targets: TaskTargets) -> Tensor:
         """Compute BCE-with-logits loss from binary predictions and targets.
 
         Args:
-            predictions: ``Tensor`` or ``ModelOutput`` predictions with logits
-                shaped ``(B, 1)``.
+            predictions: ``ModelOutput`` predictions with logits shaped
+                ``(B, 1)``.
             targets: Binary tensor targets shaped ``(B,)``.
 
         Returns:
@@ -227,14 +220,14 @@ class BinaryClassificationLoss(SupervisedLoss):
             >>> round(float(loss_fn(predictions, targets)), 4)
             0.41
             >>> loss_fn(
-            ...     torch.FloatTensor([[0.0], [2.0]]),
+            ...     ModelOutput(logits=torch.FloatTensor([[0.0], [2.0]])),
             ...     {"labels": torch.FloatTensor([0.0, 1.0])},
             ... )  # doctest: +ELLIPSIS
             Traceback (most recent call last):
                 ...
             ValueError: BinaryClassificationLoss expects tensor targets, not structured targets.
             >>> loss_fn(
-            ...     torch.FloatTensor([[0.0], [2.0]]),
+            ...     ModelOutput(logits=torch.FloatTensor([[0.0], [2.0]])),
             ...     torch.BoolTensor([[False], [True]]),
             ... )  # doctest: +ELLIPSIS
             Traceback (most recent call last):
