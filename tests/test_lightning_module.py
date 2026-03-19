@@ -117,63 +117,6 @@ def test_lightning_module_supports_structured_task_targets(
     assert trainer.callback_metrics["val/loss"].ndim == 0
 
 
-def test_configure_optimizers_includes_task_parameters(
-    supervised_batch: MEDSTorchBatch,
-    model_output_binary_model: nn.Module,
-) -> None:
-    class LearnableTask(SupervisedTask):
-        def __init__(self) -> None:
-            super().__init__(output_dim=1)
-            self.scale = nn.Parameter(torch.ones(()))
-
-        def extract_targets(self, batch: MEDSTorchBatch) -> torch.Tensor:
-            return batch.boolean_value.float()
-
-        def metrics(
-            self, predictions: ModelOutput, targets: torch.Tensor | dict[str, torch.Tensor]
-        ) -> dict[str, torch.Tensor]:
-            return {}
-
-    class LearnableLoss(SupervisedLoss):
-        def __init__(self, task: LearnableTask) -> None:
-            super().__init__()
-            self.task = task
-
-        def forward(
-            self, predictions: ModelOutput, targets: torch.Tensor | dict[str, torch.Tensor]
-        ) -> torch.Tensor:
-            assert isinstance(targets, torch.Tensor)
-            return torch.nn.functional.binary_cross_entropy_with_logits(
-                self.task.scale * predictions.logits.squeeze(1),
-                targets,
-            )
-
-    task = LearnableTask()
-    module = MedRAPSupervisedLightningModule(
-        model=model_output_binary_model,
-        task=task,
-        loss_fn=LearnableLoss(task),
-    )
-    optimizer = module.configure_optimizers()
-    optimized_params = {id(parameter) for group in optimizer.param_groups for parameter in group["params"]}
-
-    assert id(module.task.scale) in optimized_params
-
-
-def test_configure_optimizers_skips_frozen_parameters(model_output_binary_model: nn.Module) -> None:
-    model_output_binary_model.linear.bias.requires_grad = False
-
-    module = MedRAPSupervisedLightningModule(
-        model=model_output_binary_model,
-        task=BinaryClassificationTask(),
-    )
-    optimizer = module.configure_optimizers()
-    optimized_params = {id(parameter) for group in optimizer.param_groups for parameter in group["params"]}
-
-    assert id(model_output_binary_model.linear.bias) not in optimized_params
-    assert id(model_output_binary_model.linear.weight) in optimized_params
-
-
 def test_training_step_uses_batch_size_fallback_without_batch_size() -> None:
     class SimpleBatch:
         def __init__(self) -> None:

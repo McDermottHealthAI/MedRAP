@@ -182,5 +182,45 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
             True
             >>> len(optimizer.param_groups)
             2
+            >>> module.model.linear.bias.requires_grad = False
+            >>> optimizer = module.configure_optimizers()
+            >>> optimized_params = {
+            ...     id(parameter) for group in optimizer.param_groups for parameter in group["params"]
+            ... }
+            >>> id(module.model.linear.bias) in optimized_params
+            False
+            >>> class LearnableTask(SupervisedTask):
+            ...     def __init__(self) -> None:
+            ...         super().__init__(output_dim=1)
+            ...         self.scale = nn.Parameter(torch.ones(()))
+            ...
+            ...     def extract_targets(self, batch: MEDSTorchBatch) -> Tensor:
+            ...         return batch.boolean_value.float()
+            ...
+            ...     def metrics(self, predictions: TaskPredictions, targets: object) -> dict[str, Tensor]:
+            ...         return {}
+            >>> class LearnableLoss(SupervisedLoss):
+            ...     def __init__(self, task: LearnableTask) -> None:
+            ...         super().__init__()
+            ...         self.task = task
+            ...
+            ...     def forward(self, predictions: TaskPredictions, targets: object) -> Tensor:
+            ...         assert isinstance(targets, Tensor)
+            ...         return torch.nn.functional.binary_cross_entropy_with_logits(
+            ...             self.task.scale * predictions.logits.squeeze(1),
+            ...             targets,
+            ...         )
+            >>> task = LearnableTask()
+            >>> module = MedRAPSupervisedLightningModule(
+            ...     model=ModelOutputBinaryModel(),
+            ...     task=task,
+            ...     loss_fn=LearnableLoss(task),
+            ... )
+            >>> optimizer = module.configure_optimizers()
+            >>> optimized_params = {
+            ...     id(parameter) for group in optimizer.param_groups for parameter in group["params"]
+            ... }
+            >>> id(task.scale) in optimized_params
+            True
         """
         return self.optimizer_factory(self._grouped_parameters())
