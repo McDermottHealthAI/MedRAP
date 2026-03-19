@@ -31,6 +31,8 @@ def test_medrap_eval_cli_runs_with_overrides(tmp_path) -> None:
         )
         == 0
     )
+    assert (eval_dir / "config.yaml").exists()
+    assert (eval_dir / "resolved_config.yaml").exists()
 
 
 def test_train_entrypoint_runs_with_hydra_overrides(tmp_path) -> None:
@@ -115,6 +117,8 @@ def test_eval_entrypoint_runs_with_hydra_overrides(tmp_path) -> None:
         )
         == 0
     )
+    assert (eval_dir / "config.yaml").exists()
+    assert (eval_dir / "resolved_config.yaml").exists()
 
 
 def test_eval_entrypoint_requires_checkpoint_path() -> None:
@@ -154,3 +158,29 @@ def test_eval_entrypoint_supports_test_mode(tmp_path) -> None:
         )
         == 0
     )
+
+
+def test_eval_entrypoint_refuses_existing_output_dir(tmp_path) -> None:
+    output_dir = tmp_path / "train"
+    eval_dir = tmp_path / "eval"
+    checkpoint_path = output_dir / "checkpoints" / "last.ckpt"
+    assert train_main([f"output_dir={output_dir}", "training/datamodule=synthetic"]) == 0
+    assert (
+        eval_main(
+            [
+                f"output_dir={eval_dir}",
+                f"checkpoint_path={checkpoint_path}",
+                "training/datamodule=synthetic",
+            ]
+        )
+        == 0
+    )
+
+    with pytest.raises(SystemExit):
+        eval_main(
+            [
+                f"output_dir={eval_dir}",
+                f"checkpoint_path={checkpoint_path}",
+                "training/datamodule=synthetic",
+            ]
+        )
