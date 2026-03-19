@@ -1,6 +1,10 @@
+from types import SimpleNamespace
+
 import pytest
+from omegaconf import OmegaConf
 from omegaconf.errors import MissingMandatoryValue
 
+import medrap.cli as cli
 from medrap.cli import eval_main, main, train_main
 
 
@@ -72,10 +76,10 @@ def test_eval_entrypoint_runs_with_hydra_overrides(tmp_path) -> None:
     assert (eval_dir / "resolved_config.yaml").exists()
 
 
-def test_eval_entrypoint_requires_checkpoint_path() -> None:
+def test_eval_entrypoint_requires_checkpoint_path(tmp_path) -> None:
     _assert_cli_failure(
-        lambda: eval_main(["output_dir=/tmp/medrap-eval", "training/datamodule=synthetic"]),
-        allowed_exceptions=(SystemExit, MissingMandatoryValue),
+        lambda: eval_main([f"output_dir={tmp_path / 'eval'}", "training/datamodule=synthetic"]),
+        allowed_exceptions=(SystemExit, MissingMandatoryValue, ValueError),
         expected_message="checkpoint_path",
     )
 
@@ -144,3 +148,152 @@ def test_eval_entrypoint_refuses_existing_output_dir(tmp_path) -> None:
         allowed_exceptions=(SystemExit, FileExistsError),
         expected_message="already contains a saved MedRAP eval run",
     )
+
+
+def test_find_checkpoint_path_rejects_file_path(tmp_path) -> None:
+    checkpoints_path = tmp_path / "checkpoints"
+    checkpoints_path.write_text("not a directory")
+
+    with pytest.raises(NotADirectoryError, match="is a file, not a directory"):
+        cli._find_checkpoint_path(tmp_path)
+
+
+def test_find_checkpoint_path_returns_none_when_directory_is_missing(tmp_path) -> None:
+    assert cli._find_checkpoint_path(tmp_path) is None
+
+
+def test_find_checkpoint_path_falls_back_to_latest_epoch_checkpoint(tmp_path) -> None:
+    checkpoints_dir = tmp_path / "checkpoints"
+    checkpoints_dir.mkdir()
+    older_ckpt = checkpoints_dir / "epoch=0-step=1.ckpt"
+    newer_ckpt = checkpoints_dir / "epoch=1-step=2.ckpt"
+    older_ckpt.write_text("older")
+    newer_ckpt.write_text("newer")
+
+    assert cli._find_checkpoint_path(tmp_path) == newer_ckpt
+
+
+def test_validate_resume_directory_requires_saved_config(tmp_path) -> None:
+    cfg = OmegaConf.create({"output_dir": str(tmp_path), "training": {"trainer": {"default_root_dir": "."}}})
+
+    with pytest.raises(FileNotFoundError, match="No saved config found"):
+        cli._validate_resume_directory(tmp_path, cfg)
+
+
+def test_validate_resume_directory_rejects_config_mismatch(tmp_path) -> None:
+    output_dir = tmp_path / "train"
+    output_dir.mkdir()
+    saved_cfg = OmegaConf.create(
+        {
+            "output_dir": str(output_dir),
+            "training": {"trainer": {"default_root_dir": "."}, "task": {"output_dim": 1}},
+        }
+    )
+    new_cfg = OmegaConf.create(
+        {
+            "output_dir": str(output_dir),
+            "training": {"trainer": {"default_root_dir": "."}, "task": {"output_dim": 2}},
+        }
+    )
+    OmegaConf.save(saved_cfg, output_dir / "config.yaml")
+
+    with pytest.raises(ValueError, match="Config mismatch when resuming run"):
+        cli._validate_resume_directory(output_dir, new_cfg)
+
+
+def test_prepare_output_dir_rejects_file_path(tmp_path) -> None:
+    output_path = tmp_path / "output"
+    output_path.write_text("not a directory")
+    cfg = OmegaConf.create({"output_dir": str(output_path)})
+
+    with pytest.raises(NotADirectoryError, match="is a file, not a directory"):
+        cli._prepare_output_dir(cfg)
+
+
+def test_prepare_train_run_supports_overwrite(tmp_path) -> None:
+    output_dir = tmp_path / "train"
+    output_dir.mkdir()
+    stale_file = output_dir / "stale.txt"
+    stale_file.write_text("stale")
+    (output_dir / "config.yaml").write_text("existing")
+    cfg = OmegaConf.create(
+        {
+            "output_dir": str(output_dir),
+            "do_overwrite": True,
+            "do_resume": False,
+            "training": {"trainer": {"default_root_dir": "."}},
+        }
+    )
+
+    ckpt_path = cli._prepare_train_run(cfg)
+
+    assert ckpt_path is None
+    assert not stale_file.exists()
+    assert (output_dir / "config.yaml").exists()
+    assert (output_dir / "resolved_config.yaml").exists()
+
+
+def test_prepare_train_run_requires_checkpoint_for_resume(tmp_path) -> None:
+    output_dir = tmp_path / "train"
+    output_dir.mkdir()
+    cfg = OmegaConf.create(
+        {
+            "output_dir": str(output_dir),
+            "do_overwrite": False,
+            "do_resume": True,
+            "training": {"trainer": {"default_root_dir": "."}},
+        }
+    )
+    OmegaConf.save(cfg, output_dir / "config.yaml")
+
+    with pytest.raises(FileNotFoundError, match="No checkpoint found to resume from"):
+        cli._prepare_train_run(cfg)
+
+
+def test_copy_best_checkpoint_returns_without_checkpoint_callback(tmp_path) -> None:
+    cli._copy_best_checkpoint(SimpleNamespace(checkpoint_callback=None), tmp_path)
+
+
+def test_copy_best_checkpoint_returns_without_best_model_path(tmp_path) -> None:
+    cli._copy_best_checkpoint(
+        SimpleNamespace(checkpoint_callback=SimpleNamespace(best_model_path="")),
+        tmp_path,
+    )
+
+
+def test_run_eval_requires_checkpoint_path_before_loading(tmp_path) -> None:
+    cfg = OmegaConf.create(
+        {
+            "output_dir": str(tmp_path / "eval"),
+            "checkpoint_path": "",
+            "eval_mode": "validate",
+            "training": {"trainer": {"default_root_dir": "."}},
+        }
+    )
+
+    with pytest.raises(ValueError, match="checkpoint_path must be set"):
+        cli._run_eval(cfg)
+
+
+def test_run_eval_rejects_unknown_eval_mode(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    class StubTrainer:
+        def validate(self, module, datamodule=None) -> None:  # pragma: no cover
+            raise AssertionError("validate should not run")
+
+        def test(self, module, datamodule=None) -> None:  # pragma: no cover
+            raise AssertionError("test should not run")
+
+    monkeypatch.setattr(cli, "_load_training_module_checkpoint", lambda cfg, checkpoint_path: object())
+    monkeypatch.setattr(cli, "_instantiate_trainer", lambda cfg, output_dir: StubTrainer())
+    monkeypatch.setattr(cli, "instantiate_datamodule", lambda cfg: object())
+    cfg = OmegaConf.create(
+        {
+            "output_dir": str(tmp_path / "eval"),
+            "checkpoint_path": str(tmp_path / "model.ckpt"),
+            "eval_mode": "predict",
+            "training": {"trainer": {"default_root_dir": "."}},
+        }
+    )
+
+    with pytest.raises(ValueError, match="eval_mode must be 'validate' or 'test'"):
+        cli._run_eval(cfg)
