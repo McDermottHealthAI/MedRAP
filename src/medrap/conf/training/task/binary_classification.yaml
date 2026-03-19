@@ -1,0 +1,2 @@
+_target_: medrap.task.BinaryClassificationTask
+output_dim: 1

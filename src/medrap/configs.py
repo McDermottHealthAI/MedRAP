@@ -14,11 +14,13 @@ from hydra_zen import builds, instantiate
 from .encoders import MEDSCodeEncoder, TabularEncoder, TokenEmbeddingEncoder
 from .fusion import ConcatFusion, ReplaceFusion
 from .heads import LinearHead
+from .lightning_module import MedRAPSupervisedLightningModule
 from .model import RetrievalAugmentedModel
 from .pooling import IdentityPooling, MaskedMeanPooling
 from .query_projection import LinearQueryProjector, SequenceMeanQueryProjector
 from .retrieval_encoder import MeanPooledRetrievalEncoder, TokenFeatureRetrievalEncoder
 from .retrievers import InMemoryRetriever
+from .task import BinaryClassificationLoss, BinaryClassificationTask
 
 ComponentConfig = Any
 builds_any = cast("Any", builds)
@@ -120,6 +122,18 @@ LinearHeadConfig = builds_any(
     out_dim=2,
     zen_dataclass={"cls_name": "LinearHeadConfig"},
 )
+BinaryClassificationTaskConfig = builds_any(
+    BinaryClassificationTask,
+    zen_dataclass={"cls_name": "BinaryClassificationTaskConfig"},
+)
+BinaryClassificationLossConfig = builds_any(
+    BinaryClassificationLoss,
+    zen_dataclass={"cls_name": "BinaryClassificationLossConfig"},
+)
+MedRAPSupervisedLightningModuleConfig = builds_any(
+    MedRAPSupervisedLightningModule,
+    zen_dataclass={"cls_name": "MedRAPSupervisedLightningModuleConfig"},
+)
 
 
 @dataclass
@@ -152,6 +166,23 @@ class RAPAppConfig(PipelineConfig):
         cs.store(name=cls.__name__, group=group, node=cls)
 
 
+@dataclass
+class TrainingConfig:
+    """Minimal training config layer on top of the plain RAP model config."""
+
+    module: ComponentConfig = field(default_factory=MedRAPSupervisedLightningModuleConfig)
+    task: ComponentConfig = field(default_factory=BinaryClassificationTaskConfig)
+    loss: ComponentConfig = field(default_factory=BinaryClassificationLossConfig)
+
+
+@dataclass
+class RAPTrainConfig(PipelineConfig):
+    """Top-level training config that preserves ``PipelineConfig`` as model composition."""
+
+    head: ComponentConfig = field(default_factory=lambda: LinearHeadConfig(out_dim=1))
+    training: TrainingConfig = field(default_factory=TrainingConfig)
+
+
 def default_pipeline_config() -> PipelineConfig:
     """Return a default, fully-instantiable pipeline config."""
     return PipelineConfig()
@@ -168,3 +199,39 @@ def instantiate_model(config: Any) -> RetrievalAugmentedModel:
         pooling=instantiate_any(config.pooling),
         head=instantiate_any(config.head),
     )
+
+
+def instantiate_training_module(config: RAPTrainConfig) -> MedRAPSupervisedLightningModule:
+    """Instantiate the configured training wrapper around the plain RAP model.
+
+    Args:
+        config: Training config containing the plain RAP model composition under the
+            top-level pipeline fields and the supervised wrapper/task under
+            ``config.training``.
+
+    Returns:
+        MedRAPSupervisedLightningModule: Lightning wrapper whose plain model returns
+        logits shaped ``(B, config.training.task.output_dim)`` for a batch of size
+        ``B``.
+
+    Examples:
+        >>> module = instantiate_training_module(RAPTrainConfig())
+        >>> module.__class__.__name__
+        'MedRAPSupervisedLightningModule'
+        >>> module.model.__class__.__name__
+        'RetrievalAugmentedModel'
+        >>> module.task.output_dim
+        1
+        >>> module.loss_fn.__class__.__name__
+        'BinaryClassificationLoss'
+        >>> output = module.model.forward(make_supervised_batch())
+        >>> tuple(output.logits.shape)
+        (2, 1)
+        >>> targets = module.task.extract_targets(make_supervised_batch())
+        >>> module.loss_fn(output, targets).ndim
+        0
+    """
+    plain_model = instantiate_model(config)
+    task = instantiate_any(config.training.task)
+    loss_fn = instantiate_any(config.training.loss)
+    return instantiate_any(config.training.module, model=plain_model, task=task, loss_fn=loss_fn)
