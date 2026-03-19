@@ -9,10 +9,16 @@ defaults:
   - training/module: supervised_lightning
   - training/task: binary_classification
   - training/loss: binary_bce
+  - training/datamodule: meds
+  - training/trainer: lightning_eval
   - _self_
 
 head:
   out_dim: ${training.task.output_dim}
+
+output_dir: ???
+checkpoint_path: ???
+eval_mode: validate
 
 hydra:
   run:

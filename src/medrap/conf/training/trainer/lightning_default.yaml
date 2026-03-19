@@ -1,0 +1,22 @@
+_target_: lightning.Trainer
+
+default_root_dir: ${output_dir}
+max_epochs: 10
+accelerator: auto
+devices: 1
+logger:
+  _target_: lightning.pytorch.loggers.csv_logs.CSVLogger
+  save_dir: ${default_root_dir}/loggers
+  name: csv
+callbacks:
+  - _target_: lightning.pytorch.callbacks.ModelCheckpoint
+    dirpath: ${default_root_dir}/checkpoints
+    filename: epoch={epoch}-step={step}
+    monitor: val/loss
+    mode: min
+    save_last: true
+    auto_insert_metric_name: false
+enable_checkpointing: true
+enable_model_summary: false
+enable_progress_bar: false
+log_every_n_steps: 10
