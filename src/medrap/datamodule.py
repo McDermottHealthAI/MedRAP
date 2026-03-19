@@ -36,6 +36,18 @@ class SyntheticSupervisedDatamodule(lightning.LightningDataModule):
         self.test_repeat = int(test_repeat)
 
     def _loader(self, batch: MEDSTorchBatch, *, repeat: int, shuffle: bool) -> DataLoader:
+        """Return a repeated single-batch dataloader.
+
+        Examples:
+            >>> datamodule = SyntheticSupervisedDatamodule(
+            ...     train_batch=make_supervised_batch(),
+            ...     train_repeat=0,
+            ... )
+            >>> datamodule.train_dataloader()  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: repeat must be at least 1
+        """
         if repeat < 1:
             raise ValueError("repeat must be at least 1")
         items = [batch] * repeat

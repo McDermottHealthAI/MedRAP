@@ -10,7 +10,6 @@ from .configs import (
     instantiate_model,
     prepare_retrieval_dataset_from_config,
 )
-from .datamodule import SyntheticSupervisedDatamodule
 from .encoders import MEDSCodeEncoder, PatientEncoder, TabularEncoder, TokenEmbeddingEncoder
 from .fusion import ConcatFusion, FusionModule, ReplaceFusion
 from .heads import LinearHead, PredictionHead
@@ -73,7 +72,6 @@ __all__ = [
     "Retriever",
     "RetrieverOutput",
     "SequenceMeanQueryProjector",
-    "SyntheticSupervisedDatamodule",
     "TabularEncoder",
     "TokenEmbeddingEncoder",
     "float_tensor_config",
