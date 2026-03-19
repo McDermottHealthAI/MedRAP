@@ -103,6 +103,12 @@ class BinaryClassificationTask(SupervisedTask):
         BinaryClassificationTask: Task helper that extracts labels from a MEDS batch,
         reports scalar accuracy metrics from predictions with logits shaped
         ``(B, 1)``.
+
+    Examples:
+        >>> BinaryClassificationTask(output_dim=2)  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        ValueError: BinaryClassificationTask requires output_dim=1, got 2
     """
 
     def __init__(self, *, label_field: str = "boolean_value", output_dim: int = 1) -> None:
@@ -129,6 +135,20 @@ class BinaryClassificationTask(SupervisedTask):
             (2,)
             >>> targets.dtype
             torch.float32
+            >>> singleton_batch = make_supervised_batch()
+            >>> singleton_batch.boolean_value = torch.BoolTensor([[True], [False]])
+            >>> tuple(task.extract_targets(singleton_batch).shape)
+            (2,)
+            >>> missing_targets = MEDSTorchBatch(
+            ...     code=torch.LongTensor([[1, 2, 3], [3, 2, 1]]),
+            ...     numeric_value=torch.zeros((2, 3), dtype=torch.float32),
+            ...     numeric_value_mask=torch.zeros((2, 3), dtype=torch.bool),
+            ...     time_delta_days=torch.zeros((2, 3), dtype=torch.float32),
+            ... )
+            >>> task.extract_targets(missing_targets)  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: Expected boolean_value targets on the MEDS batch.
             >>> bad_batch = make_supervised_batch()
             >>> bad_batch.boolean_value = torch.BoolTensor([[True, False], [False, True]])
             >>> task.extract_targets(bad_batch)  # doctest: +ELLIPSIS
@@ -213,6 +233,13 @@ class BinaryClassificationLoss(SupervisedLoss):
             Traceback (most recent call last):
                 ...
             ValueError: BinaryClassificationLoss expects tensor targets, not structured targets.
+            >>> loss_fn(
+            ...     torch.FloatTensor([[0.0], [2.0]]),
+            ...     torch.BoolTensor([[False], [True]]),
+            ... )  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: BinaryClassificationLoss expects targets shaped (B,); got (2, 1)
         """
         flat_logits = _flatten_binary_logits(predictions, owner="BinaryClassificationLoss")
         flat_targets = _flatten_binary_targets(targets, owner="BinaryClassificationLoss")

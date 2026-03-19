@@ -218,10 +218,18 @@ def instantiate_training_module(config: RAPTrainConfig) -> MedRAPSupervisedLight
         >>> module = instantiate_training_module(RAPTrainConfig())
         >>> module.__class__.__name__
         'MedRAPSupervisedLightningModule'
+        >>> module.model.__class__.__name__
+        'RetrievalAugmentedModel'
         >>> module.task.output_dim
         1
         >>> module.loss_fn.__class__.__name__
         'BinaryClassificationLoss'
+        >>> output = module.model.forward(make_supervised_batch())
+        >>> tuple(output.logits.shape)
+        (2, 1)
+        >>> targets = module.task.extract_targets(make_supervised_batch())
+        >>> module.loss_fn(output, targets).ndim
+        0
     """
     plain_model = instantiate_model(config)
     task = instantiate_any(config.training.task)
