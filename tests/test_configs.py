@@ -2,23 +2,38 @@ import torch
 from meds_torchdata import MEDSTorchBatch
 
 from medrap.configs import (
+    BinaryClassificationLossConfig,
+    BinaryClassificationTaskConfig,
     ConcatFusionConfig,
     InMemoryRetrieverConfig,
     LinearHeadConfig,
     LinearQueryProjectorConfig,
     MaskedMeanPoolingConfig,
+    MedRAPSupervisedLightningModuleConfig,
+    MEDSTorchDataConfigConfig,
+    MEDSTrainingDatamoduleConfig,
     PipelineConfig,
+    RAPTrainConfig,
+    SyntheticSupervisedDatamoduleConfig,
     TokenEmbeddingEncoderConfig,
+    TrainingConfig,
     bool_tensor_config,
     float_tensor_config,
+    instantiate_datamodule,
     instantiate_model,
+    instantiate_training_module,
     long_tensor_config,
 )
 from medrap.encoders import TokenEmbeddingEncoder
 from medrap.fusion import ConcatFusion
 from medrap.heads import LinearHead
-from medrap.pooling import MaskedMeanPooling
-from medrap.query_projection import LinearQueryProjector
+from medrap.lightning_module import MedRAPSupervisedLightningModule
+from medrap.model import RetrievalAugmentedModel
+from medrap.pooling import IdentityPooling, MaskedMeanPooling
+from medrap.query_projection import LinearQueryProjector, SequenceMeanQueryProjector
+from medrap.retrieval_encoder import MeanPooledRetrievalEncoder
+from medrap.retrievers import InMemoryRetriever
+from medrap.task import BinaryClassificationLoss, BinaryClassificationTask
 
 
 def _example_batch() -> MEDSTorchBatch:
@@ -66,3 +81,46 @@ def test_pipeline_config_allows_meaningful_module_overrides() -> None:
     assert isinstance(model.fusion, ConcatFusion)
     assert isinstance(model.pooling, MaskedMeanPooling)
     assert isinstance(model.head, LinearHead)
+
+
+def test_train_config_instantiates_supervised_lightning_stack() -> None:
+    cfg = RAPTrainConfig(
+        output_dir="outputs/medrap-test",
+        training=TrainingConfig(
+            module=MedRAPSupervisedLightningModuleConfig(),
+            task=BinaryClassificationTaskConfig(),
+            loss=BinaryClassificationLossConfig(),
+            datamodule=SyntheticSupervisedDatamoduleConfig(),
+        ),
+    )
+
+    lightning_module = instantiate_training_module(cfg)
+
+    assert isinstance(lightning_module, MedRAPSupervisedLightningModule)
+    assert isinstance(lightning_module.model, RetrievalAugmentedModel)
+    assert isinstance(lightning_module.task, BinaryClassificationTask)
+    assert isinstance(lightning_module.loss_fn, BinaryClassificationLoss)
+
+
+def test_meds_datamodule_config_instantiates_without_loading_dataset(tmp_path) -> None:
+    cohort_dir = tmp_path / "tensorized"
+    labels_dir = tmp_path / "labels"
+    cohort_dir.mkdir()
+    labels_dir.mkdir()
+
+    cfg = RAPTrainConfig(
+        output_dir=str(tmp_path / "outputs"),
+        training=TrainingConfig(
+            datamodule=MEDSTrainingDatamoduleConfig(
+                config=MEDSTorchDataConfigConfig(
+                    tensorized_cohort_dir=str(cohort_dir),
+                    max_seq_len=8,
+                    task_labels_dir=str(labels_dir),
+                )
+            )
+        ),
+    )
+
+    datamodule = instantiate_datamodule(cfg)
+
+    assert datamodule.__class__.__name__ == "Datamodule"
