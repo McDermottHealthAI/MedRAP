@@ -317,7 +317,7 @@ def instantiate_model(config: Any) -> RetrievalAugmentedModel:
 
     Examples:
         >>> model = instantiate_model(PipelineConfig())
-        >>> (
+        >>> names = (
         ...     model.encoder.__class__.__name__,
         ...     model.query_projector.__class__.__name__,
         ...     model.retriever.__class__.__name__,
