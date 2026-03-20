@@ -31,9 +31,9 @@ class SyntheticSupervisedDatamodule(lightning.LightningDataModule):
         self.train_batch = train_batch
         self.val_batch = val_batch or train_batch
         self.test_batch = test_batch or self.val_batch
-        self.train_repeat = int(train_repeat)
-        self.val_repeat = int(val_repeat)
-        self.test_repeat = int(test_repeat)
+        self.train_repeat = train_repeat
+        self.val_repeat = val_repeat
+        self.test_repeat = test_repeat
 
     def _loader(self, batch: MEDSTorchBatch, *, repeat: int, shuffle: bool) -> DataLoader:
         """Return a repeated single-batch dataloader.

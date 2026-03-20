@@ -2,6 +2,7 @@
 
 import os
 import sys
+from types import SimpleNamespace
 
 if sys.platform == "darwin":
     os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
@@ -16,6 +17,7 @@ import pytest
 import torch
 from datasets import load_from_disk
 from meds_torchdata import MEDSTorchBatch
+from omegaconf import OmegaConf
 from torch import nn
 
 from medrap.types import ModelOutput
@@ -90,6 +92,8 @@ def _setup_doctest_namespace(
             "datetime": datetime,
             "tempfile": tempfile,
             "Path": Path,
+            "SimpleNamespace": SimpleNamespace,
+            "OmegaConf": OmegaConf,
             "torch": torch,
             "load_from_disk": load_from_disk,
             "MEDSTorchBatch": MEDSTorchBatch,

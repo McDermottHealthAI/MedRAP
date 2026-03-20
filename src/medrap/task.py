@@ -37,7 +37,7 @@ class SupervisedTask(nn.Module, ABC):
 
     def __init__(self, *, output_dim: int) -> None:
         super().__init__()
-        self.output_dim = int(output_dim)
+        self.output_dim = output_dim
 
     @abstractmethod
     def extract_targets(self, batch: MEDSTorchBatch) -> TaskTargets:
@@ -102,7 +102,7 @@ class BinaryClassificationTask(SupervisedTask):
 
     def __init__(self, *, label_field: str = "boolean_value", output_dim: int = 1) -> None:
         super().__init__(output_dim=output_dim)
-        if int(output_dim) != 1:
+        if output_dim != 1:
             raise ValueError(f"BinaryClassificationTask requires output_dim=1, got {output_dim}")
         self.label_field = label_field
 
