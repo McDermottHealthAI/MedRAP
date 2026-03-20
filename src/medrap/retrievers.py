@@ -521,6 +521,7 @@ def load_hf_dataset_retriever(
         ...         doc_ids_column="doc_ids",
         ...         doc_key_embeddings_column="doc_key_embeddings",
         ...         k=1,
+        ...         index_path=f"{tmpdir}/retrieval.faiss",
         ...     )
         ...     tuple(retriever.retrieve(torch.FloatTensor([[[1.0, 0.0]]])).doc_tokens.shape)
         (1, 1, 1, 2)

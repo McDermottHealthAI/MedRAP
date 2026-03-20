@@ -16,6 +16,11 @@ class OrderedFieldDocumentRenderer:
         separator: Separator inserted between rendered field fragments.
         include_field_names: Whether to prefix each field value with
             ``"{field}: "``.
+
+    Examples:
+        >>> OrderedFieldDocumentRenderer(fields=[])
+        Traceback (most recent call last):
+        ValueError: fields must contain at least one field name
     """
 
     def __init__(
@@ -105,6 +110,39 @@ def prepare_retrieval_dataset(
     Returns:
         Output directory containing the saved dataset artifact and FAISS index
         sidecar.
+
+    Examples:
+        >>> source = Dataset.from_dict(
+        ...     {
+        ...         "title": ["Alpha title", "Beta title"],
+        ...         "body": ["alpha body", "beta body"],
+        ...         "source_id": [11, 22],
+        ...     }
+        ... )
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     output_dir = prepare_retrieval_dataset(
+        ...         dataset=source,
+        ...         renderer=OrderedFieldDocumentRenderer(fields=["title", "body"], separator=" | "),
+        ...         tokenizer=DoctestTokenizer(),
+        ...         embedder=DoctestEmbedder(),
+        ...         output_dir=tmpdir,
+        ...         source_id_column="source_id",
+        ...         max_length=4,
+        ...     )
+        ...     reloaded = load_from_disk(str(output_dir))
+        ...     rows = reloaded[:]
+        ...     (Path(output_dir) / "retrieval.faiss").exists()
+        True
+        >>> rows["doc_text"]
+        ['Alpha title | alpha body', 'Beta title | beta body']
+        >>> rows["doc_ids"]
+        [11, 22]
+        >>> rows["doc_tokens"]
+        [[1, 1, 1, 1], [2, 2, 2, 2]]
+        >>> rows["doc_attention_mask"]
+        [[1, 1, 1, 1], [1, 1, 1, 1]]
+        >>> rows["doc_key_embeddings"]
+        [[1.0, 0.0], [0.0, 1.0]]
     """
 
     def _render_row(row: Mapping[str, object], idx: int) -> dict[str, object]:
