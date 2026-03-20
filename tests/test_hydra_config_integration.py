@@ -100,8 +100,8 @@ def test_prepare_retrieval_dataset_config_composes(tmp_path) -> None:
                 "prep/source=load_from_disk",
                 f"prep.source.dataset_path={tmp_path}/source",
                 "prep.document.fields=[text]",
-                "prep.tokenizer.model_name=stub-tokenizer",
-                "prep.embedder.model_name=stub-embedder",
+                "prep.tokenizer.pretrained_model_name_or_path=stub-tokenizer",
+                "prep.embedder.model_name_or_path=stub-embedder",
                 f"prep.output.output_dir={tmp_path}/prepared",
             ],
         )

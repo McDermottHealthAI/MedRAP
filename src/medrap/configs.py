@@ -177,13 +177,13 @@ OrderedFieldDocumentRendererConfig = builds_any(
 @dataclass
 class HFTokenizerConfig:
     _target_: str = "transformers.AutoTokenizer.from_pretrained"
-    model_name: str = MISSING
+    pretrained_model_name_or_path: str = MISSING
 
 
 @dataclass
 class SentenceTransformerEmbedderConfig:
     _target_: str = "sentence_transformers.SentenceTransformer"
-    model_name: str = MISSING
+    model_name_or_path: str = MISSING
     device: str = "cpu"
 
 
