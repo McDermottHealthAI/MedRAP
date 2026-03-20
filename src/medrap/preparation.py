@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 from datasets import Dataset
@@ -94,8 +94,7 @@ def prepare_retrieval_dataset(
         doc_attention_mask_column: Output attention-mask column name.
         doc_key_embeddings_column: Output key-embedding column name.
         doc_ids_column: Output document-id column name.
-        source_id_column: Optional source column copied into ``doc_ids``. When
-            provided, values must be integer-like.
+        source_id_column: Optional source column copied into ``doc_ids``.
         index_name: Saved FAISS index name.
         max_length: Tokenizer max sequence length.
         tokenization_batch_size: Batch size used for tokenization mapping.
@@ -108,19 +107,9 @@ def prepare_retrieval_dataset(
         sidecar.
     """
 
-    def _coerce_doc_id(value: object, *, row_index: int) -> int:
-        try:
-            return int(value)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"{doc_ids_column} values must be integer-like; got {value!r} at row {row_index}"
-            ) from exc
-
     def _render_row(row: Mapping[str, object], idx: int) -> dict[str, object]:
         rendered: dict[str, object] = {doc_text_column: renderer.render(row)}
-        rendered[doc_ids_column] = (
-            _coerce_doc_id(row[source_id_column], row_index=idx) if source_id_column is not None else idx
-        )
+        rendered[doc_ids_column] = row[source_id_column] if source_id_column is not None else idx
         return rendered
 
     prepared = dataset.map(
@@ -130,7 +119,7 @@ def prepare_retrieval_dataset(
     )
 
     def _tokenize_batch(batch: Mapping[str, object]) -> dict[str, object]:
-        texts = cast("list[str]", batch[doc_text_column])
+        texts = batch[doc_text_column]
         encoded = tokenizer(
             texts,
             truncation=True,
@@ -150,7 +139,7 @@ def prepare_retrieval_dataset(
     )
 
     def _embed_batch(batch: Mapping[str, object]) -> dict[str, object]:
-        texts = cast("list[str]", batch[doc_text_column])
+        texts = batch[doc_text_column]
         embeddings = embedder.encode(
             texts,
             batch_size=embedding_batch_size,
