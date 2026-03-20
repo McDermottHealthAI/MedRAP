@@ -1,8 +1,7 @@
 from hydra import compose, initialize_config_module
-from hydra.core.config_store import ConfigStore
 from torch import nn
 
-from medrap.configs import RAPAppConfig, instantiate_datamodule, instantiate_training_module
+from medrap.configs import instantiate_datamodule, instantiate_training_module
 from medrap.lightning_module import MedRAPSupervisedLightningModule
 from medrap.model import RetrievalAugmentedModel
 from medrap.task import SupervisedTask
@@ -73,14 +72,6 @@ def test_train_config_supports_meds_datamodule_overrides(tmp_path) -> None:
     datamodule = instantiate_datamodule(cfg)
 
     assert datamodule.__class__.__name__ == "Datamodule"
-
-
-def test_app_config_registers_with_hydra_config_store() -> None:
-    RAPAppConfig.add_to_config_store(group="medrap")
-    cs = ConfigStore.instance()
-
-    assert "medrap" in cs.repo
-    assert "RAPAppConfig.yaml" in cs.repo["medrap"]
 
 
 def test_supervised_task_is_not_exported_from_package_root() -> None:

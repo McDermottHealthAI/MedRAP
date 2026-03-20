@@ -42,12 +42,30 @@ def _bind_trainer_paths(cfg: DictConfig, *, output_dir: Path) -> DictConfig:
     return bound_cfg
 
 
-def _instantiate_trainer(cfg: DictConfig, *, output_dir: Path) -> object:
-    bound_cfg = _bind_trainer_paths(cfg, output_dir=output_dir)
-    return instantiate(bound_cfg.training.trainer)
-
-
 def _find_checkpoint_path(output_dir: Path) -> Path | None:
+    """Return the resume checkpoint path for a saved run directory.
+
+    Examples:
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     run_dir = Path(tmpdir)
+        ...     _find_checkpoint_path(run_dir) is None
+        True
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     run_dir = Path(tmpdir)
+        ...     checkpoints = run_dir / "checkpoints"
+        ...     checkpoints.mkdir()
+        ...     _ = (checkpoints / "epoch=0-step=1.ckpt").write_text("older")
+        ...     newer = checkpoints / "epoch=1-step=2.ckpt"
+        ...     _ = newer.write_text("newer")
+        ...     _find_checkpoint_path(run_dir) == newer
+        True
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     run_dir = Path(tmpdir)
+        ...     _ = (run_dir / "checkpoints").write_text("not a directory")
+        ...     _find_checkpoint_path(run_dir)
+        Traceback (most recent call last):
+        NotADirectoryError: Checkpoints directory .../checkpoints is a file, not a directory.
+    """
     checkpoints_dir = output_dir / "checkpoints"
     if checkpoints_dir.is_file():
         raise NotADirectoryError(f"Checkpoints directory {checkpoints_dir} is a file, not a directory.")
@@ -63,6 +81,37 @@ def _find_checkpoint_path(output_dir: Path) -> Path | None:
 
 
 def _validate_resume_directory(output_dir: Path, cfg: DictConfig) -> None:
+    """Validate that a resumed run matches the saved config.
+
+    Examples:
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     run_dir = Path(tmpdir)
+        ...     cfg = OmegaConf.create(
+        ...         {"output_dir": str(run_dir), "training": {"trainer": {"default_root_dir": "."}}}
+        ...     )
+        ...     _validate_resume_directory(run_dir, cfg)
+        Traceback (most recent call last):
+        FileNotFoundError: No saved config found at .../config.yaml.
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     run_dir = Path(tmpdir)
+        ...     run_dir.mkdir(exist_ok=True)
+        ...     saved_cfg = OmegaConf.create(
+        ...         {
+        ...             "output_dir": str(run_dir),
+        ...             "training": {"trainer": {"default_root_dir": "."}, "task": {"output_dim": 1}},
+        ...         }
+        ...     )
+        ...     new_cfg = OmegaConf.create(
+        ...         {
+        ...             "output_dir": str(run_dir),
+        ...             "training": {"trainer": {"default_root_dir": "."}, "task": {"output_dim": 2}},
+        ...         }
+        ...     )
+        ...     OmegaConf.save(saved_cfg, run_dir / "config.yaml")
+        ...     _validate_resume_directory(run_dir, new_cfg)
+        Traceback (most recent call last):
+        ValueError: Config mismatch when resuming run in ...
+    """
     config_path = output_dir / "config.yaml"
     if not config_path.is_file():
         raise FileNotFoundError(f"No saved config found at {config_path}.")
@@ -84,6 +133,17 @@ def _validate_resume_directory(output_dir: Path, cfg: DictConfig) -> None:
 
 
 def _prepare_output_dir(cfg: DictConfig) -> Path:
+    """Return the configured output directory, rejecting file paths.
+
+    Examples:
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     output_path = Path(tmpdir) / "output"
+        ...     output_path.write_text("not a directory")
+        ...     cfg = OmegaConf.create({"output_dir": str(output_path)})
+        ...     _prepare_output_dir(cfg)
+        Traceback (most recent call last):
+        NotADirectoryError: Output directory .../output is a file, not a directory.
+    """
     output_dir = Path(cfg.output_dir)
     if output_dir.is_file():
         raise NotADirectoryError(f"Output directory {output_dir} is a file, not a directory.")
@@ -91,6 +151,43 @@ def _prepare_output_dir(cfg: DictConfig) -> Path:
 
 
 def _prepare_train_run(cfg: DictConfig) -> Path | None:
+    """Create or validate a training run directory.
+
+    Examples:
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     output_dir = Path(tmpdir) / "train"
+        ...     output_dir.mkdir()
+        ...     stale_file = output_dir / "stale.txt"
+        ...     _ = stale_file.write_text("stale")
+        ...     _ = (output_dir / "config.yaml").write_text("existing")
+        ...     cfg = OmegaConf.create(
+        ...         {
+        ...             "output_dir": str(output_dir),
+        ...             "do_overwrite": True,
+        ...             "do_resume": False,
+        ...             "training": {"trainer": {"default_root_dir": "."}},
+        ...         }
+        ...     )
+        ...     _prepare_train_run(cfg) is None
+        True
+        >>> stale_file.exists()
+        False
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     output_dir = Path(tmpdir) / "train"
+        ...     output_dir.mkdir()
+        ...     cfg = OmegaConf.create(
+        ...         {
+        ...             "output_dir": str(output_dir),
+        ...             "do_overwrite": False,
+        ...             "do_resume": True,
+        ...             "training": {"trainer": {"default_root_dir": "."}},
+        ...         }
+        ...     )
+        ...     OmegaConf.save(cfg, output_dir / "config.yaml")
+        ...     _prepare_train_run(cfg)
+        Traceback (most recent call last):
+        FileNotFoundError: No checkpoint found to resume from in ...
+    """
     output_dir = _prepare_output_dir(cfg)
     config_path = output_dir / "config.yaml"
     ckpt_path = None
@@ -134,6 +231,17 @@ def _prepare_eval_run(cfg: DictConfig) -> Path:
 
 
 def _copy_best_checkpoint(trainer: object, output_dir: Path) -> None:
+    """Copy the best checkpoint into the run root when available.
+
+    Examples:
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     _copy_best_checkpoint(SimpleNamespace(checkpoint_callback=None), Path(tmpdir))
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     _copy_best_checkpoint(
+        ...         SimpleNamespace(checkpoint_callback=SimpleNamespace(best_model_path="")),
+        ...         Path(tmpdir),
+        ...     )
+    """
     checkpoint_callback = getattr(trainer, "checkpoint_callback", None)
     if checkpoint_callback is None:
         return
@@ -159,7 +267,8 @@ def _run_train(cfg: DictConfig) -> int:
     output_dir = _prepare_output_dir(cfg)
     ckpt_path = _prepare_train_run(cfg)
     module = instantiate_training_module(cfg)
-    trainer = _instantiate_trainer(cfg, output_dir=output_dir)
+    bound_cfg = _bind_trainer_paths(cfg, output_dir=output_dir)
+    trainer = instantiate(bound_cfg.training.trainer)
     datamodule = instantiate_datamodule(cfg)
 
     trainer.fit(module, datamodule=datamodule, ckpt_path=str(ckpt_path) if ckpt_path else None)
@@ -175,7 +284,8 @@ def _run_eval(cfg: DictConfig) -> int:
         raise ValueError("checkpoint_path must be set for medrap eval.")
 
     module = _load_training_module_checkpoint(cfg, checkpoint_path)
-    trainer = _instantiate_trainer(cfg, output_dir=output_dir)
+    bound_cfg = _bind_trainer_paths(cfg, output_dir=output_dir)
+    trainer = instantiate(bound_cfg.training.trainer)
     datamodule = instantiate_datamodule(cfg)
 
     if cfg.eval_mode == "validate":

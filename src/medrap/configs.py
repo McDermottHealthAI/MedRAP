@@ -267,6 +267,11 @@ class RAPAppConfig(PipelineConfig):
 
         This follows the standard ``ConfigStore.store`` pattern used in
         MEDS ecosystem repos.
+
+        Examples:
+            >>> RAPAppConfig.add_to_config_store(group="medrap_doctest")
+            >>> "RAPAppConfig.yaml" in ConfigStore.instance().repo["medrap_doctest"]
+            True
         """
         cs = ConfigStore.instance()
         cs.store(name=cls.__name__, group=group, node=cls)
@@ -288,9 +293,7 @@ class RAPTrainConfig(PipelineConfig):
     """Top-level training config that preserves ``PipelineConfig`` as model composition."""
 
     head: ComponentConfig = field(default_factory=lambda: LinearHeadConfig(out_dim=1))
-    training: TrainingConfig = field(
-        default_factory=lambda: TrainingConfig(trainer=LightningDefaultTrainerConfig())
-    )
+    training: TrainingConfig = field(default_factory=TrainingConfig)
     output_dir: str = MISSING
     do_resume: bool = False
     do_overwrite: bool = False
@@ -309,33 +312,30 @@ class RAPEvalConfig(PipelineConfig):
     eval_mode: str = "validate"
 
 
-def default_pipeline_config() -> PipelineConfig:
-    """Return a default, fully-instantiable pipeline config.
-
-    Examples:
-        >>> model = instantiate_model(default_pipeline_config())
-        >>> model.encoder.__class__.__name__
-        'MEDSCodeEncoder'
-        >>> model.query_projector.__class__.__name__
-        'SequenceMeanQueryProjector'
-        >>> model.retriever.__class__.__name__
-        'InMemoryRetriever'
-        >>> model.retrieval_encoder.__class__.__name__
-        'MeanPooledRetrievalEncoder'
-        >>> model.fusion.__class__.__name__
-        'ReplaceFusion'
-        >>> model.pooling.__class__.__name__
-        'IdentityPooling'
-        >>> model.head.__class__.__name__
-        'LinearHead'
-    """
-    return PipelineConfig()
-
-
 def instantiate_model(config: Any) -> RetrievalAugmentedModel:
     """Instantiate a ``RetrievalAugmentedModel`` from structured config.
 
     Examples:
+        >>> model = instantiate_model(PipelineConfig())
+        >>> (
+        ...     model.encoder.__class__.__name__,
+        ...     model.query_projector.__class__.__name__,
+        ...     model.retriever.__class__.__name__,
+        ...     model.retrieval_encoder.__class__.__name__,
+        ...     model.fusion.__class__.__name__,
+        ...     model.pooling.__class__.__name__,
+        ...     model.head.__class__.__name__,
+        ... )
+        >>> names == (
+        ...     "MEDSCodeEncoder",
+        ...     "SequenceMeanQueryProjector",
+        ...     "InMemoryRetriever",
+        ...     "MeanPooledRetrievalEncoder",
+        ...     "ReplaceFusion",
+        ...     "IdentityPooling",
+        ...     "LinearHead",
+        ... )
+        True
         >>> model = instantiate_model(
         ...     PipelineConfig(
         ...         encoder=TokenEmbeddingEncoderConfig(vocab_size=32, embedding_dim=3),
