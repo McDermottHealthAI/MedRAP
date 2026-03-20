@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import cast
 
 import torch
-from datasets import Dataset, DatasetDict, load_from_disk
+from datasets import Dataset, load_from_disk
 from torch import Tensor, nn
 
 from .types import RetrieverOutput
@@ -526,9 +526,9 @@ def load_hf_dataset_retriever(
         (1, 1, 1, 2)
     """
     dataset = load_from_disk(dataset_path)
-    if isinstance(dataset, DatasetDict):
-        raise TypeError("dataset_path must resolve to a datasets.Dataset, not a DatasetDict")
-    resolved_index_path = index_path or str(Path(dataset_path) / f"{index_name}.faiss")
+    resolved_index_path = (
+        index_path if index_path is not None else str(Path(dataset_path) / f"{index_name}.faiss")
+    )
     dataset.load_faiss_index(index_name, resolved_index_path)
     return HFDatasetRetriever(
         dataset=dataset,

@@ -52,15 +52,7 @@ class OrderedFieldDocumentRenderer:
             >>> named = OrderedFieldDocumentRenderer(fields=["question"], include_field_names=True)
             >>> named.render({"question": "What is MedRAP?"})
             'question: What is MedRAP?'
-            >>> renderer.render({"question": "Missing answer"})  # doctest: +ELLIPSIS
-            Traceback (most recent call last):
-                ...
-            ValueError: row is missing required fields: ['answer']
         """
-        missing_fields = [field for field in self.fields if field not in row]
-        if missing_fields:
-            raise ValueError(f"row is missing required fields: {missing_fields}")
-
         fragments: list[str] = []
         for field in self.fields:
             value = "" if row[field] is None else str(row[field])
