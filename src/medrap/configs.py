@@ -278,7 +278,28 @@ class PrepareRetrievalDatasetAppConfig:
 
 
 def default_pipeline_config() -> PipelineConfig:
-    """Return a default, fully-instantiable pipeline config."""
+    """Return a default, fully-instantiable pipeline config.
+
+    Examples:
+        >>> cfg = default_pipeline_config()
+        >>> model = instantiate_model(cfg)
+        >>> model.__class__.__name__
+        'RetrievalAugmentedModel'
+        >>> model.encoder.__class__.__name__
+        'MEDSCodeEncoder'
+        >>> model.query_projector.__class__.__name__
+        'SequenceMeanQueryProjector'
+        >>> model.retriever.__class__.__name__
+        'InMemoryRetriever'
+        >>> model.retrieval_encoder.__class__.__name__
+        'MeanPooledRetrievalEncoder'
+        >>> model.fusion.__class__.__name__
+        'ReplaceFusion'
+        >>> model.pooling.__class__.__name__
+        'IdentityPooling'
+        >>> model.head.__class__.__name__
+        'LinearHead'
+    """
     return PipelineConfig()
 
 
@@ -340,6 +361,22 @@ def prepare_retrieval_dataset_from_config(config: Any) -> str:
 
     Returns:
         Output directory path where the prepared dataset artifact was saved.
+
+    Examples:
+        >>> cfg = PrepareRetrievalDatasetAppConfig(
+        ...     prep=PrepareRetrievalDatasetConfig(
+        ...         output=RetrievalDatasetOutputConfig(output_dir="/tmp/prepared")
+        ...     )
+        ... )
+        >>> cfg.prep.index == RetrievalDatasetIndexConfig()
+        True
+        >>> cfg.prep.output.output_dir
+        '/tmp/prepared'
+        >>> retriever_cfg = HFDatasetRetrieverConfig(dataset_path="/tmp/retrieval-artifact")
+        >>> retriever_cfg.dataset_path
+        '/tmp/retrieval-artifact'
+        >>> retriever_cfg.index_name
+        'retrieval'
     """
     prep_cfg = config.prep
     dataset = instantiate_any(prep_cfg.source)

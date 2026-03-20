@@ -3,31 +3,22 @@ from meds_torchdata import MEDSTorchBatch
 
 from medrap.configs import (
     ConcatFusionConfig,
-    HFDatasetRetrieverConfig,
     InMemoryRetrieverConfig,
     LinearHeadConfig,
     LinearQueryProjectorConfig,
     MaskedMeanPoolingConfig,
     PipelineConfig,
-    PrepareRetrievalDatasetAppConfig,
-    PrepareRetrievalDatasetConfig,
-    RetrievalDatasetIndexConfig,
-    RetrievalDatasetOutputConfig,
     TokenEmbeddingEncoderConfig,
     bool_tensor_config,
-    default_pipeline_config,
     float_tensor_config,
     instantiate_model,
     long_tensor_config,
 )
-from medrap.encoders import MEDSCodeEncoder, TokenEmbeddingEncoder
-from medrap.fusion import ConcatFusion, ReplaceFusion
+from medrap.encoders import TokenEmbeddingEncoder
+from medrap.fusion import ConcatFusion
 from medrap.heads import LinearHead
-from medrap.model import RetrievalAugmentedModel
-from medrap.pooling import IdentityPooling, MaskedMeanPooling
-from medrap.query_projection import LinearQueryProjector, SequenceMeanQueryProjector
-from medrap.retrieval_encoder import MeanPooledRetrievalEncoder
-from medrap.retrievers import InMemoryRetriever
+from medrap.pooling import MaskedMeanPooling
+from medrap.query_projection import LinearQueryProjector
 
 
 def _example_batch() -> MEDSTorchBatch:
@@ -37,21 +28,6 @@ def _example_batch() -> MEDSTorchBatch:
         numeric_value_mask=torch.BoolTensor([[False, False, False], [False, False, False]]),
         time_delta_days=torch.FloatTensor([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
     )
-
-
-def test_default_pipeline_config_instantiates_default_components() -> None:
-    cfg = default_pipeline_config()
-
-    model = instantiate_model(cfg)
-
-    assert isinstance(model, RetrievalAugmentedModel)
-    assert isinstance(model.encoder, MEDSCodeEncoder)
-    assert isinstance(model.query_projector, SequenceMeanQueryProjector)
-    assert isinstance(model.retriever, InMemoryRetriever)
-    assert isinstance(model.retrieval_encoder, MeanPooledRetrievalEncoder)
-    assert isinstance(model.fusion, ReplaceFusion)
-    assert isinstance(model.pooling, IdentityPooling)
-    assert isinstance(model.head, LinearHead)
 
 
 def test_pipeline_config_allows_overriding_retriever_values() -> None:
@@ -90,19 +66,3 @@ def test_pipeline_config_allows_meaningful_module_overrides() -> None:
     assert isinstance(model.fusion, ConcatFusion)
     assert isinstance(model.pooling, MaskedMeanPooling)
     assert isinstance(model.head, LinearHead)
-
-
-def test_prepare_retrieval_dataset_config_uses_stable_defaults() -> None:
-    cfg = PrepareRetrievalDatasetAppConfig(
-        prep=PrepareRetrievalDatasetConfig(output=RetrievalDatasetOutputConfig(output_dir="/tmp/prepared"))
-    )
-
-    assert cfg.prep.index == RetrievalDatasetIndexConfig()
-    assert cfg.prep.output.output_dir == "/tmp/prepared"
-
-
-def test_pipeline_config_can_use_saved_hf_dataset_retriever_loader() -> None:
-    cfg = PipelineConfig(retriever=HFDatasetRetrieverConfig(dataset_path="/tmp/retrieval-artifact"))
-
-    assert cfg.retriever.dataset_path == "/tmp/retrieval-artifact"
-    assert cfg.retriever.index_name == "retrieval"
