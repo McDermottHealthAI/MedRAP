@@ -1,3 +1,6 @@
+import sys
+from types import ModuleType
+
 from medrap.cli import eval_main, main, prepare_retrieval_dataset_main, train_main
 
 TINY_SENTENCE_TRANSFORMER_MODEL = "sentence-transformers-testing/stsb-bert-tiny-safetensors"
@@ -32,8 +35,59 @@ def test_medrap_prepare_retrieval_dataset_dispatches(monkeypatch) -> None:
     assert called == [["prep.output.output_dir=tmp"]]
 
 
-def test_prepare_retrieval_dataset_entrypoint_runs_with_hydra_overrides(tmp_path) -> None:
+def test_prepare_retrieval_dataset_entrypoint_runs_with_hydra_overrides(monkeypatch, tmp_path) -> None:
     from medrap import preparation as prep_module
+
+    fake_transformers = ModuleType("transformers")
+    fake_sentence_transformers = ModuleType("sentence_transformers")
+
+    class _FakePreTrainedTokenizerBase:
+        pass
+
+    class _FakeAutoTokenizer:
+        @staticmethod
+        def from_pretrained(pretrained_model_name_or_path: str) -> object:
+            assert pretrained_model_name_or_path == TINY_SENTENCE_TRANSFORMER_MODEL
+
+            class _Tokenizer(_FakePreTrainedTokenizerBase):
+                def __call__(
+                    self,
+                    texts: list[str],
+                    *,
+                    truncation: bool,
+                    padding: str,
+                    max_length: int,
+                ) -> dict[str, list[list[int]]]:
+                    return {
+                        "input_ids": [[idx + 1] * max_length for idx, _text in enumerate(texts)],
+                        "attention_mask": [[1] * max_length for _text in texts],
+                    }
+
+            return _Tokenizer()
+
+    class _FakeSentenceTransformer:
+        def __init__(self, model_name_or_path: str, device: str = "cpu") -> None:
+            assert model_name_or_path == TINY_SENTENCE_TRANSFORMER_MODEL
+            assert device == "cpu"
+
+        def encode(
+            self,
+            texts: list[str],
+            *,
+            batch_size: int,
+            convert_to_numpy: bool,
+            show_progress_bar: bool,
+        ) -> list[list[float]]:
+            rows = []
+            for text in texts:
+                rows.append([1.0, 0.0] if "alpha" in text.lower() else [0.0, 1.0])
+            return rows
+
+    fake_transformers.PreTrainedTokenizerBase = _FakePreTrainedTokenizerBase
+    fake_transformers.AutoTokenizer = _FakeAutoTokenizer
+    fake_sentence_transformers.SentenceTransformer = _FakeSentenceTransformer
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_sentence_transformers)
 
     source_dir = tmp_path / "source"
     output_dir = tmp_path / "prepared"
