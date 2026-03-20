@@ -1,2 +1,2 @@
-_target_: medrap.preparation.load_hf_tokenizer
+_target_: transformers.AutoTokenizer.from_pretrained
 model_name: ???

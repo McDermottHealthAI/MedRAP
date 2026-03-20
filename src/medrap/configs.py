@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 
 import torch
+from datasets import load_dataset, load_from_disk
 from hydra.core.config_store import ConfigStore
 from hydra_zen import builds, instantiate
 from omegaconf import MISSING
@@ -20,10 +21,6 @@ from .model import RetrievalAugmentedModel
 from .pooling import IdentityPooling, MaskedMeanPooling
 from .preparation import (
     OrderedFieldDocumentRenderer,
-    load_hf_dataset_from_disk,
-    load_hf_dataset_source,
-    load_hf_tokenizer,
-    load_sentence_transformer,
     prepare_retrieval_dataset,
 )
 from .query_projection import LinearQueryProjector, SequenceMeanQueryProjector
@@ -156,7 +153,7 @@ MedRAPSupervisedLightningModuleConfig = builds_any(
     zen_dataclass={"cls_name": "MedRAPSupervisedLightningModuleConfig"},
 )
 LoadHFSourceConfig = builds_any(
-    load_hf_dataset_source,
+    load_dataset,
     path=MISSING,
     split=MISSING,
     name=None,
@@ -164,7 +161,7 @@ LoadHFSourceConfig = builds_any(
     zen_dataclass={"cls_name": "LoadHFSourceConfig"},
 )
 LoadHFDatasetFromDiskConfig = builds_any(
-    load_hf_dataset_from_disk,
+    load_from_disk,
     dataset_path=MISSING,
     zen_dataclass={"cls_name": "LoadHFDatasetFromDiskConfig"},
 )
@@ -175,17 +172,19 @@ OrderedFieldDocumentRendererConfig = builds_any(
     include_field_names=False,
     zen_dataclass={"cls_name": "OrderedFieldDocumentRendererConfig"},
 )
-HFTokenizerConfig = builds_any(
-    load_hf_tokenizer,
-    model_name=MISSING,
-    zen_dataclass={"cls_name": "HFTokenizerConfig"},
-)
-SentenceTransformerEmbedderConfig = builds_any(
-    load_sentence_transformer,
-    model_name=MISSING,
-    device="cpu",
-    zen_dataclass={"cls_name": "SentenceTransformerEmbedderConfig"},
-)
+
+
+@dataclass
+class HFTokenizerConfig:
+    _target_: str = "transformers.AutoTokenizer.from_pretrained"
+    model_name: str = MISSING
+
+
+@dataclass
+class SentenceTransformerEmbedderConfig:
+    _target_: str = "sentence_transformers.SentenceTransformer"
+    model_name: str = MISSING
+    device: str = "cpu"
 
 
 @dataclass

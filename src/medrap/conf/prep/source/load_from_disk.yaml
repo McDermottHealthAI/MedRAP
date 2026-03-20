@@ -1,2 +1,2 @@
-_target_: medrap.preparation.load_hf_dataset_from_disk
+_target_: datasets.load_from_disk
 dataset_path: ???

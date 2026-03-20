@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import types
 from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
-from datasets import Dataset, DatasetDict
+from datasets import Dataset, load_dataset, load_from_disk
 from hydra_zen import builds
 
 from medrap.configs import (
@@ -17,14 +16,7 @@ from medrap.configs import (
     RetrievalDatasetOutputConfig,
     prepare_retrieval_dataset_from_config,
 )
-from medrap.preparation import (
-    OrderedFieldDocumentRenderer,
-    load_hf_dataset_from_disk,
-    load_hf_dataset_source,
-    load_hf_tokenizer,
-    load_sentence_transformer,
-    prepare_retrieval_dataset,
-)
+from medrap.preparation import OrderedFieldDocumentRenderer, prepare_retrieval_dataset
 from medrap.retrievers import load_hf_dataset_retriever
 
 
@@ -67,7 +59,7 @@ def test_load_hf_dataset_source_supports_local_data_files(tmp_path: Path) -> Non
     data_file = tmp_path / "records.jsonl"
     data_file.write_text('{"question": "alpha"}\n{"question": "beta"}\n')
 
-    dataset = load_hf_dataset_source(path="json", split="train", data_files=str(data_file))
+    dataset = load_dataset(path="json", split="train", data_files=str(data_file))
 
     assert len(dataset) == 2
     assert dataset["question"] == ["alpha", "beta"]
@@ -78,72 +70,14 @@ def test_ordered_field_document_renderer_rejects_empty_fields() -> None:
         OrderedFieldDocumentRenderer(fields=[])
 
 
-def test_load_hf_dataset_source_rejects_dataset_dict(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "medrap.preparation.load_dataset",
-        lambda **_kwargs: DatasetDict({"train": Dataset.from_dict({"text": ["alpha"]})}),
-    )
-
-    with pytest.raises(TypeError, match="load_dataset must return a datasets.Dataset"):
-        load_hf_dataset_source(path="stub", split="train")
-
-
 def test_load_hf_dataset_from_disk_round_trips_saved_dataset(tmp_path: Path) -> None:
     source_path = tmp_path / "source"
     Dataset.from_dict({"text": ["alpha", "beta"]}).save_to_disk(str(source_path))
 
-    dataset = load_hf_dataset_from_disk(dataset_path=source_path)
+    dataset = load_from_disk(str(source_path))
 
     assert len(dataset) == 2
     assert dataset["text"] == ["alpha", "beta"]
-
-
-def test_load_hf_dataset_from_disk_rejects_dataset_dict(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "medrap.preparation.load_from_disk",
-        lambda _path: DatasetDict({"train": Dataset.from_dict({"text": ["alpha"]})}),
-    )
-
-    with pytest.raises(TypeError, match="load_from_disk must return a datasets.Dataset"):
-        load_hf_dataset_from_disk(dataset_path="/tmp/source")
-
-
-def test_load_hf_tokenizer_uses_auto_tokenizer(monkeypatch) -> None:
-    calls: list[str] = []
-
-    class _FakeAutoTokenizer:
-        @staticmethod
-        def from_pretrained(model_name: str) -> str:
-            calls.append(model_name)
-            return "stub-tokenizer"
-
-    monkeypatch.setitem(
-        __import__("sys").modules,
-        "transformers",
-        types.SimpleNamespace(AutoTokenizer=_FakeAutoTokenizer),
-    )
-
-    assert load_hf_tokenizer(model_name="stub-model") == "stub-tokenizer"
-    assert calls == ["stub-model"]
-
-
-def test_load_sentence_transformer_uses_sentence_transformers(monkeypatch) -> None:
-    calls: list[tuple[str, str]] = []
-
-    class _FakeSentenceTransformer:
-        def __init__(self, model_name: str, *, device: str) -> None:
-            calls.append((model_name, device))
-
-    monkeypatch.setitem(
-        __import__("sys").modules,
-        "sentence_transformers",
-        types.SimpleNamespace(SentenceTransformer=_FakeSentenceTransformer),
-    )
-
-    model = load_sentence_transformer(model_name="stub-model", device="cuda:0")
-
-    assert isinstance(model, _FakeSentenceTransformer)
-    assert calls == [("stub-model", "cuda:0")]
 
 
 def test_prepare_retrieval_dataset_saves_static_artifact(tmp_path: Path) -> None:
@@ -168,7 +102,7 @@ def test_prepare_retrieval_dataset_saves_static_artifact(tmp_path: Path) -> None
     assert output_dir == tmp_path / "prepared"
     assert (output_dir / "retrieval.faiss").exists()
 
-    reloaded = load_hf_dataset_from_disk(dataset_path=output_dir)
+    reloaded = load_from_disk(str(output_dir))
     assert reloaded["doc_text"] == ["Alpha title | alpha body", "Beta title | beta body"]
     assert reloaded["doc_ids"] == [11, 22]
     assert reloaded["doc_tokens"] == [[1, 1, 1, 1], [2, 2, 2, 2]]

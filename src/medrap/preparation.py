@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
-from datasets import Dataset, load_dataset, load_from_disk
+from datasets import Dataset
 
 
 class OrderedFieldDocumentRenderer:
@@ -66,86 +66,6 @@ class OrderedFieldDocumentRenderer:
             value = "" if row[field] is None else str(row[field])
             fragments.append(f"{field}: {value}" if self.include_field_names else value)
         return self.separator.join(fragments)
-
-
-def load_hf_dataset_source(
-    *,
-    path: str,
-    split: str,
-    name: str | None = None,
-    data_files: str | list[str] | None = None,
-) -> Dataset:
-    """Load a Hugging Face dataset split via :func:`datasets.load_dataset`.
-
-    Args:
-        path: Dataset path, builder name, or local data file path supported by
-            :func:`datasets.load_dataset`.
-        split: Dataset split to load.
-        name: Optional dataset config name.
-        data_files: Optional local data files passed to
-            :func:`datasets.load_dataset`.
-
-    Returns:
-        Loaded dataset split.
-    """
-    dataset = load_dataset(path=path, name=name, split=split, data_files=data_files)
-    if not isinstance(dataset, Dataset):
-        raise TypeError("load_dataset must return a datasets.Dataset for retrieval preparation")
-    return dataset
-
-
-def load_hf_dataset_from_disk(*, dataset_path: str | Path) -> Dataset:
-    """Load a saved Hugging Face dataset artifact from disk.
-
-    Args:
-        dataset_path: Directory previously written by
-            :meth:`datasets.Dataset.save_to_disk`.
-
-    Returns:
-        Loaded dataset.
-
-    Examples:
-        >>> with tempfile.TemporaryDirectory() as tmpdir:
-        ...     dataset = Dataset.from_dict({"text": ["alpha", "beta"]})
-        ...     dataset.save_to_disk(tmpdir)
-        ...     loaded = load_hf_dataset_from_disk(dataset_path=tmpdir)
-        ...     list(loaded["text"])
-        ['alpha', 'beta']
-    """
-    dataset = load_from_disk(str(dataset_path))
-    if not isinstance(dataset, Dataset):
-        raise TypeError("load_from_disk must return a datasets.Dataset for retrieval preparation")
-    return dataset
-
-
-def load_hf_tokenizer(*, model_name: str) -> Any:
-    """Load a Hugging Face tokenizer.
-
-    Args:
-        model_name: Model or tokenizer identifier.
-
-    Returns:
-        Tokenizer instance exposing ``__call__`` with standard Hugging Face
-        tokenization arguments.
-    """
-    from transformers import AutoTokenizer
-
-    return AutoTokenizer.from_pretrained(model_name)
-
-
-def load_sentence_transformer(*, model_name: str, device: str = "cpu") -> Any:
-    """Load a sentence-transformers embedding model.
-
-    Args:
-        model_name: Sentence-transformers model identifier.
-        device: Device string passed to ``SentenceTransformer``.
-
-    Returns:
-        Sentence transformer model exposing ``encode``.
-    """
-    from sentence_transformers import SentenceTransformer
-
-    return SentenceTransformer(model_name, device=device)
 
 
 def prepare_retrieval_dataset(

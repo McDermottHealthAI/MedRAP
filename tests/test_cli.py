@@ -1,3 +1,5 @@
+import types
+
 from medrap.cli import eval_main, main, prepare_retrieval_dataset_main, train_main
 
 
@@ -37,8 +39,21 @@ def test_prepare_retrieval_dataset_entrypoint_runs_with_hydra_overrides(tmp_path
     output_dir = tmp_path / "prepared"
     prep_module.Dataset.from_dict({"text": ["alpha", "beta"]}).save_to_disk(str(source_dir))
 
-    monkeypatch.setattr(prep_module, "load_hf_tokenizer", lambda **_kwargs: _StubTokenizer())
-    monkeypatch.setattr(prep_module, "load_sentence_transformer", lambda **_kwargs: _StubEmbedder())
+    class _FakeAutoTokenizer:
+        @staticmethod
+        def from_pretrained(_model_name: str) -> _StubTokenizer:
+            return _StubTokenizer()
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "transformers",
+        types.SimpleNamespace(AutoTokenizer=_FakeAutoTokenizer),
+    )
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "sentence_transformers",
+        types.SimpleNamespace(SentenceTransformer=lambda _model_name, *, device: _StubEmbedder()),
+    )
 
     assert (
         prepare_retrieval_dataset_main(
