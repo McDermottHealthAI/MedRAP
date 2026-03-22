@@ -54,6 +54,7 @@ addopts = [
   "--ignore=docs",
   "--ignore=AGENTS.md",
   "--ignore=CONTRIBUTORS.md",
+  "--ignore=scripts",
   "--doctest-glob=*.md",
 ]
 markers = []
