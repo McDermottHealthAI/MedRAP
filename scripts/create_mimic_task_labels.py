@@ -46,13 +46,13 @@ Demonstrate the label schema on a tiny synthetic MEDS-like dataframe:
 ...         datetime(2020, 2, 3),
 ...     ],
 ...     "code": [
-...         "ADMISSION//CARDIAC",
+...         "HOSPITAL_ADMISSION//EW EMER.//EMERGENCY ROOM",
 ...         "HR",
 ...         "TEMP",
-...         "DEATH",
-...         "ADMISSION//PULMONARY",
+...         "MEDS_DEATH",
+...         "HOSPITAL_ADMISSION//ELECTIVE//PHYSICIAN REFERRAL",
 ...         "HR",
-...         "DISCHARGE",
+...         "HOSPITAL_DISCHARGE//HOME",
 ...     ],
 ...     "numeric_value": [
 ...         None,
@@ -100,8 +100,11 @@ def _build_in_hospital_mortality_labels(events: pl.DataFrame) -> pl.DataFrame:
         Labels dataframe with columns ``subject_id``, ``prediction_time``,
         ``boolean_value``.
     """
-    admissions = events.filter(pl.col("code").str.starts_with("ADMISSION"))
-    deaths = events.filter(pl.col("code").str.starts_with("DEATH"))
+    admissions = events.filter(pl.col("code").str.starts_with("HOSPITAL_ADMISSION"))
+    deaths = events.filter(
+        pl.col("code").str.starts_with("MEDS_DEATH")
+        | pl.col("code").str.starts_with("HOSPITAL_DISCHARGE//DIED")
+    )
 
     death_subjects = set(deaths["subject_id"].unique().to_list())
 
