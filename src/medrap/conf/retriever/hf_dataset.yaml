@@ -1,0 +1,9 @@
+_target_: medrap.retrievers.load_hf_dataset_retriever
+dataset_path: ???
+index_name: retrieval
+index_path: ${.dataset_path}/${.index_name}.faiss
+doc_tokens_column: doc_tokens
+doc_attention_mask_column: doc_attention_mask
+doc_ids_column: doc_ids
+doc_key_embeddings_column: doc_key_embeddings
+k: 1

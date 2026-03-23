@@ -26,10 +26,28 @@ jobs:
         run: >
           uv run pytest -v
           --ignore=docs
+          --ignore=src/medrap/preparation.py
+          --ignore=tests/test_preparation.py
           --cov=src
-          --cov-report=xml:coverage.xml
-          --cov-report=term
+          --cov-report=
           --junitxml=junit.xml
+
+      - name: Install prep extra
+        run: uv sync --locked --group dev --extra prep
+
+      - name: Run prep tests
+        run: >
+          uv run pytest -v
+          src/medrap/preparation.py
+          tests/test_preparation.py
+          --cov=src
+          --cov-append
+          --cov-report=
+
+      - name: Build coverage report
+        run: |
+          uv run coverage xml -o coverage.xml
+          uv run coverage report
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4.0.1

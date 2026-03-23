@@ -1,0 +1,3 @@
+_target_: sentence_transformers.SentenceTransformer
+model_name_or_path: ???
+device: cpu

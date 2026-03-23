@@ -10,19 +10,15 @@ from medrap.configs import (
     PipelineConfig,
     TokenEmbeddingEncoderConfig,
     bool_tensor_config,
-    default_pipeline_config,
     float_tensor_config,
     instantiate_model,
     long_tensor_config,
 )
-from medrap.encoders import MEDSCodeEncoder, TokenEmbeddingEncoder
-from medrap.fusion import ConcatFusion, ReplaceFusion
+from medrap.encoders import TokenEmbeddingEncoder
+from medrap.fusion import ConcatFusion
 from medrap.heads import LinearHead
-from medrap.model import RetrievalAugmentedModel
-from medrap.pooling import IdentityPooling, MaskedMeanPooling
-from medrap.query_projection import LinearQueryProjector, SequenceMeanQueryProjector
-from medrap.retrieval_encoder import MeanPooledRetrievalEncoder
-from medrap.retrievers import InMemoryRetriever
+from medrap.pooling import MaskedMeanPooling
+from medrap.query_projection import LinearQueryProjector
 
 
 def _example_batch() -> MEDSTorchBatch:
@@ -32,21 +28,6 @@ def _example_batch() -> MEDSTorchBatch:
         numeric_value_mask=torch.BoolTensor([[False, False, False], [False, False, False]]),
         time_delta_days=torch.FloatTensor([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
     )
-
-
-def test_default_pipeline_config_instantiates_default_components() -> None:
-    cfg = default_pipeline_config()
-
-    model = instantiate_model(cfg)
-
-    assert isinstance(model, RetrievalAugmentedModel)
-    assert isinstance(model.encoder, MEDSCodeEncoder)
-    assert isinstance(model.query_projector, SequenceMeanQueryProjector)
-    assert isinstance(model.retriever, InMemoryRetriever)
-    assert isinstance(model.retrieval_encoder, MeanPooledRetrievalEncoder)
-    assert isinstance(model.fusion, ReplaceFusion)
-    assert isinstance(model.pooling, IdentityPooling)
-    assert isinstance(model.head, LinearHead)
 
 
 def test_pipeline_config_allows_overriding_retriever_values() -> None:

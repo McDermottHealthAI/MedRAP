@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 import torch
+from datasets import load_from_disk
 from meds_torchdata import MEDSTorchBatch
 from torch import nn
 
@@ -45,6 +46,40 @@ class ModelOutputBinaryModel(nn.Module):
         return ModelOutput(logits=self.linear(features))
 
 
+class DoctestTokenizer:
+    """Tiny tokenizer stub for retrieval-preparation doctests."""
+
+    def __call__(
+        self,
+        texts: list[str],
+        *,
+        truncation: bool,
+        padding: str,
+        max_length: int,
+    ) -> dict[str, list[list[int]]]:
+        return {
+            "input_ids": [[idx + 1] * max_length for idx, _text in enumerate(texts)],
+            "attention_mask": [[1] * max_length for _text in texts],
+        }
+
+
+class DoctestEmbedder:
+    """Tiny embedder stub for retrieval-preparation doctests."""
+
+    def encode(
+        self,
+        texts: list[str],
+        *,
+        batch_size: int,
+        convert_to_numpy: bool,
+        show_progress_bar: bool,
+    ) -> list[list[float]]:
+        rows = []
+        for text in texts:
+            rows.append([1.0, 0.0] if "alpha" in text.lower() else [0.0, 1.0])
+        return rows
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _setup_doctest_namespace(
     doctest_namespace: dict[str, Any],
@@ -56,9 +91,12 @@ def _setup_doctest_namespace(
             "tempfile": tempfile,
             "Path": Path,
             "torch": torch,
+            "load_from_disk": load_from_disk,
             "MEDSTorchBatch": MEDSTorchBatch,
             "make_supervised_batch": make_supervised_batch,
             "ModelOutput": ModelOutput,
             "ModelOutputBinaryModel": ModelOutputBinaryModel,
+            "DoctestTokenizer": DoctestTokenizer,
+            "DoctestEmbedder": DoctestEmbedder,
         }
     )

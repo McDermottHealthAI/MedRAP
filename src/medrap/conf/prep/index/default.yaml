@@ -1,0 +1,11 @@
+doc_text_column: doc_text
+doc_tokens_column: doc_tokens
+doc_attention_mask_column: doc_attention_mask
+doc_key_embeddings_column: doc_key_embeddings
+doc_ids_column: doc_ids
+source_id_column: null
+index_name: retrieval
+max_length: 512
+tokenization_batch_size: 256
+embedding_batch_size: 256
+string_factory: null

@@ -25,6 +25,7 @@ Implemented now:
 - a small end-to-end doctest example in `model.py`
 - Hydra config groups under `medrap/conf`
 - `medrap train` / `medrap eval` CLI entrypoints
+- `medrap prepare-retrieval-dataset` for building static HF retrieval artifacts
 
 ## Quickstart (Synthetic MEDS Batch)
 
@@ -72,10 +73,12 @@ Run with Hydra overrides:
 ```bash
 uv run medrap train run_smoke=false
 uv run medrap eval run_smoke=false
+uv run medrap prepare-retrieval-dataset prep/source=load_from_disk ...
 ```
 
 `medrap` is a thin dispatcher; `train` and `eval` are implemented as Hydra-native
-entrypoints (`@hydra.main`) internally.
+entrypoints (`@hydra.main`) internally, and `prepare-retrieval-dataset` is the
+offline artifact-preparation entrypoint.
 
 Hydra component groups live in:
 
@@ -86,3 +89,4 @@ Hydra component groups live in:
 - `fusion/`
 - `pooling/`
 - `head/`
+- `prep/`

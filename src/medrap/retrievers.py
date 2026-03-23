@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 import torch
-from datasets import Dataset
+from datasets import Dataset, load_from_disk
 from torch import Tensor, nn
 
 from .types import RetrieverOutput
@@ -495,6 +495,79 @@ class HFDatasetRetriever(Retriever):
             scores=scores,
             output_device=query_embeddings.device,
         )
+
+
+def load_hf_dataset_retriever(
+    *,
+    dataset_path: str,
+    index_name: str,
+    doc_tokens_column: str,
+    doc_attention_mask_column: str,
+    k: int = 1,
+    doc_ids_column: str | None = None,
+    doc_key_embeddings_column: str | None = None,
+    index_path: str | None = None,
+) -> HFDatasetRetriever:
+    """Load a static dataset-backed retriever from a saved artifact.
+
+    Args:
+        dataset_path: Directory written by
+            :meth:`datasets.Dataset.save_to_disk`.
+        index_name: Name of the saved FAISS index.
+        doc_tokens_column: Column containing document token ids.
+        doc_attention_mask_column: Column containing document attention masks.
+        k: Number of documents to return per query.
+        doc_ids_column: Optional column containing document ids.
+        doc_key_embeddings_column: Optional column containing document key
+            embeddings.
+        index_path: Optional explicit path to the saved FAISS index file. When
+            omitted, defaults to ``{dataset_path}/{index_name}.faiss``.
+
+    Returns:
+        Configured :class:`HFDatasetRetriever`.
+
+    Examples:
+        >>> from datasets import Dataset
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     dataset = Dataset.from_dict(
+        ...         {
+        ...             "doc_tokens": [[10, 11], [20, 21]],
+        ...             "doc_attention_mask": [[1, 1], [1, 0]],
+        ...             "doc_ids": [7, 8],
+        ...             "doc_key_embeddings": [[1.0, 0.0], [0.0, 1.0]],
+        ...         }
+        ...     )
+        ...     _ = dataset.add_faiss_index(column="doc_key_embeddings", index_name="retrieval")
+        ...     dataset.save_faiss_index("retrieval", f"{tmpdir}/retrieval.faiss")
+        ...     _ = dataset.drop_index("retrieval")
+        ...     _ = dataset.save_to_disk(tmpdir)
+        ...     retriever = load_hf_dataset_retriever(
+        ...         dataset_path=tmpdir,
+        ...         index_name="retrieval",
+        ...         doc_tokens_column="doc_tokens",
+        ...         doc_attention_mask_column="doc_attention_mask",
+        ...         doc_ids_column="doc_ids",
+        ...         doc_key_embeddings_column="doc_key_embeddings",
+        ...         k=1,
+        ...         index_path=f"{tmpdir}/retrieval.faiss",
+        ...     )
+        ...     tuple(retriever.retrieve(torch.FloatTensor([[[1.0, 0.0]]])).doc_tokens.shape)
+        (1, 1, 1, 2)
+    """
+    dataset = load_from_disk(dataset_path)
+    resolved_index_path = (
+        index_path if index_path is not None else str(Path(dataset_path) / f"{index_name}.faiss")
+    )
+    dataset.load_faiss_index(index_name, resolved_index_path)
+    return HFDatasetRetriever(
+        dataset=dataset,
+        index_name=index_name,
+        doc_tokens_column=doc_tokens_column,
+        doc_attention_mask_column=doc_attention_mask_column,
+        k=k,
+        doc_ids_column=doc_ids_column,
+        doc_key_embeddings_column=doc_key_embeddings_column,
+    )
 
 
 def load_in_memory_retriever(
