@@ -3,19 +3,33 @@ from __future__ import annotations
 from pathlib import Path
 
 from datasets import Dataset
+from hydra_zen import builds
 
 from medrap.configs import (
-    HFTokenizerConfig,
     LoadHFDatasetFromDiskConfig,
     OrderedFieldDocumentRendererConfig,
     PrepareRetrievalDatasetAppConfig,
     PrepareRetrievalDatasetConfig,
     RetrievalDatasetOutputConfig,
-    SentenceTransformerEmbedderConfig,
     prepare_retrieval_dataset_from_config,
 )
 
-TINY_SENTENCE_TRANSFORMER_MODEL = "sentence-transformers-testing/stsb-bert-tiny-safetensors"
+
+class _Tokenizer:
+    def __call__(self, texts, *, truncation, padding, max_length):
+        return {
+            "input_ids": [[idx + 1] * max_length for idx, _ in enumerate(texts)],
+            "attention_mask": [[1] * max_length for _ in texts],
+        }
+
+
+class _Embedder:
+    def encode(self, texts, *, batch_size, convert_to_numpy, show_progress_bar):
+        return [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]][: len(texts)]
+
+
+TokenizerConfig = builds(_Tokenizer, populate_full_signature=False)
+EmbedderConfig = builds(_Embedder, populate_full_signature=False)
 
 
 def test_prepare_retrieval_dataset_from_config_runs_end_to_end(tmp_path: Path) -> None:
@@ -26,11 +40,8 @@ def test_prepare_retrieval_dataset_from_config_runs_end_to_end(tmp_path: Path) -
         prep=PrepareRetrievalDatasetConfig(
             source=LoadHFDatasetFromDiskConfig(dataset_path=str(source_path)),
             document=OrderedFieldDocumentRendererConfig(fields=["text"]),
-            tokenizer=HFTokenizerConfig(pretrained_model_name_or_path=TINY_SENTENCE_TRANSFORMER_MODEL),
-            embedder=SentenceTransformerEmbedderConfig(
-                model_name_or_path=TINY_SENTENCE_TRANSFORMER_MODEL,
-                device="cpu",
-            ),
+            tokenizer=TokenizerConfig(),
+            embedder=EmbedderConfig(),
             output=RetrievalDatasetOutputConfig(output_dir=str(tmp_path / "prepared")),
         )
     )
