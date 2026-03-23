@@ -9,11 +9,10 @@ from torch import Tensor, nn
 
 from .types import ModelOutput
 
-type TaskPredictions = ModelOutput
 type TaskTargets = Tensor | dict[str, Tensor]
 
 
-def _flatten_binary_logits(predictions: TaskPredictions, *, owner: str) -> Tensor:
+def _flatten_binary_logits(predictions: ModelOutput, *, owner: str) -> Tensor:
     logits = predictions.logits
     if logits.ndim == 2 and logits.shape[1] == 1:
         return logits.squeeze(1)
@@ -38,7 +37,7 @@ class SupervisedTask(nn.Module, ABC):
 
     def __init__(self, *, output_dim: int) -> None:
         super().__init__()
-        self.output_dim = int(output_dim)
+        self.output_dim = output_dim
 
     @abstractmethod
     def extract_targets(self, batch: MEDSTorchBatch) -> TaskTargets:
@@ -52,7 +51,7 @@ class SupervisedTask(nn.Module, ABC):
         """
 
     @abstractmethod
-    def metrics(self, predictions: TaskPredictions, targets: TaskTargets) -> Mapping[str, Tensor]:
+    def metrics(self, predictions: ModelOutput, targets: TaskTargets) -> Mapping[str, Tensor]:
         """Return scalar task metrics derived from logits and targets.
 
         Args:
@@ -68,7 +67,7 @@ class SupervisedLoss(nn.Module, ABC):
     """Abstract base for supervised training objectives."""
 
     @abstractmethod
-    def forward(self, predictions: TaskPredictions, targets: TaskTargets) -> Tensor:
+    def forward(self, predictions: ModelOutput, targets: TaskTargets) -> Tensor:
         """Compute a scalar training loss from predictions and task targets.
 
         Args:
@@ -103,7 +102,7 @@ class BinaryClassificationTask(SupervisedTask):
 
     def __init__(self, *, label_field: str = "boolean_value", output_dim: int = 1) -> None:
         super().__init__(output_dim=output_dim)
-        if int(output_dim) != 1:
+        if output_dim != 1:
             raise ValueError(f"BinaryClassificationTask requires output_dim=1, got {output_dim}")
         self.label_field = label_field
 
@@ -158,7 +157,7 @@ class BinaryClassificationTask(SupervisedTask):
             )
         return targets.float()
 
-    def metrics(self, predictions: TaskPredictions, targets: TaskTargets) -> Mapping[str, Tensor]:
+    def metrics(self, predictions: ModelOutput, targets: TaskTargets) -> Mapping[str, Tensor]:
         """Return binary-accuracy metrics derived from logits.
 
         Args:
@@ -202,7 +201,7 @@ class BinaryClassificationLoss(SupervisedLoss):
         shaped ``(B,)``.
     """
 
-    def forward(self, predictions: TaskPredictions, targets: TaskTargets) -> Tensor:
+    def forward(self, predictions: ModelOutput, targets: TaskTargets) -> Tensor:
         """Compute BCE-with-logits loss from binary predictions and targets.
 
         Args:

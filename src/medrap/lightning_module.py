@@ -13,7 +13,6 @@ from .task import (
     BinaryClassificationTask,
     SupervisedLoss,
     SupervisedTask,
-    TaskPredictions,
 )
 from .types import ModelOutput
 
@@ -105,7 +104,7 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
         return groups
 
     def _run_supervised_step(self, raw_batch: MEDSTorchBatch, *, stage: str) -> Tensor:
-        predictions: TaskPredictions = self.forward(raw_batch)
+        predictions = self.forward(raw_batch)
         targets = self.task.extract_targets(raw_batch)
         loss = self.loss_fn(predictions, targets)
 
@@ -197,14 +196,14 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
             ...     def extract_targets(self, batch: MEDSTorchBatch) -> Tensor:
             ...         return batch.boolean_value.float()
             ...
-            ...     def metrics(self, predictions: TaskPredictions, targets: object) -> dict[str, Tensor]:
+            ...     def metrics(self, predictions: ModelOutput, targets: object) -> dict[str, Tensor]:
             ...         return {}
             >>> class LearnableLoss(SupervisedLoss):
             ...     def __init__(self, task: LearnableTask) -> None:
             ...         super().__init__()
             ...         self.task = task
             ...
-            ...     def forward(self, predictions: TaskPredictions, targets: object) -> Tensor:
+            ...     def forward(self, predictions: ModelOutput, targets: object) -> Tensor:
             ...         assert isinstance(targets, Tensor)
             ...         return torch.nn.functional.binary_cross_entropy_with_logits(
             ...             self.task.scale * predictions.logits.squeeze(1),

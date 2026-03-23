@@ -1,0 +1,30 @@
+_target_: medrap.datamodule.SyntheticSupervisedDatamodule
+
+train_batch:
+  _target_: meds_torchdata.MEDSTorchBatch
+  code:
+    _target_: torch.LongTensor
+    _args_:
+      - [[1, 2, 3], [3, 2, 1]]
+  numeric_value:
+    _target_: torch.FloatTensor
+    _args_:
+      - [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+  numeric_value_mask:
+    _target_: torch.BoolTensor
+    _args_:
+      - [[false, false, false], [false, false, false]]
+  time_delta_days:
+    _target_: torch.FloatTensor
+    _args_:
+      - [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+  boolean_value:
+    _target_: torch.BoolTensor
+    _args_:
+      - [true, false]
+
+val_batch: null
+test_batch: null
+train_repeat: 2
+val_repeat: 1
+test_repeat: 1
