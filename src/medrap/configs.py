@@ -277,12 +277,11 @@ class PrepareRetrievalDatasetAppConfig:
     prep: PrepareRetrievalDatasetConfig = field(default_factory=PrepareRetrievalDatasetConfig)
 
 
-def default_pipeline_config() -> PipelineConfig:
-    """Return a default, fully-instantiable pipeline config.
+def instantiate_model(config: Any) -> RetrievalAugmentedModel:
+    """Instantiate a ``RetrievalAugmentedModel`` from structured config.
 
     Examples:
-        >>> cfg = default_pipeline_config()
-        >>> model = instantiate_model(cfg)
+        >>> model = instantiate_model(PipelineConfig())
         >>> model.__class__.__name__
         'RetrievalAugmentedModel'
         >>> model.encoder.__class__.__name__
@@ -300,11 +299,6 @@ def default_pipeline_config() -> PipelineConfig:
         >>> model.head.__class__.__name__
         'LinearHead'
     """
-    return PipelineConfig()
-
-
-def instantiate_model(config: Any) -> RetrievalAugmentedModel:
-    """Instantiate a ``RetrievalAugmentedModel`` from structured config."""
     return RetrievalAugmentedModel(
         encoder=instantiate_any(config.encoder),
         query_projector=instantiate_any(config.query_projector),
