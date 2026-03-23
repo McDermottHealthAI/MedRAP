@@ -205,6 +205,8 @@ class SentenceTransformerEmbedderConfig:
     _target_: str = "sentence_transformers.SentenceTransformer"
     model_name_or_path: str = MISSING
     device: str = "cpu"
+
+
 CSVLoggerConfig = builds_any(
     CSVLogger,
     save_dir="${default_root_dir}/loggers",
@@ -557,6 +559,7 @@ def prepare_retrieval_dataset_from_config(config: Any) -> str:
         string_factory=prep_cfg.index.string_factory,
     )
     return str(output_path)
+
 
 def instantiate_datamodule(config: RAPTrainConfig | RAPEvalConfig) -> lightning.LightningDataModule:
     """Instantiate the configured training datamodule.
