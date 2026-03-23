@@ -155,8 +155,8 @@ This produces one parquet file per split (e.g. `train.parquet`, `tuning.parquet`
 `held_out.parquet`) in the
 [MEDS label format](https://medical-event-data-standard.github.io/) with columns:
 
-| Column            | Type           | Description                        |
-|-------------------|----------------|------------------------------------|
-| `subject_id`      | `Int64`        | Patient identifier                 |
-| `prediction_time` | `Datetime[μs]` | Time at which prediction is made   |
-| `boolean_value`   | `Boolean`      | Task label (positive / negative)   |
+| Column            | Type           | Description                      |
+| ----------------- | -------------- | -------------------------------- |
+| `subject_id`      | `Int64`        | Patient identifier               |
+| `prediction_time` | `Datetime[μs]` | Time at which prediction is made |
+| `boolean_value`   | `Boolean`      | Task label (positive / negative) |

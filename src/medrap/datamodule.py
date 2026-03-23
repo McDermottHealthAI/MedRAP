@@ -171,7 +171,9 @@ class MEDSDatamodule(lightning.LightningDataModule):
             >>> batch.boolean_value.dtype
             torch.bool
         """
-        return DataLoader(self._train_ds, batch_size=self.batch_size, collate_fn=self._train_ds.collate, shuffle=True)
+        return DataLoader(
+            self._train_ds, batch_size=self.batch_size, collate_fn=self._train_ds.collate, shuffle=True
+        )
 
     def val_dataloader(self) -> DataLoader:
         """Return a DataLoader over the ``tuning`` split.

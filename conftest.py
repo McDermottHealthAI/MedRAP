@@ -47,7 +47,9 @@ def make_meds_batch(batch_size: int = 4, seq_len: int = 128, vocab_size: int = 6
     - ``boolean_value``: binary labels, shape ``(B,)``
     """
     numeric_value_mask = torch.rand(batch_size, seq_len) < 0.15
-    numeric_value = torch.where(numeric_value_mask, torch.randn(batch_size, seq_len).abs() * 50, torch.zeros(batch_size, seq_len))
+    numeric_value = torch.where(
+        numeric_value_mask, torch.randn(batch_size, seq_len).abs() * 50, torch.zeros(batch_size, seq_len)
+    )
     return MEDSTorchBatch(
         code=torch.randint(1, vocab_size, (batch_size, seq_len)),
         numeric_value=numeric_value,
@@ -64,6 +66,7 @@ def batch_dataset(batch: MEDSTorchBatch):
     can be passed directly to ``MEDSDatamodule._train_ds`` (and siblings) in
     doctests without requiring real tensorized data files.
     """
+
     class _D:
         def __len__(self) -> int:
             return 1
