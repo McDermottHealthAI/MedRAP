@@ -132,8 +132,8 @@ efficient on-disk tensor format:
 
 ```bash
 uv run MTD_preprocess \
-    MEDS_dataset_dir=mimic/MEDS_cohort \
-    output_dir=mimic/tensorized
+        MEDS_dataset_dir=mimic/MEDS_cohort \
+        output_dir=mimic/tensorized
 ```
 
 The output in `mimic/tensorized/` is what `meds_torchdata.MEDSTorchDataConfig`
@@ -146,9 +146,9 @@ cohort. For example, **in-hospital mortality**:
 
 ```bash
 uv run python scripts/create_mimic_task_labels.py \
-    --meds-dir mimic/MEDS_cohort \
-    --output-dir mimic/task_labels/in_hospital_mortality \
-    --task in_hospital_mortality
+        --meds-dir mimic/MEDS_cohort \
+        --output-dir mimic/task_labels/in_hospital_mortality \
+        --task in_hospital_mortality
 ```
 
 This produces one parquet file per split (e.g. `train.parquet`, `tuning.parquet`,
