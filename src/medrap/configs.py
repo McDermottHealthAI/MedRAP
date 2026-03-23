@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import lightning
 import torch
+from datasets import load_dataset, load_from_disk
 from hydra.core.config_store import ConfigStore
 from hydra_zen import builds, instantiate
 from lightning.pytorch.callbacks import ModelCheckpoint
@@ -25,9 +26,13 @@ from .heads import LinearHead
 from .lightning_module import MedRAPSupervisedLightningModule
 from .model import RetrievalAugmentedModel
 from .pooling import IdentityPooling, MaskedMeanPooling
+from .preparation import (
+    OrderedFieldDocumentRenderer,
+    prepare_retrieval_dataset,
+)
 from .query_projection import LinearQueryProjector, SequenceMeanQueryProjector
 from .retrieval_encoder import MeanPooledRetrievalEncoder, TokenFeatureRetrievalEncoder
-from .retrievers import InMemoryRetriever
+from .retrievers import InMemoryRetriever, load_hf_dataset_retriever
 from .task import BinaryClassificationLoss, BinaryClassificationTask
 
 ComponentConfig = Any
@@ -96,6 +101,18 @@ InMemoryRetrieverConfig = builds_any(
     populate_full_signature=True,
     zen_dataclass={"cls_name": "InMemoryRetrieverConfig"},
 )
+HFDatasetRetrieverConfig = builds_any(
+    load_hf_dataset_retriever,
+    dataset_path=MISSING,
+    index_name="retrieval",
+    index_path=None,
+    doc_tokens_column="doc_tokens",
+    doc_attention_mask_column="doc_attention_mask",
+    doc_ids_column="doc_ids",
+    doc_key_embeddings_column="doc_key_embeddings",
+    k=1,
+    zen_dataclass={"cls_name": "HFDatasetRetrieverConfig"},
+)
 DemoInMemoryRetrieverConfig = builds_any(
     InMemoryRetriever,
     populate_full_signature=True,
@@ -155,6 +172,41 @@ MedRAPSupervisedLightningModuleConfig = builds_any(
     MedRAPSupervisedLightningModule,
     zen_dataclass={"cls_name": "MedRAPSupervisedLightningModuleConfig"},
 )
+LoadHFSourceConfig = builds_any(
+    load_dataset,
+    path=MISSING,
+    split=MISSING,
+    name=None,
+    data_files=None,
+    zen_dataclass={"cls_name": "LoadHFSourceConfig"},
+)
+LoadHFDatasetFromDiskConfig = builds_any(
+    load_from_disk,
+    dataset_path=MISSING,
+    zen_dataclass={"cls_name": "LoadHFDatasetFromDiskConfig"},
+)
+OrderedFieldDocumentRendererConfig = builds_any(
+    OrderedFieldDocumentRenderer,
+    fields=MISSING,
+    separator="\n",
+    include_field_names=False,
+    zen_dataclass={"cls_name": "OrderedFieldDocumentRendererConfig"},
+)
+
+
+@dataclass
+class HFTokenizerConfig:
+    _target_: str = "transformers.AutoTokenizer.from_pretrained"
+    pretrained_model_name_or_path: str = MISSING
+
+
+@dataclass
+class SentenceTransformerEmbedderConfig:
+    _target_: str = "sentence_transformers.SentenceTransformer"
+    model_name_or_path: str = MISSING
+    device: str = "cpu"
+
+
 CSVLoggerConfig = builds_any(
     CSVLogger,
     save_dir="${default_root_dir}/loggers",
@@ -312,6 +364,49 @@ class RAPEvalConfig(PipelineConfig):
     eval_mode: str = "validate"
 
 
+@dataclass
+class RetrievalDatasetIndexConfig:
+    """Configuration for offline retrieval artifact columns and FAISS index."""
+
+    doc_text_column: str = "doc_text"
+    doc_tokens_column: str = "doc_tokens"
+    doc_attention_mask_column: str = "doc_attention_mask"
+    doc_key_embeddings_column: str = "doc_key_embeddings"
+    doc_ids_column: str = "doc_ids"
+    source_id_column: str | None = None
+    index_name: str = "retrieval"
+    max_length: int = 512
+    tokenization_batch_size: int = 256
+    embedding_batch_size: int = 256
+    string_factory: str | None = None
+
+
+@dataclass
+class RetrievalDatasetOutputConfig:
+    """Configuration for saved retrieval artifact location."""
+
+    output_dir: str = MISSING
+
+
+@dataclass
+class PrepareRetrievalDatasetConfig:
+    """Configuration container for preparing a retrieval dataset artifact."""
+
+    source: ComponentConfig = field(default_factory=LoadHFSourceConfig)
+    document: ComponentConfig = field(default_factory=OrderedFieldDocumentRendererConfig)
+    tokenizer: ComponentConfig = field(default_factory=HFTokenizerConfig)
+    embedder: ComponentConfig = field(default_factory=SentenceTransformerEmbedderConfig)
+    index: RetrievalDatasetIndexConfig = field(default_factory=RetrievalDatasetIndexConfig)
+    output: RetrievalDatasetOutputConfig = field(default_factory=RetrievalDatasetOutputConfig)
+
+
+@dataclass
+class PrepareRetrievalDatasetAppConfig:
+    """Top-level app config for retrieval dataset preparation."""
+
+    prep: PrepareRetrievalDatasetConfig = field(default_factory=PrepareRetrievalDatasetConfig)
+
+
 def instantiate_model(config: Any) -> RetrievalAugmentedModel:
     """Instantiate a ``RetrievalAugmentedModel`` from structured config.
 
@@ -411,6 +506,59 @@ def instantiate_training_module(config: RAPTrainConfig) -> MedRAPSupervisedLight
     task = instantiate_any(config.training.task)
     loss_fn = instantiate_any(config.training.loss)
     return instantiate_any(config.training.module, model=plain_model, task=task, loss_fn=loss_fn)
+
+
+def prepare_retrieval_dataset_from_config(config: Any) -> str:
+    """Prepare and save a static retrieval dataset artifact from config.
+
+    Args:
+        config: Structured config containing a ``prep`` section with source,
+            rendering, tokenizer, embedder, index, and output settings.
+
+    Returns:
+        Output directory path where the prepared dataset artifact was saved.
+
+    Examples:
+        >>> cfg = PrepareRetrievalDatasetAppConfig(
+        ...     prep=PrepareRetrievalDatasetConfig(
+        ...         output=RetrievalDatasetOutputConfig(output_dir="/tmp/prepared")
+        ...     )
+        ... )
+        >>> cfg.prep.index == RetrievalDatasetIndexConfig()
+        True
+        >>> cfg.prep.output.output_dir
+        '/tmp/prepared'
+        >>> retriever_cfg = HFDatasetRetrieverConfig(dataset_path="/tmp/retrieval-artifact")
+        >>> retriever_cfg.dataset_path
+        '/tmp/retrieval-artifact'
+        >>> retriever_cfg.index_name
+        'retrieval'
+    """
+    prep_cfg = config.prep
+    dataset = instantiate_any(prep_cfg.source)
+    renderer = instantiate_any(prep_cfg.document)
+    tokenizer = instantiate_any(prep_cfg.tokenizer)
+    embedder = instantiate_any(prep_cfg.embedder)
+
+    output_path = prepare_retrieval_dataset(
+        dataset=dataset,
+        renderer=renderer,
+        tokenizer=tokenizer,
+        embedder=embedder,
+        output_dir=prep_cfg.output.output_dir,
+        doc_text_column=prep_cfg.index.doc_text_column,
+        doc_tokens_column=prep_cfg.index.doc_tokens_column,
+        doc_attention_mask_column=prep_cfg.index.doc_attention_mask_column,
+        doc_key_embeddings_column=prep_cfg.index.doc_key_embeddings_column,
+        doc_ids_column=prep_cfg.index.doc_ids_column,
+        source_id_column=prep_cfg.index.source_id_column,
+        index_name=prep_cfg.index.index_name,
+        max_length=prep_cfg.index.max_length,
+        tokenization_batch_size=prep_cfg.index.tokenization_batch_size,
+        embedding_batch_size=prep_cfg.index.embedding_batch_size,
+        string_factory=prep_cfg.index.string_factory,
+    )
+    return str(output_path)
 
 
 def instantiate_datamodule(config: RAPTrainConfig | RAPEvalConfig) -> lightning.LightningDataModule:
