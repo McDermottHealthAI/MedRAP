@@ -24,6 +24,7 @@ dependencies = [
   "hydra-zen==0.16.0",
   "lightning==2.6.1",
   "meds-torch-data==0.6.6",
+  "sentence-transformers==5.3.0",
   "torch==2.10.0",
 ]
 

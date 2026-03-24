@@ -82,6 +82,7 @@ def prepare_retrieval_dataset(
     max_length: int = 512,
     tokenization_batch_size: int = 256,
     embedding_batch_size: int = 256,
+    encode_batch_size: int | None = None,
     string_factory: str | None = None,
 ) -> Path:
     """Prepare and save a static retrieval dataset artifact.
@@ -103,7 +104,12 @@ def prepare_retrieval_dataset(
         index_name: Saved FAISS index name.
         max_length: Tokenizer max sequence length.
         tokenization_batch_size: Batch size used for tokenization mapping.
-        embedding_batch_size: Batch size passed to the embedder.
+        embedding_batch_size: Number of examples passed to ``_embed_batch``
+            at a time by ``dataset.map`` (outer chunk size).
+        encode_batch_size: Number of examples per GPU forward pass inside
+            ``embedder.encode()``.  Defaults to ``embedding_batch_size`` when
+            ``None``.  Set this to a value smaller than ``embedding_batch_size``
+            to reduce peak GPU memory without changing throughput.
         string_factory: Optional FAISS ``string_factory`` passed to
             :meth:`datasets.Dataset.add_faiss_index`.
 
@@ -176,11 +182,13 @@ def prepare_retrieval_dataset(
         desc="Tokenizing retrieval documents",
     )
 
+    _encode_batch_size = encode_batch_size if encode_batch_size is not None else embedding_batch_size
+
     def _embed_batch(batch: Mapping[str, object]) -> dict[str, object]:
         texts = batch[doc_text_column]
         embeddings = embedder.encode(
             texts,
-            batch_size=embedding_batch_size,
+            batch_size=_encode_batch_size,
             convert_to_numpy=True,
             show_progress_bar=False,
         )
