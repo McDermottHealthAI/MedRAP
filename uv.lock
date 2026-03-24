@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -893,6 +893,7 @@ dependencies = [
     { name = "hydra-zen" },
     { name = "lightning" },
     { name = "meds-torch-data" },
+    { name = "sentence-transformers" },
     { name = "torch" },
 ]
 
@@ -919,8 +920,9 @@ requires-dist = [
     { name = "hydra-zen", specifier = "==0.16.0" },
     { name = "lightning", specifier = "==2.6.1" },
     { name = "meds-torch-data", specifier = "==0.6.6" },
-    { name = "torch", specifier = "==2.10.0" },
+    { name = "sentence-transformers", specifier = "==5.3.0" },
     { name = "sentence-transformers", marker = "extra == 'prep'" },
+    { name = "torch", specifier = "==2.10.0" },
     { name = "transformers", marker = "extra == 'prep'" },
 ]
 provides-extras = ["prep"]
