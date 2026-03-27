@@ -25,6 +25,7 @@ Implemented now:
 - a small end-to-end doctest example in `model.py`
 - Hydra config groups under `medrap/conf`
 - `medrap train` / `medrap eval` CLI entrypoints
+- `medrap prepare-retrieval-dataset` for building static HF retrieval artifacts
 
 ## Quickstart (Synthetic MEDS Batch)
 
@@ -72,10 +73,12 @@ Run with Hydra overrides:
 ```bash
 uv run medrap train run_smoke=false
 uv run medrap eval run_smoke=false
+uv run medrap prepare-retrieval-dataset prep/source=load_from_disk ...
 ```
 
 `medrap` is a thin dispatcher; `train` and `eval` are implemented as Hydra-native
-entrypoints (`@hydra.main`) internally.
+entrypoints (`@hydra.main`) internally, and `prepare-retrieval-dataset` is the
+offline artifact-preparation entrypoint.
 
 Hydra component groups live in:
 
@@ -86,6 +89,8 @@ Hydra component groups live in:
 - `fusion/`
 - `pooling/`
 - `head/`
+- `prep/`
+
 
 ## Using MIMIC-IV Data
 
@@ -103,32 +108,21 @@ to MEDS, tensorizing it for PyTorch, creating task labels, and training a model.
 
 Follow the steps in [MIMIC_IV_MEDS](https://github.com/Medical-Event-Data-Standard/MIMIC_IV_MEDS) package README to download mimic data.
 
-This produces the following layout:
+### Step 2 — Create task labels
 
-```
-mimic/
-├── raw_input/          # Downloaded raw MIMIC-IV files
-├── pre_MEDS/           # Intermediate pre-processing
-└── MEDS_cohort/        # Final MEDS dataset
-    ├── data/
-    │   ├── train/0.parquet
-    │   ├── tuning/0.parquet
-    │   └── held_out/0.parquet
-    └── metadata/
-        ├── codes.parquet
-        ├── dataset.json
-        └── subject_splits.parquet
+Follow the steps in [MEDS-DEV](https://github.com/Medical-Event-Data-Standard/MEDS-DEV?tab=readme-ov-file#extracting-a-task) to extract the task labels. For example,
+
+```bash
+meds-dev-task \
+  task=mortality/in_icu/first_24h \
+  dataset=$DATASET_NAME \
+  output_dir=$LABELS_DIR \
+  dataset_dir=$MEDS_COHORT_DIR
 ```
 
-Each shard parquet has columns: `subject_id`, `time`, `code`, `numeric_value`.
+### Step 3 — Tensorize for PyTorch
 
-### Step 2 — Tensorize for PyTorch
-
-With the ETL venv **deactivated** and the MedRAP project environment in use
-(`uv sync`; optionally `source .venv/bin/activate`), run:
-
-`meds-torch-data` (already a MedRAP dependency) converts MEDS parquets into an
-efficient on-disk tensor format:
+Use [`meds-torch-data`](https://github.com/mmcdermott/meds-torch-data?tab=readme-ov-file#step-2-data-tensorization) to convert MEDS parquets into an efficient on-disk tensor format:
 
 ```bash
 uv run MTD_preprocess \
@@ -138,25 +132,3 @@ uv run MTD_preprocess \
 
 The output in `mimic/tensorized/` is what `meds_torchdata.MEDSTorchDataConfig`
 expects as `tensorized_cohort_dir`.
-
-### Step 3 — Create task labels
-
-MedRAP includes a script to extract binary classification labels from the MEDS
-cohort. For example, **in-hospital mortality**:
-
-```bash
-uv run python scripts/create_mimic_task_labels.py \
-       --meds-dir mimic/MEDS_cohort \
-       --output-dir mimic/task_labels/in_hospital_mortality \
-       --task in_hospital_mortality
-```
-
-This produces one parquet file per split (e.g. `train.parquet`, `tuning.parquet`,
-`held_out.parquet`) in the
-[MEDS label format](https://medical-event-data-standard.github.io/) with columns:
-
-| Column            | Type           | Description                      |
-| ----------------- | -------------- | -------------------------------- |
-| `subject_id`      | `Int64`        | Patient identifier               |
-| `prediction_time` | `Datetime[μs]` | Time at which prediction is made |
-| `boolean_value`   | `Boolean`      | Task label (positive / negative) |
