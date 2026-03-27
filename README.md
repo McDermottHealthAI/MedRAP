@@ -91,7 +91,6 @@ Hydra component groups live in:
 - `head/`
 - `prep/`
 
-
 ## Using MIMIC-IV Data
 
 MedRAP works with any data in the
@@ -103,6 +102,27 @@ to MEDS, tensorizing it for PyTorch, creating task labels, and training a model.
 
 - A [PhysioNet](https://physionet.org/) account with MIMIC-IV credentialed access.
 - `uv` (or `pip`) for package management.
+
+### Optional: use a separate ETL environment
+
+To avoid interfering with the main MedRAP model environment, you can run the
+MIMIC-IV download and conversion steps in a dedicated `uv` virtual environment:
+
+```bash
+uv venv .venv-mimic
+source .venv-mimic/bin/activate
+uv pip install MIMIC_IV_MEDS MEDS-DEV
+```
+
+After finishing data download/conversion/label extraction, deactivate this
+environment and return to the MedRAP project environment for tensorization and
+model training:
+
+```bash
+deactivate
+uv sync
+source .venv/bin/activate
+```
 
 ### Step 1 — Download and convert to MEDS format
 
