@@ -8,4 +8,5 @@ index_name: retrieval
 max_length: 512
 tokenization_batch_size: 256
 embedding_batch_size: 256
+encode_batch_size: null
 string_factory: null
