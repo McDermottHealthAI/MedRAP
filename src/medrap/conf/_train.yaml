@@ -20,6 +20,10 @@ output_dir: ???
 do_resume: false
 do_overwrite: false
 
+# Used when training/trainer=lightning_wandb (ignored otherwise).
+wandb_project: medrap
+wandb_run_name: medrap-train
+
 hydra:
   run:
     dir: .

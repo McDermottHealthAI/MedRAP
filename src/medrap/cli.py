@@ -34,8 +34,12 @@ def _bind_trainer_paths(cfg: DictConfig, *, output_dir: Path) -> DictConfig:
     bound_cfg.training.trainer.default_root_dir = str(output_dir)
 
     logger_cfg = bound_cfg.training.trainer.get("logger")
-    if isinstance(logger_cfg, DictConfig):
+    if isinstance(logger_cfg, DictConfig) and "save_dir" in logger_cfg:
         logger_cfg.save_dir = f"{output_dir}/loggers"
+    elif OmegaConf.is_list(logger_cfg):
+        for log in logger_cfg:
+            if isinstance(log, DictConfig) and "save_dir" in log:
+                log.save_dir = f"{output_dir}/loggers"
 
     callbacks_cfg = bound_cfg.training.trainer.get("callbacks")
     if OmegaConf.is_list(callbacks_cfg):
