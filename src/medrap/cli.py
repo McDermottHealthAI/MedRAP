@@ -7,6 +7,8 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from lightning.pytorch.loggers import CSVLogger
+
 import hydra
 import torch
 from hydra_zen import instantiate
