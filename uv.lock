@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -928,6 +928,9 @@ prep = [
     { name = "sentence-transformers" },
     { name = "transformers" },
 ]
+wandb = [
+    { name = "wandb" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -953,7 +956,7 @@ requires-dist = [
     { name = "transformers", marker = "extra == 'prep'" },
     { name = "wandb", specifier = ">=0.16.0" },
 ]
-provides-extras = ["prep"]
+provides-extras = ["prep", "wandb"]
 
 [package.metadata.requires-dev]
 dev = [
