@@ -192,6 +192,56 @@ class BinaryClassificationTask(SupervisedTask):
         return {"accuracy": (predictions == flat_targets).float().mean()}
 
 
+class MarginalizedBinaryClassificationTask(SupervisedTask):
+    """Binary task with two logits per sample (marginal class distribution).
+
+    Use with :class:`medrap.model.RetrievalAugmentedModel` when
+    ``marginalized_retrieval=True`` and :class:`medrap.losses.MarginalizedRetrievalSupervisedLoss`.
+
+    Examples:
+        >>> import torch
+        >>> from medrap.types import ModelOutput
+        >>> task = MarginalizedBinaryClassificationTask()
+        >>> m = task.metrics(
+        ...     ModelOutput(logits=torch.FloatTensor([[2.0, -1.0], [-1.0, 2.0]])),
+        ...     torch.BoolTensor([True, False]),
+        ... )
+        >>> "accuracy" in m and m["accuracy"].shape == torch.Size([])
+        True
+    """
+
+    def __init__(self, *, label_field: str = "boolean_value", output_dim: int = 2) -> None:
+        super().__init__(output_dim=output_dim)
+        if output_dim != 2:
+            raise ValueError(f"MarginalizedBinaryClassificationTask requires output_dim=2, got {output_dim}")
+        self.label_field = label_field
+
+    def extract_targets(self, batch: MEDSTorchBatch) -> Tensor:
+        """Same as :class:`BinaryClassificationTask` (float 0/1 targets)."""
+        targets = getattr(batch, self.label_field, None)
+        if not isinstance(targets, Tensor):
+            raise ValueError(f"Expected {self.label_field} targets on the MEDS batch.")
+        if targets.ndim == 2 and targets.shape[1] == 1:
+            targets = targets.squeeze(1)
+        elif targets.ndim != 1:
+            raise ValueError(
+                f"MarginalizedBinaryClassificationTask expects {self.label_field} shaped (B,) or (B, 1); "
+                f"got {tuple(targets.shape)}"
+            )
+        return targets.float()
+
+    def metrics(self, predictions: ModelOutput, targets: TaskTargets) -> Mapping[str, Tensor]:
+        logits = predictions.logits
+        if logits.ndim != 2 or logits.shape[1] != 2:
+            raise ValueError(
+                "MarginalizedBinaryClassificationTask expects logits shaped (B, 2); "
+                f"got {tuple(logits.shape)}"
+            )
+        pred = logits.argmax(dim=-1)
+        tgt = _flatten_binary_targets(targets, owner="MarginalizedBinaryClassificationTask").long()
+        return {"accuracy": (pred == tgt).float().mean()}
+
+
 class BinaryClassificationLoss(SupervisedLoss):
     """Binary BCE-with-logits loss for scalar binary predictions.
 

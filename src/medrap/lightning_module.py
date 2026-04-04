@@ -8,6 +8,7 @@ from meds_torchdata import MEDSTorchBatch
 from torch import Tensor, nn
 from torch.optim import Optimizer
 
+from .retrieval_logging import retrieval_diagnostic_scalars
 from .task import (
     BinaryClassificationLoss,
     BinaryClassificationTask,
@@ -130,6 +131,16 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
                 prog_bar=not is_train,
                 batch_size=batch_size,
             )
+        if isinstance(targets, Tensor):
+            for name, value in retrieval_diagnostic_scalars(predictions, targets).items():
+                self.log(
+                    f"{stage}/{name}",
+                    value,
+                    on_step=is_train,
+                    on_epoch=True,
+                    prog_bar=False,
+                    batch_size=batch_size,
+                )
         return loss
 
     def training_step(self, batch: MEDSTorchBatch, _batch_idx: int) -> Tensor:

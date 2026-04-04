@@ -103,3 +103,28 @@ class MeanPooledRetrievalEncoder(nn.Module):
     def forward(self, retrieval: RetrieverOutput) -> RetrievalEncoderOutput:
         """Call ``encode``."""
         return self.encode(retrieval)
+
+
+class KeyEmbeddingRetrievalEncoder(nn.Module):
+    """Use stored document key embeddings as per-document memory.
+
+    Packs ``RetrieverOutput.doc_key_embeddings`` into ``retrieval_memory`` with
+    shape ``(B, R, K, 1, D)`` so :class:`medrap.fusion.ReplaceFusion` can emit a
+    per-document fused state ``(B, K, D)`` when ``R = 1`` and ``K >= 1``.
+
+    Requires ``doc_key_embeddings`` on the retriever output.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+
+    def encode(self, retrieval: RetrieverOutput) -> RetrievalEncoderOutput:
+        """View key embeddings as singleton-length document memory."""
+        keys = retrieval.doc_key_embeddings
+        if keys is None:
+            raise ValueError("KeyEmbeddingRetrievalEncoder requires doc_key_embeddings on RetrieverOutput")
+        return RetrievalEncoderOutput(retrieval_memory=keys.float().unsqueeze(3))
+
+    def forward(self, retrieval: RetrieverOutput) -> RetrievalEncoderOutput:
+        """Call ``encode``."""
+        return self.encode(retrieval)

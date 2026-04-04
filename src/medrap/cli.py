@@ -1,10 +1,13 @@
 """CLI entrypoints for medrap."""
 
 import argparse
+import os
 import shutil
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+
+from lightning.pytorch.loggers import CSVLogger
 
 import hydra
 import torch
@@ -238,6 +241,31 @@ def _prepare_eval_run(cfg: DictConfig) -> Path:
     return output_dir
 
 
+def _ensure_lightning_csv_log_dirs(trainer: object) -> None:
+    """Create CSVLogger ``log_dir`` trees before the first metrics flush.
+
+    Lightning's logger connector calls ``save()`` after every ``log_metrics`` on
+    each logger. PyTorch Lightning's CSV backend can attempt to open
+    ``metrics.csv`` when the versioned directory is not yet visible on disk
+    (for example on some shared filesystems), which raises ``FileNotFoundError``.
+    Touching ``log_dir`` here pins the auto-assigned version and ensures the
+    directory exists using the process-local filesystem API.
+
+    Examples:
+        >>> import tempfile
+        >>> from lightning.pytorch import Trainer
+        >>> with tempfile.TemporaryDirectory() as tmp:
+        ...     lg = CSVLogger(save_dir=tmp, name="csv")
+        ...     tr = Trainer(logger=lg, max_epochs=0, accelerator="cpu", devices=1)
+        ...     _ensure_lightning_csv_log_dirs(tr)
+        ...     os.path.isdir(lg.log_dir)
+        True
+    """
+    for lg in getattr(trainer, "loggers", []):
+        if isinstance(lg, CSVLogger):
+            os.makedirs(lg.log_dir, exist_ok=True)
+
+
 def _copy_best_checkpoint(trainer: object, output_dir: Path) -> None:
     """Copy the best checkpoint into the run root when available.
 
@@ -277,6 +305,7 @@ def _run_train(cfg: DictConfig) -> int:
     module = instantiate_training_module(cfg)
     bound_cfg = _bind_trainer_paths(cfg, output_dir=output_dir)
     trainer = instantiate(bound_cfg.training.trainer)
+    _ensure_lightning_csv_log_dirs(trainer)
     datamodule = instantiate_datamodule(cfg)
 
     trainer.fit(module, datamodule=datamodule, ckpt_path=str(ckpt_path) if ckpt_path else None)
@@ -294,6 +323,7 @@ def _run_eval(cfg: DictConfig) -> int:
     module = _load_training_module_checkpoint(cfg, checkpoint_path)
     bound_cfg = _bind_trainer_paths(cfg, output_dir=output_dir)
     trainer = instantiate(bound_cfg.training.trainer)
+    _ensure_lightning_csv_log_dirs(trainer)
     datamodule = instantiate_datamodule(cfg)
 
     if cfg.eval_mode == "validate":

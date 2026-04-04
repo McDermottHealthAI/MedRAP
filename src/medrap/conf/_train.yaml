@@ -20,6 +20,9 @@ output_dir: ???
 do_resume: false
 do_overwrite: false
 
+marginalized_retrieval: false
+marginalized_score_similarity: dot
+
 # Used when training/trainer=lightning_wandb (ignored otherwise).
 wandb_project: medrap
 wandb_run_name: medrap-train
