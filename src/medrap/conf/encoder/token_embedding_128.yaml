@@ -1,0 +1,5 @@
+# Compact learned code embeddings (128-D) for fast iteration.
+# query_projector.in_dim must be set to 128; out_dim stays 1024 to match pre-computed key embeddings.
+_target_: medrap.encoders.TokenEmbeddingEncoder
+vocab_size: 65536
+embedding_dim: 128

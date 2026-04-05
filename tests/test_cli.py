@@ -1,4 +1,6 @@
 import pytest
+from lightning.pytorch import Trainer
+from lightning.pytorch.loggers import CSVLogger
 from omegaconf import OmegaConf
 from omegaconf.errors import MissingMandatoryValue
 
@@ -206,6 +208,16 @@ def test_eval_entrypoint_refuses_existing_output_dir(tmp_path) -> None:
         allowed_exceptions=(SystemExit, FileExistsError),
         expected_message="already contains a saved MedRAP eval run",
     )
+
+
+def test_ensure_lightning_csv_log_dirs_creates_version_directory(tmp_path) -> None:
+    log_root = tmp_path / "loggers"
+    log_root.mkdir()
+    csv_logger = CSVLogger(save_dir=str(log_root), name="csv")
+    trainer = Trainer(logger=csv_logger, max_epochs=0, accelerator="cpu", devices=1)
+    cli._ensure_lightning_csv_log_dirs(trainer)
+    assert csv_logger.log_dir
+    assert (tmp_path / "loggers" / "csv" / "version_0").is_dir()
 
 
 def test_run_eval_requires_checkpoint_path_before_loading(tmp_path) -> None:

@@ -129,6 +129,34 @@ def test_prepare_retrieval_dataset_config_composes(tmp_path) -> None:
     assert cfg.prep.index.index_name == "retrieval"
 
 
+def test_train_compose_marginalized_retrieval(tmp_path) -> None:
+    with initialize_config_module(version_base=None, config_module="medrap.conf"):
+        cfg = compose(
+            config_name="_train",
+            overrides=[
+                "training/datamodule=synthetic",
+                f"output_dir={tmp_path / 'marg'}",
+                "marginalized_retrieval=true",
+                "retrieval_encoder=key_embedding",
+                "retriever.k=2",
+                "training/task=marginalized_binary",
+                "training/loss=marginalized_retrieval",
+            ],
+        )
+
+    lightning_module = instantiate_training_module(cfg)
+    assert lightning_module.loss_fn.__class__.__name__ == "MarginalizedRetrievalSupervisedLoss"
+    assert lightning_module.task.__class__.__name__ == "MarginalizedBinaryClassificationTask"
+    assert cfg.training.task.output_dim == 2
+
+    batch = _example_batch()
+    batch.boolean_value = torch.BoolTensor([True, False])
+    out = lightning_module.model.forward(batch)
+    assert out.logits.shape == (2, 2)
+    targets = lightning_module.task.extract_targets(batch)
+    assert lightning_module.loss_fn(out, targets).ndim == 0
+
+
 def test_eval_config_supports_saved_hf_dataset_retriever(tmp_path) -> None:
     artifact_dir = prepare_retrieval_dataset(
         dataset=Dataset.from_dict({"text": ["alpha", "beta"]}),
