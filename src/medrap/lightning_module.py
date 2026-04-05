@@ -183,6 +183,116 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
         """
         return self._run_supervised_step(batch, stage="test")
 
+    def predict_step(self, batch: MEDSTorchBatch, batch_idx: int) -> dict[str, Tensor]:
+        """Extract retrieval artifacts for one batch.
+
+        Runs the model forward pass and collects per-sample retrieval artifacts
+        as CPU tensors. Intended for use with ``trainer.predict()`` to extract
+        artifacts across a full dataset split.
+
+        Returns a dict with the following keys (keys whose value would be
+        ``None`` are omitted):
+
+        =========  =====================  ========  ==============================
+        Key        Shape                  dtype     Present when
+        =========  =====================  ========  ==============================
+        logits     ``(B, C)``             float32   Always
+        targets    ``(B,)``               float32   When batch has labels
+        query_embeddings                            Always
+                   ``(B, R, D_ret)``      float32
+        doc_ids    ``(B, R, K)``          int64     Retriever provides them
+        doc_scores ``(B, R, K)``          float32   Retriever provides them
+        doc_key_embeddings                          Retriever provides them
+                   ``(B, R, K, D_ret)``   float32
+        per_doc_logits                              marginalized_retrieval=True
+                   ``(B, K, C)``          float32
+        differentiable_doc_scores                   marginalized_retrieval=True
+                   ``(B, K)``             float32
+        =========  =====================  ========  ==============================
+
+        ``InMemoryRetriever`` always provides ``doc_ids``, ``doc_scores``, and
+        ``doc_key_embeddings``. ``HFDatasetRetriever`` provides them only when
+        the corresponding column names are configured.
+
+        Args:
+            batch: Input ``MEDSTorchBatch``.
+            batch_idx: Batch index (unused but required by Lightning).
+
+        Returns:
+            Dict of CPU tensors with retrieval artifacts for this batch.
+
+        Examples:
+            >>> from medrap.encoders import MEDSCodeEncoder
+            >>> from medrap.fusion import ReplaceFusion
+            >>> from medrap.heads import LinearHead
+            >>> from medrap.pooling import IdentityPooling
+            >>> from medrap.query_projection import SequenceMeanQueryProjector
+            >>> from medrap.retrieval_encoder import MeanPooledRetrievalEncoder
+            >>> from medrap.retrievers import InMemoryRetriever
+            >>> from medrap.model import RetrievalAugmentedModel
+            >>> model = RetrievalAugmentedModel(
+            ...     encoder=MEDSCodeEncoder(),
+            ...     query_projector=SequenceMeanQueryProjector(in_dim=1, out_dim=4),
+            ...     retriever=InMemoryRetriever(
+            ...         doc_key_embeddings=torch.FloatTensor([[1, 0, 0, 0], [0, 1, 0, 0]]),
+            ...         doc_tokens=torch.LongTensor([[1, 2], [3, 4]]),
+            ...         doc_attention_mask=torch.BoolTensor([[True, True], [True, True]]),
+            ...     ),
+            ...     retrieval_encoder=MeanPooledRetrievalEncoder(vocab_size=8, embedding_dim=2),
+            ...     fusion=ReplaceFusion(),
+            ...     pooling=IdentityPooling(),
+            ...     head=LinearHead(in_dim=2, out_dim=1),
+            ... )
+            >>> module = MedRAPSupervisedLightningModule(model=model)
+            >>> batch = make_supervised_batch()
+            >>> result = module.predict_step(batch, batch_idx=0)
+            >>> sorted(result.keys())
+            ['doc_ids', 'doc_key_embeddings', 'doc_scores', 'logits', 'query_embeddings', 'targets']
+            >>> result["logits"].device.type
+            'cpu'
+            >>> tuple(result["logits"].shape)
+            (2, 1)
+            >>> tuple(result["query_embeddings"].shape)
+            (2, 1, 4)
+            >>> tuple(result["doc_ids"].shape)
+            (2, 1, 1)
+            >>> tuple(result["doc_scores"].shape)
+            (2, 1, 1)
+            >>> tuple(result["doc_key_embeddings"].shape)
+            (2, 1, 1, 4)
+        """
+        predictions = self.forward(batch)
+        meta = predictions.metadata
+
+        result: dict[str, Tensor] = {
+            "logits": predictions.logits.detach().cpu(),
+        }
+
+        try:
+            targets = self.task.extract_targets(batch)
+            if isinstance(targets, Tensor):
+                result["targets"] = targets.detach().cpu()
+        except Exception:
+            pass
+
+        query_out = meta.get("query_output")
+        if query_out is not None:
+            result["query_embeddings"] = query_out.query_embeddings.detach().cpu()
+
+        retriever_out = meta.get("retriever_output")
+        if retriever_out is not None:
+            for name in ("doc_ids", "doc_scores", "doc_key_embeddings"):
+                value = getattr(retriever_out, name, None)
+                if value is not None:
+                    result[name] = value.detach().cpu()
+
+        for name in ("per_doc_logits", "differentiable_doc_scores"):
+            value = meta.get(name)
+            if isinstance(value, Tensor):
+                result[name] = value.detach().cpu()
+
+        return result
+
     def configure_optimizers(self) -> Optimizer:
         """Construct the optimizer for the wrapped plain model.
 
