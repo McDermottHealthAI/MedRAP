@@ -35,6 +35,12 @@ prep = [
   "sentence-transformers",
   "transformers",
 ]
+wandb = [
+  "wandb>=0.16.0",
+]
+viz = [
+  "matplotlib>=3.8",
+]
 
 [dependency-groups]
 dev = [

@@ -1,0 +1,28 @@
+# 8 documents with one-hot 8D key embeddings for marginalized retrieval sanity check.
+# Docs 0-3: "positive-relevant" (embeddings in dims 0-3).
+# Docs 4-7: "negative-relevant" (embeddings in dims 4-7).
+# k=4 retrieves half the corpus per patient.
+_target_: medrap.retrievers.InMemoryRetriever
+doc_key_embeddings:
+  _target_: torch.FloatTensor
+  _args_:
+    - [[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+       [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+       [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+       [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+       [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+       [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+       [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+       [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]]
+doc_tokens:
+  _target_: torch.LongTensor
+  _args_:
+    - [[1, 2], [3, 4], [5, 6], [7, 8],
+       [9, 10], [11, 12], [13, 14], [15, 16]]
+doc_attention_mask:
+  _target_: torch.BoolTensor
+  _args_:
+    - [[true, true], [true, true], [true, true], [true, true],
+       [true, true], [true, true], [true, true], [true, true]]
+k: 4
+similarity: dot
