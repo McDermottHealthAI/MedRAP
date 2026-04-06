@@ -62,6 +62,7 @@ addopts = [
   "--color=yes",
   "--doctest-modules",
   "--ignore=docs",
+  "--ignore=MEDS-DEV",
   "--ignore=AGENTS.md",
   "--ignore=CONTRIBUTORS.md",
   "--ignore=src/medrap/preparation.py",
