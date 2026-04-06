@@ -173,9 +173,9 @@ def generate_plots(
     ax1 = axes[0, 0]
     q_proj = _pca_2d(query_emb)
     ax1.scatter(q_proj[neg_mask, 0], q_proj[neg_mask, 1], c="red", marker="o",
-                alpha=0.8, s=60, edgecolors="black", linewidths=0.5, label="Label 0")
+                alpha=0.3, s=40, edgecolors="none", label="Label 0")
     ax1.scatter(q_proj[pos_mask, 0], q_proj[pos_mask, 1], c="blue", marker="o",
-                alpha=0.8, s=60, edgecolors="black", linewidths=0.5, label="Label 1")
+                alpha=0.3, s=40, edgecolors="none", label="Label 1")
     ax1.set_xlabel("PC1")
     ax1.set_ylabel("PC2")
     ax1.set_title("Query Embeddings (PCA)")
@@ -189,29 +189,51 @@ def generate_plots(
     # Plot 2: Doc key embedding PCA scatter, colored by avg per-doc logit
     # ------------------------------------------------------------------
     ax2 = axes[0, 1]
-    if all_doc_key_embeddings is not None and has_doc_ids and has_per_doc:
+    # Use full corpus keys if available, otherwise unique retrieved keys.
+    if all_doc_key_embeddings is not None:
         corpus_keys = all_doc_key_embeddings
+    elif doc_key_emb is not None:
+        corpus_keys = np.unique(doc_key_emb.reshape(-1, doc_key_emb.shape[-1]), axis=0)
+    else:
+        corpus_keys = None
+
+    if corpus_keys is not None and has_per_doc:
         n_corpus_docs = len(corpus_keys)
         c_idx = min(1, per_doc_logits.shape[-1] - 1)
 
         # Average positive-class logit per unique doc across all patients that retrieved it.
         doc_avg_logit = np.zeros(n_corpus_docs)
         doc_count = np.zeros(n_corpus_docs)
-        for i in range(len(doc_ids)):
-            for k in range(doc_ids.shape[1]):
-                d = int(doc_ids[i, k])
-                doc_avg_logit[d] += per_doc_logits[i, k, c_idx]
-                doc_count[d] += 1
-        # Avoid division by zero for docs never retrieved.
+        if has_doc_ids and all_doc_key_embeddings is not None:
+            # Use doc_ids to index directly into the full corpus.
+            for i in range(len(doc_ids)):
+                for k in range(doc_ids.shape[1]):
+                    d = int(doc_ids[i, k])
+                    if d < n_corpus_docs:
+                        doc_avg_logit[d] += per_doc_logits[i, k, c_idx]
+                        doc_count[d] += 1
+        else:
+            # Map each retrieved key to its nearest unique-key index (vectorized).
+            flat_keys = doc_key_emb.reshape(-1, doc_key_emb.shape[-1])  # (N*K, D)
+            flat_logits = per_doc_logits[:, :, c_idx].reshape(-1)       # (N*K,)
+            # Cosine-style: use dot product against normalized keys for speed.
+            sims = flat_keys @ corpus_keys.T  # (N*K, n_unique)
+            uids = sims.argmax(axis=1)        # (N*K,)
+            for idx, uid in enumerate(uids):
+                doc_avg_logit[uid] += flat_logits[idx]
+                doc_count[uid] += 1
+
         retrieved_mask = doc_count > 0
         doc_avg_logit[retrieved_mask] /= doc_count[retrieved_mask]
 
         k_proj = _pca_2d(corpus_keys)
         sc = ax2.scatter(k_proj[:, 0], k_proj[:, 1], c=doc_avg_logit, cmap="RdBu_r",
                          s=100, edgecolors="black", linewidths=1.0, zorder=5)
-        for i, (x, y) in enumerate(k_proj):
-            label = f"D{i}" if retrieved_mask[i] else f"D{i}*"
-            ax2.annotate(label, (x, y), textcoords="offset points", xytext=(6, 6), fontsize=7)
+        # Only label docs in small corpora.
+        if n_corpus_docs <= 20:
+            for i, (x, y) in enumerate(k_proj):
+                label = f"D{i}" if retrieved_mask[i] else f"D{i}*"
+                ax2.annotate(label, (x, y), textcoords="offset points", xytext=(6, 6), fontsize=7)
         ax2.set_xlabel("PC1")
         ax2.set_ylabel("PC2")
         ax2.set_title("Doc Key Embeddings (PCA)\ncolor = avg positive logit")
@@ -237,7 +259,7 @@ def generate_plots(
             for _ in range(k_docs)
         ])
 
-        ax3.scatter(x_vals, y_vals, c=colors, s=30, alpha=0.6, edgecolors="none")
+        ax3.scatter(x_vals, y_vals, c=colors, s=20, alpha=0.2, edgecolors="none")
         ax3.set_xlabel("Per-doc positive logit")
         ax3.set_ylabel("Differentiable doc score")
         ax3.set_title("Doc Prediction vs Relevance Score")
@@ -269,7 +291,7 @@ def generate_plots(
         score_weights = score_exp / score_exp.sum(axis=1, keepdims=True)  # (N, K)
         color_vals = score_weights.reshape(-1)
 
-        sc4 = ax4.scatter(x_vals, y_vals, c=color_vals, cmap="viridis", s=30, alpha=0.7,
+        sc4 = ax4.scatter(x_vals, y_vals, c=color_vals, cmap="viridis", s=20, alpha=0.3,
                           edgecolors="none")
         ax4.set_xlabel("Per-doc positive logit (avg per doc)")
         ax4.set_ylabel("Per-doc positive logit (per patient-doc)")
@@ -329,24 +351,23 @@ def generate_plots(
                  f"{val:.3f}", ha="center", va="bottom", fontsize=10)
 
     # ------------------------------------------------------------------
-    # Plot 6: Code mean vs score-weighted positive relevance
+    # Plot 6: Score-weighted average positive logit by class (box plot)
     # ------------------------------------------------------------------
     ax6 = axes[1, 2]
-    if has_doc_ids and has_per_doc and code_means is not None:
-        n_total_docs = len(all_doc_key_embeddings) if all_doc_key_embeddings is not None else n_docs_from_ids
-        pos_doc_cutoff = n_total_docs // 2  # docs 0..(N/2-1) are "positive-relevant"
+    if has_per_doc:
+        c_idx = min(1, per_doc_logits.shape[-1] - 1)
 
         # softmax(differentiable_doc_scores) → weight per retrieved doc.
         score_max = diff_scores.max(axis=1, keepdims=True)
         score_exp = np.exp(diff_scores - score_max)
         score_weights = score_exp / score_exp.sum(axis=1, keepdims=True)  # (N, K)
 
-        # For each patient, score-weighted fraction on positive-relevant docs.
-        pos_relevant = (doc_ids < pos_doc_cutoff).astype(float)  # (N, K), 1 if pos-relevant
-        weighted_pos_relevance = (score_weights * pos_relevant).sum(axis=1)  # (N,)
+        # Score-weighted average positive logit per patient.
+        doc_pos_logits = per_doc_logits[:, :, c_idx]  # (N, K)
+        weighted_avg_logit = (score_weights * doc_pos_logits).sum(axis=1)  # (N,)
 
-        neg_vals = weighted_pos_relevance[neg_mask]
-        pos_vals = weighted_pos_relevance[pos_mask]
+        neg_vals = weighted_avg_logit[neg_mask]
+        pos_vals = weighted_avg_logit[pos_mask]
 
         bp = ax6.boxplot(
             [neg_vals, pos_vals],
@@ -357,12 +378,10 @@ def generate_plots(
         bp["boxes"][0].set_facecolor("cornflowerblue")
         bp["boxes"][1].set_facecolor("salmon")
         ax6.set_xlabel("Ground truth label")
-        ax6.set_ylabel("Score weight on positive-relevant docs")
+        ax6.set_ylabel("Score-weighted avg positive logit")
         ax6.set_title("Soft Retrieval Class-Conditionality")
-        ax6.set_ylim(-0.05, 1.05)
-        ax6.axhline(y=0.5, color="gray", linestyle=":", linewidth=1, alpha=0.5)
     else:
-        ax6.text(0.5, 0.5, "Scores or doc_ids\nnot available", ha="center", va="center",
+        ax6.text(0.5, 0.5, "per_doc_logits not available", ha="center", va="center",
                  transform=ax6.transAxes, fontsize=10)
         ax6.set_title("Soft Retrieval Class-Conditionality (N/A)")
 
