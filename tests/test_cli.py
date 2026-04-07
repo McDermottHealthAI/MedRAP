@@ -222,6 +222,106 @@ def test_run_eval_requires_checkpoint_path_before_loading(tmp_path) -> None:
         cli._run_eval(cfg)
 
 
+def test_bind_trainer_paths_sets_single_logger_save_dir(tmp_path) -> None:
+    output_dir = tmp_path / "run"
+    cfg = OmegaConf.create(
+        {
+            "training": {
+                "trainer": {
+                    "default_root_dir": ".",
+                    "logger": {
+                        "_target_": "lightning.pytorch.loggers.csv_logs.CSVLogger",
+                        "save_dir": "/placeholder/loggers",
+                        "name": "csv",
+                    },
+                }
+            }
+        }
+    )
+
+    bound = cli._bind_trainer_paths(cfg, output_dir=output_dir)
+
+    assert bound.training.trainer.default_root_dir == str(output_dir)
+    assert bound.training.trainer.logger.save_dir == str(output_dir / "loggers")
+
+
+def test_bind_trainer_paths_skips_logger_dict_without_save_dir(tmp_path) -> None:
+    output_dir = tmp_path / "run"
+    cfg = OmegaConf.create(
+        {
+            "training": {
+                "trainer": {
+                    "default_root_dir": ".",
+                    "logger": {
+                        "_target_": "lightning.pytorch.loggers.TensorBoardLogger",
+                        "name": "tb",
+                    },
+                }
+            }
+        }
+    )
+
+    bound = cli._bind_trainer_paths(cfg, output_dir=output_dir)
+
+    assert "save_dir" not in bound.training.trainer.logger
+
+
+def test_bind_trainer_paths_sets_save_dir_for_each_list_logger(tmp_path) -> None:
+    output_dir = tmp_path / "run"
+    cfg = OmegaConf.create(
+        {
+            "training": {
+                "trainer": {
+                    "default_root_dir": ".",
+                    "logger": [
+                        {
+                            "_target_": "lightning.pytorch.loggers.csv_logs.CSVLogger",
+                            "save_dir": "/old/csv",
+                            "name": "csv",
+                        },
+                        {
+                            "_target_": "lightning.pytorch.loggers.WandbLogger",
+                            "project": "p",
+                            "save_dir": "/old/wandb",
+                        },
+                    ],
+                }
+            }
+        }
+    )
+
+    bound = cli._bind_trainer_paths(cfg, output_dir=output_dir)
+
+    assert bound.training.trainer.logger[0].save_dir == str(output_dir / "loggers")
+    assert bound.training.trainer.logger[1].save_dir == str(output_dir / "loggers")
+
+
+def test_bind_trainer_paths_list_logger_without_save_dir_left_unchanged(tmp_path) -> None:
+    output_dir = tmp_path / "run"
+    cfg = OmegaConf.create(
+        {
+            "training": {
+                "trainer": {
+                    "default_root_dir": ".",
+                    "logger": [
+                        {
+                            "_target_": "lightning.pytorch.loggers.csv_logs.CSVLogger",
+                            "save_dir": "/old/csv",
+                            "name": "csv",
+                        },
+                        {"_target_": "SomeLogger", "name": "no_save_dir"},
+                    ],
+                }
+            }
+        }
+    )
+
+    bound = cli._bind_trainer_paths(cfg, output_dir=output_dir)
+
+    assert bound.training.trainer.logger[0].save_dir == str(output_dir / "loggers")
+    assert "save_dir" not in bound.training.trainer.logger[1]
+
+
 def test_run_eval_rejects_unknown_eval_mode(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     class StubTrainer:
         def validate(self, module, datamodule=None) -> None:  # pragma: no cover
