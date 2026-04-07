@@ -44,7 +44,13 @@ viz = [
 
 [dependency-groups]
 dev = [
-  "pre-commit<4", "ruff", "pytest", "pytest-cov", "pretty-print-directory"
+  "pre-commit<4",
+  "ruff",
+  "pytest",
+  "pytest-cov",
+  "pretty-print-directory",
+  "ipykernel>=7.2.0",
+  "notebook>=7.5.5",
 ]
 docs = []
 

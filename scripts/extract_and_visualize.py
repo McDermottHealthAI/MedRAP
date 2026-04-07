@@ -56,10 +56,10 @@ def _find_checkpoint(run_dir: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def run_extraction(run_dir: Path) -> tuple[dict[str, Tensor], Path, Tensor | None, Tensor | None]:
+def run_extraction(run_dir: Path) -> tuple[dict[str, Tensor], Path, Tensor | None]:
     """Load a trained model and extract artifacts from the val split.
 
-    Returns (artifacts, artifact_path, all_doc_key_embeddings, code_means).
+    Returns (artifacts, artifact_path, all_doc_key_embeddings).
     """
     cfg = OmegaConf.load(run_dir / "config.yaml")
     ckpt_path = _find_checkpoint(run_dir)
@@ -77,6 +77,7 @@ def run_extraction(run_dir: Path) -> tuple[dict[str, Tensor], Path, Tensor | Non
 
     # Datamodule — val split (deterministic, no shuffle).
     datamodule = instantiate_datamodule(cfg)
+    datamodule.setup("fit")
     dataloader: DataLoader = datamodule.val_dataloader()
 
     trainer = lightning.Trainer(
@@ -87,16 +88,10 @@ def run_extraction(run_dir: Path) -> tuple[dict[str, Tensor], Path, Tensor | Non
         enable_progress_bar=False,
     )
 
-    # Grab raw code values from the first batch (for scatter plot).
-    first_batch = next(iter(dataloader))
-    code_means: Tensor | None = None
-    if hasattr(first_batch, "code"):
-        code_means = first_batch.code.float().mean(dim=-1)  # (N,)
-
     extract_dir = run_dir / "extraction"
     artifact_path = extract_artifacts(module, dataloader, trainer, output_dir=extract_dir)
     artifacts = torch.load(artifact_path, weights_only=True)
-    return artifacts, artifact_path, all_doc_keys, code_means
+    return artifacts, artifact_path, all_doc_keys
 
 
 # ---------------------------------------------------------------------------
@@ -120,16 +115,13 @@ def generate_plots(
     artifacts: dict[str, Tensor],
     output_path: Path,
     all_doc_key_embeddings: np.ndarray | None = None,
-    code_means: np.ndarray | None = None,
 ) -> None:
     """Create a 6-panel diagnostic figure and save to *output_path*.
 
     Args:
         all_doc_key_embeddings: Full corpus key matrix ``(N_docs, D)`` from the
-            retriever.  When provided, Plot 1 shows similarity against *all* docs
+            retriever.  When provided, Plot 2 uses the full corpus for PCA
             rather than only the retrieved subset.
-        code_means: Per-patient mean code value ``(N,)`` for the retrieval
-            class-conditionality scatter plot.
     """
     import matplotlib
 
@@ -283,20 +275,21 @@ def generate_plots(
 
         # x: each doc's positive logit (per patient-doc pair)
         x_vals = per_doc_logits[:, :, c_idx].reshape(-1)
-        # y: per-doc positive logit (what this specific doc predicts for this patient)
-        y_vals = per_doc_logits[:, :, c_idx].reshape(-1)
+        # y: patient's final predicted positive logit (repeated for each of their k docs)
+        patient_logit = logits[:, c_idx] if logits.shape[1] > 1 else logits[:, 0]
+        y_vals = np.repeat(patient_logit, k_docs)
         # color: softmax-normalized doc score (contribution weight per patient)
         score_max = diff_scores.max(axis=1, keepdims=True)
         score_exp = np.exp(diff_scores - score_max)
         score_weights = score_exp / score_exp.sum(axis=1, keepdims=True)  # (N, K)
         color_vals = score_weights.reshape(-1)
 
-        sc4 = ax4.scatter(x_vals, y_vals, c=color_vals, cmap="viridis", s=20, alpha=0.3,
-                          edgecolors="none")
-        ax4.set_xlabel("Per-doc positive logit (avg per doc)")
-        ax4.set_ylabel("Per-doc positive logit (per patient-doc)")
-        ax4.set_title("Doc Avg Logit vs Instance Logit\ncolor = doc weight (softmax)")
-        fig.colorbar(sc4, ax=ax4, fraction=0.046, pad=0.04, label="Doc weight")
+        hb = ax4.hexbin(x_vals, y_vals, C=color_vals, reduce_C_function=np.mean,
+                        gridsize=30, cmap="viridis", mincnt=1)
+        ax4.set_xlabel("Per-doc positive logit")
+        ax4.set_ylabel("Patient predicted logit (positive)")
+        ax4.set_title("Doc Logit vs Patient Logit\ncolor = avg doc weight (softmax)")
+        fig.colorbar(hb, ax=ax4, fraction=0.046, pad=0.04, label="Avg doc weight")
     else:
         ax4.text(0.5, 0.5, "per_doc_logits not available", ha="center", va="center",
                  transform=ax4.transAxes, fontsize=10)
@@ -407,19 +400,18 @@ def main() -> None:
         sys.exit(1)
 
     print(f"Run directory: {run_dir}")
-    artifacts, artifact_path, all_doc_keys, code_means = run_extraction(run_dir)
+    artifacts, artifact_path, all_doc_keys = run_extraction(run_dir)
     print(f"Artifacts saved to {artifact_path}")
     print(f"Keys: {sorted(artifacts.keys())}")
     for k, v in sorted(artifacts.items()):
         print(f"  {k}: shape={tuple(v.shape)}, dtype={v.dtype}")
 
     all_doc_keys_np = all_doc_keys.numpy() if all_doc_keys is not None else None
-    code_means_np = code_means.numpy() if code_means is not None else None
     if all_doc_keys_np is not None:
         print(f"  Full corpus: {all_doc_keys_np.shape[0]} documents")
 
     output_path = artifact_path.parent / "extraction_diagnostics.png"
-    generate_plots(artifacts, output_path, all_doc_key_embeddings=all_doc_keys_np, code_means=code_means_np)
+    generate_plots(artifacts, output_path, all_doc_key_embeddings=all_doc_keys_np)
 
 
 if __name__ == "__main__":
