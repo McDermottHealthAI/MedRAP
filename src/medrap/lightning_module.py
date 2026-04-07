@@ -26,6 +26,8 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
         task: Supervised task object.
         loss_fn: Supervised loss object.
         optimizer: Optimizer factory taking grouped parameter configs.
+        lr: Learning rate for the default AdamW optimizer.
+        weight_decay: Weight decay for the default AdamW optimizer.
     """
 
     def __init__(
@@ -35,13 +37,15 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
         task: SupervisedTask | None = None,
         loss_fn: SupervisedLoss | None = None,
         optimizer: Callable[[list[dict[str, object]]], Optimizer] | None = None,
+        lr: float = 1e-3,
+        weight_decay: float = 0.01,
     ) -> None:
         super().__init__()
         self.model = model
         self.task = task or BinaryClassificationTask()
         self.loss_fn = loss_fn or BinaryClassificationLoss()
         self.optimizer_factory = optimizer or (
-            lambda params: torch.optim.AdamW(params, lr=1e-3, weight_decay=0.01)
+            lambda params: torch.optim.AdamW(params, lr=lr, weight_decay=weight_decay)
         )
 
     def forward(self, batch: MEDSTorchBatch) -> ModelOutput:
