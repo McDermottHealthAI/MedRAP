@@ -151,10 +151,10 @@ Follow the steps in [MEDS-DEV](https://github.com/Medical-Event-Data-Standard/ME
 
 ```bash
 meds-dev-task \
-  task=mortality/in_icu/first_24h \
-  dataset=$DATASET_NAME \
-  output_dir=$LABELS_DIR \
-  dataset_dir=$MEDS_COHORT_DIR
+	task=mortality/in_icu/first_24h \
+	dataset=$DATASET_NAME \
+	output_dir=$LABELS_DIR \
+	dataset_dir=$MEDS_COHORT_DIR
 ```
 
 ### Step 3 — Tensorize for PyTorch
@@ -163,8 +163,8 @@ Use [`meds-torch-data`](https://github.com/mmcdermott/meds-torch-data?tab=readme
 
 ```bash
 uv run MTD_preprocess \
-       MEDS_dataset_dir=mimic/MEDS_cohort \
-       output_dir=mimic/tensorized
+	MEDS_dataset_dir=mimic/MEDS_cohort \
+	output_dir=mimic/tensorized
 ```
 
 The output in `mimic/tensorized/` is what `meds_torchdata.MEDSTorchDataConfig`

@@ -17,8 +17,7 @@
 
 set -euo pipefail
 
-MEDRAP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "${MEDRAP_ROOT}"
+cd "${SLURM_SUBMIT_DIR}"
 
 echo "Node:   $(hostname)"
 echo "GPU:    $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || echo n/a)"
