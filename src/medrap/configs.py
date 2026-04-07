@@ -378,6 +378,7 @@ class RetrievalDatasetIndexConfig:
     max_length: int = 512
     tokenization_batch_size: int = 256
     embedding_batch_size: int = 256
+    encode_batch_size: int | None = None
     string_factory: str | None = None
 
 
@@ -556,6 +557,7 @@ def prepare_retrieval_dataset_from_config(config: Any) -> str:
         max_length=prep_cfg.index.max_length,
         tokenization_batch_size=prep_cfg.index.tokenization_batch_size,
         embedding_batch_size=prep_cfg.index.embedding_batch_size,
+        encode_batch_size=prep_cfg.index.encode_batch_size,
         string_factory=prep_cfg.index.string_factory,
     )
     return str(output_path)

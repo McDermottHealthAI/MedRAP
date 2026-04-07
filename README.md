@@ -73,8 +73,25 @@ Run with Hydra overrides:
 ```bash
 uv run medrap train run_smoke=false
 uv run medrap eval run_smoke=false
-uv run medrap prepare-retrieval-dataset prep/source=load_from_disk ...
 ```
+
+Build a local Hugging Face dataset + FAISS index for retrieval (requires the `prep` extra, e.g. `uv pip install "medrap[prep]"`). Example: Hub source, then save under `prep.output.output_dir`:
+
+```bash
+uv run medrap prepare-retrieval-dataset \
+	prep.source.path=MedRAG/textbooks prep.source.split=train \
+	prep.document.fields='[title,content]' \
+	prep.tokenizer.pretrained_model_name_or_path=Qwen/Qwen3-Embedding-0.6B \
+	prep.embedder.model_name_or_path=Qwen/Qwen3-Embedding-0.6B prep.embedder.device=cuda \
+	prep.index.source_id_column=id \
+	prep.output.output_dir=outputs/retrieval_artifact \
+	prep.index.max_length=256 \
+	prep.index.tokenization_batch_size=512 \
+	prep.index.embedding_batch_size=256 \
+	prep.index.encode_batch_size=32
+```
+
+Use `prep.embedder.device=cpu` when no GPU is available. For a dataset already on disk, switch the source group: `prep/source=load_from_disk` and set `prep.source.dataset_path=...`.
 
 `medrap` is a thin dispatcher; `train` and `eval` are implemented as Hydra-native
 entrypoints (`@hydra.main`) internally, and `prepare-retrieval-dataset` is the
@@ -134,10 +151,10 @@ Follow the steps in [MEDS-DEV](https://github.com/Medical-Event-Data-Standard/ME
 
 ```bash
 meds-dev-task \
-  task=mortality/in_icu/first_24h \
-  dataset=$DATASET_NAME \
-  output_dir=$LABELS_DIR \
-  dataset_dir=$MEDS_COHORT_DIR
+	task=mortality/in_icu/first_24h \
+	dataset=$DATASET_NAME \
+	output_dir=$LABELS_DIR \
+	dataset_dir=$MEDS_COHORT_DIR
 ```
 
 ### Step 3 — Tensorize for PyTorch
@@ -146,8 +163,8 @@ Use [`meds-torch-data`](https://github.com/mmcdermott/meds-torch-data?tab=readme
 
 ```bash
 uv run MTD_preprocess \
-       MEDS_dataset_dir=mimic/MEDS_cohort \
-       output_dir=mimic/tensorized
+	MEDS_dataset_dir=mimic/MEDS_cohort \
+	output_dir=mimic/tensorized
 ```
 
 The output in `mimic/tensorized/` is what `meds_torchdata.MEDSTorchDataConfig`
