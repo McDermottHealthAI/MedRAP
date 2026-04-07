@@ -79,16 +79,16 @@ Build a local Hugging Face dataset + FAISS index for retrieval (requires the `pr
 
 ```bash
 uv run medrap prepare-retrieval-dataset \
-    prep.source.path=MedRAG/textbooks prep.source.split=train \
-    prep.document.fields='[title,content]' \
-    prep.tokenizer.pretrained_model_name_or_path=Qwen/Qwen3-Embedding-0.6B \
-    prep.embedder.model_name_or_path=Qwen/Qwen3-Embedding-0.6B prep.embedder.device=cuda \
-    prep.index.source_id_column=id \
-    prep.output.output_dir=outputs/retrieval_artifact \
-    prep.index.max_length=256 \
-    prep.index.tokenization_batch_size=512 \
-    prep.index.embedding_batch_size=256 \
-    prep.index.encode_batch_size=32
+	prep.source.path=MedRAG/textbooks prep.source.split=train \
+	prep.document.fields='[title,content]' \
+	prep.tokenizer.pretrained_model_name_or_path=Qwen/Qwen3-Embedding-0.6B \
+	prep.embedder.model_name_or_path=Qwen/Qwen3-Embedding-0.6B prep.embedder.device=cuda \
+	prep.index.source_id_column=id \
+	prep.output.output_dir=outputs/retrieval_artifact \
+	prep.index.max_length=256 \
+	prep.index.tokenization_batch_size=512 \
+	prep.index.embedding_batch_size=256 \
+	prep.index.encode_batch_size=32
 ```
 
 Use `prep.embedder.device=cpu` when no GPU is available. For a dataset already on disk, switch the source group: `prep/source=load_from_disk` and set `prep.source.dataset_path=...`.
