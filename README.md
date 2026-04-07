@@ -90,3 +90,65 @@ Hydra component groups live in:
 - `pooling/`
 - `head/`
 - `prep/`
+
+## Using MIMIC-IV Data
+
+MedRAP works with any data in the
+[MEDS format](https://medical-event-data-standard.github.io/). This section walks
+through the full pipeline for **MIMIC-IV**: downloading the raw data, converting it
+to MEDS, tensorizing it for PyTorch, creating task labels, and training a model.
+
+### Prerequisites
+
+- A [PhysioNet](https://physionet.org/) account with MIMIC-IV credentialed access.
+- `uv` (or `pip`) for package management.
+
+### Optional: use a separate ETL environment
+
+To avoid interfering with the main MedRAP model environment, you can run the
+MIMIC-IV download and conversion steps in a dedicated `uv` virtual environment:
+
+```bash
+uv venv .venv-mimic
+source .venv-mimic/bin/activate
+uv pip install MIMIC_IV_MEDS MEDS-DEV
+```
+
+After finishing data download/conversion/label extraction, deactivate this
+environment and return to the MedRAP project environment for tensorization and
+model training:
+
+```bash
+deactivate
+uv sync
+source .venv/bin/activate
+```
+
+### Step 1 — Download and convert to MEDS format
+
+Follow the steps in [MIMIC_IV_MEDS](https://github.com/Medical-Event-Data-Standard/MIMIC_IV_MEDS) package README to download mimic data.
+
+### Step 2 — Create task labels
+
+Follow the steps in [MEDS-DEV](https://github.com/Medical-Event-Data-Standard/MEDS-DEV?tab=readme-ov-file#extracting-a-task) to extract the task labels. For example,
+
+```bash
+meds-dev-task \
+  task=mortality/in_icu/first_24h \
+  dataset=$DATASET_NAME \
+  output_dir=$LABELS_DIR \
+  dataset_dir=$MEDS_COHORT_DIR
+```
+
+### Step 3 — Tensorize for PyTorch
+
+Use [`meds-torch-data`](https://github.com/mmcdermott/meds-torch-data?tab=readme-ov-file#step-2-data-tensorization) to convert MEDS parquets into an efficient on-disk tensor format:
+
+```bash
+uv run MTD_preprocess \
+       MEDS_dataset_dir=mimic/MEDS_cohort \
+       output_dir=mimic/tensorized
+```
+
+The output in `mimic/tensorized/` is what `meds_torchdata.MEDSTorchDataConfig`
+expects as `tensorized_cohort_dir`.
