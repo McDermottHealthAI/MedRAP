@@ -1,8 +1,8 @@
 """RAP API model orchestration."""
 
-import torch.nn.functional as F
 from meds_torchdata import MEDSTorchBatch
 from torch import Tensor, nn
+from torch.nn import functional as nn_functional
 
 from .heads import LinearHead
 from .retrieval_scoring import differentiable_retrieval_scores
@@ -10,8 +10,8 @@ from .types import FusionInput, ModelOutput
 
 
 def _marginal_class_probabilities(per_doc_logits: Tensor, doc_scores: Tensor) -> Tensor:
-    p_ret = F.softmax(doc_scores, dim=-1)
-    p_pred = F.softmax(per_doc_logits, dim=-1)
+    p_ret = nn_functional.softmax(doc_scores, dim=-1)
+    p_pred = nn_functional.softmax(per_doc_logits, dim=-1)
     return (p_ret.unsqueeze(-1) * p_pred).sum(dim=1)
 
 
@@ -158,8 +158,10 @@ class RetrievalAugmentedModel(nn.Module):
             torch.Size([2, 2])
             >>> loss = MarginalizedRetrievalSupervisedLoss()(mo, torch.FloatTensor([1.0, 0.0]))
             >>> loss.backward()
-            >>> (m.query_projector.linear.weight.grad is not None
-            ...     and m.query_projector.linear.weight.grad.abs().sum() > 0)
+            >>> (
+            ...     m.query_projector.linear.weight.grad is not None
+            ...     and m.query_projector.linear.weight.grad.abs().sum() > 0
+            ... )
             tensor(True)
         """
         encoder_out = self.encoder(batch)
@@ -191,8 +193,7 @@ class RetrievalAugmentedModel(nn.Module):
             fused = fusion_out.fused_state
             if fused.ndim != 3:
                 raise ValueError(
-                    "marginalized_retrieval expects fused_state shaped (B, K, D); "
-                    f"got {tuple(fused.shape)}"
+                    f"marginalized_retrieval expects fused_state shaped (B, K, D); got {tuple(fused.shape)}"
                 )
             b, k_docs, d_mem = fused.shape
             num_classes = self.head.linear.out_features

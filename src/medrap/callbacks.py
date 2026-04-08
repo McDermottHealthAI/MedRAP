@@ -79,15 +79,16 @@ class EndOfFitValAUROCCallback(Callback):
         ...         super().__init__()
         ...         self.task = BinaryClassificationTask()
         ...         self.lin = torch.nn.Linear(1, 1)
+        ...
         ...     def forward(self, batch: MEDSTorchBatch) -> ModelOutput:
         ...         x = batch.code.float().mean(dim=-1, keepdim=True)
         ...         return ModelOutput(logits=self.lin(x))
+        ...
         ...     def training_step(self, batch: MEDSTorchBatch, _batch_idx: int) -> torch.Tensor:
         ...         out = self(batch)
         ...         t = self.task.extract_targets(batch)
-        ...         return torch.nn.functional.binary_cross_entropy_with_logits(
-        ...             out.logits.squeeze(1), t
-        ...         )
+        ...         return torch.nn.functional.binary_cross_entropy_with_logits(out.logits.squeeze(1), t)
+        ...
         ...     def configure_optimizers(self):
         ...         return torch.optim.SGD(self.parameters(), lr=0.1)
         >>> train_ds = [_auroc_batch(False), _auroc_batch(True)]
@@ -130,12 +131,11 @@ class EndOfFitValAUROCCallback(Callback):
         ...     def __init__(self) -> None:
         ...         super().__init__()
         ...         self.lin = torch.nn.Linear(1, 1)
+        ...
         ...     def forward(self, batch: MEDSTorchBatch) -> ModelOutput:
         ...         x = batch.code.float().mean(dim=-1, keepdim=True)
         ...         return ModelOutput(logits=self.lin(x))
-        >>> wrapped = MedRAPSupervisedLightningModule(
-        ...     model=_Inner(), task=BinaryClassificationTask()
-        ... )
+        >>> wrapped = MedRAPSupervisedLightningModule(model=_Inner(), task=BinaryClassificationTask())
         >>> tr2 = pl.Trainer(
         ...     max_epochs=1,
         ...     logger=False,
@@ -147,9 +147,7 @@ class EndOfFitValAUROCCallback(Callback):
         >>> tr2.fit(
         ...     wrapped,
         ...     train_dataloaders=DataLoader([_auroc_batch2(True)], batch_size=None),
-        ...     val_dataloaders=DataLoader(
-        ...         [_auroc_batch2(False), _auroc_batch2(True)], batch_size=None
-        ...     ),
+        ...     val_dataloaders=DataLoader([_auroc_batch2(False), _auroc_batch2(True)], batch_size=None),
         ... )
         >>> tr2.state.finished
         True
@@ -241,8 +239,10 @@ class GradientNormCallback(Callback):
         ...     def __init__(self) -> None:
         ...         super().__init__()
         ...         self.layer = torch.nn.Linear(2, 2)
+        ...
         ...     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         ...         return self.layer(batch).sum()
+        ...
         ...     def configure_optimizers(self):
         ...         return torch.optim.SGD(self.parameters(), lr=0.1)
         >>> tr = pl.Trainer(

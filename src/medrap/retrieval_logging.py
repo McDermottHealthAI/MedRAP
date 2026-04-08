@@ -8,7 +8,9 @@ from torch import Tensor
 from .types import ModelOutput, RetrieverOutput
 
 
-def count_unique_retrieved_documents(retrieval: RetrieverOutput, *, fingerprint_tokens: int = 32) -> int | None:
+def count_unique_retrieved_documents(
+    retrieval: RetrieverOutput, *, fingerprint_tokens: int = 32
+) -> int | None:
     """Approximate number of distinct retrieved documents in this batch.
 
     Uses ``doc_ids`` when present; otherwise fingerprints by the first ``fingerprint_tokens``
@@ -31,9 +33,7 @@ def count_unique_retrieved_documents(retrieval: RetrieverOutput, *, fingerprint_
         >>> count_unique_retrieved_documents(ro)
         2
         >>> ro2 = RetrieverOutput(
-        ...     doc_tokens=torch.tensor(
-        ...         [[[[1, 2, 3], [1, 2, 3]]], [[[4, 5, 6], [1, 2, 0]]]]
-        ...     ),
+        ...     doc_tokens=torch.tensor([[[[1, 2, 3], [1, 2, 3]]], [[[4, 5, 6], [1, 2, 0]]]]),
         ...     doc_attention_mask=torch.ones(2, 1, 2, 3, dtype=torch.bool),
         ...     doc_ids=None,
         ... )

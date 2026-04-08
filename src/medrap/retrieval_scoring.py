@@ -1,7 +1,7 @@
 """Differentiable scores between queries and retrieved document keys."""
 
-import torch.nn.functional as F
 from torch import Tensor
+from torch.nn import functional as nn_functional
 
 
 def differentiable_retrieval_scores(
@@ -28,9 +28,7 @@ def differentiable_retrieval_scores(
     if query_embeddings.ndim != 3:
         raise ValueError(f"query_embeddings must be (B, R, D), got {tuple(query_embeddings.shape)}")
     if doc_key_embeddings.ndim != 4:
-        raise ValueError(
-            f"doc_key_embeddings must be (B, R, K, D), got {tuple(doc_key_embeddings.shape)}"
-        )
+        raise ValueError(f"doc_key_embeddings must be (B, R, K, D), got {tuple(doc_key_embeddings.shape)}")
     q = query_embeddings.float()
     k = doc_key_embeddings.float()
     if q.shape[:2] != k.shape[:2] or q.shape[-1] != k.shape[-1]:
@@ -39,8 +37,8 @@ def differentiable_retrieval_scores(
             f"got query={tuple(q.shape)}, keys={tuple(k.shape)}"
         )
     if similarity == "cosine":
-        qn = F.normalize(q, dim=-1)
-        kn = F.normalize(k, dim=-1)
+        qn = nn_functional.normalize(q, dim=-1)
+        kn = nn_functional.normalize(k, dim=-1)
         scores = (qn.unsqueeze(2) * kn).sum(dim=-1)
     elif similarity == "dot":
         scores = (q.unsqueeze(2) * k).sum(dim=-1)

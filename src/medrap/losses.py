@@ -156,9 +156,7 @@ class MarginalizedRetrievalSupervisedLoss(SupervisedLoss):
         if not isinstance(doc_scores, Tensor):
             raise ValueError("ModelOutput.metadata must include tensor 'differentiable_doc_scores'")
         if doc_scores.ndim != 2:
-            raise ValueError(
-                f"differentiable_doc_scores must be (B, K), got {tuple(doc_scores.shape)}"
-            )
+            raise ValueError(f"differentiable_doc_scores must be (B, K), got {tuple(doc_scores.shape)}")
         targets_long = targets.long()
         return self._inner(
             per_doc_logits=per_doc_logits,
