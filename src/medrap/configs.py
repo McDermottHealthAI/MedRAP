@@ -563,6 +563,30 @@ def prepare_retrieval_dataset_from_config(config: Any) -> str:
         '/tmp/retrieval-artifact'
         >>> retriever_cfg.index_name
         'retrieval'
+
+    Delegation to :func:`medrap.preparation.prepare_retrieval_dataset` (smoke):
+
+        >>> from pathlib import Path
+        >>> from unittest.mock import patch
+        >>> captured = {}
+        >>> def _fake_prep(*_a, **kwargs):
+        ...     captured.clear()
+        ...     captured.update(kwargs)
+        ...     return "/tmp/prepared_out"
+        >>> import medrap.configs as _cfg_mod
+        >>> with (
+        ...     patch.object(_cfg_mod, "prepare_retrieval_dataset", _fake_prep),
+        ...     patch.object(_cfg_mod, "instantiate_any", lambda _c: object()),
+        ... ):
+        ...     artifact = Path("/tmp/artifact")
+        ...     cfg = PrepareRetrievalDatasetAppConfig(
+        ...         prep=PrepareRetrievalDatasetConfig(
+        ...             output=RetrievalDatasetOutputConfig(output_dir=str(artifact))
+        ...         )
+        ...     )
+        ...     r = prepare_retrieval_dataset_from_config(cfg)
+        >>> r == "/tmp/prepared_out" and captured.get("output_dir") == str(artifact)
+        True
     """
     prep_cfg = config.prep
     dataset = instantiate_any(prep_cfg.source)

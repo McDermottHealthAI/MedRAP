@@ -163,6 +163,95 @@ class RetrievalAugmentedModel(nn.Module):
             ...     and m.query_projector.linear.weight.grad.abs().sum() > 0
             ... )
             tensor(True)
+
+        Marginalized retrieval validation errors:
+
+            >>> from unittest.mock import patch
+            >>> from torch import nn
+            >>> class _NH(nn.Module):
+            ...     def __init__(self) -> None:
+            ...         super().__init__()
+            ...         self.linear = nn.Linear(4, 2)
+            ...     def forward(self, x):
+            ...         return self.linear(x)
+            >>> m_bad_head = RetrievalAugmentedModel(
+            ...     encoder=MEDSCodeEncoder(),
+            ...     query_projector=SequenceMeanQueryProjector(in_dim=1, out_dim=4),
+            ...     retriever=InMemoryRetriever(
+            ...         doc_key_embeddings=torch.FloatTensor(
+            ...             [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]]
+            ...         ),
+            ...         doc_tokens=torch.LongTensor([[1, 2], [3, 4], [5, 6]]),
+            ...         doc_attention_mask=torch.BoolTensor([[True, True], [True, True], [True, True]]),
+            ...         k=2,
+            ...         similarity="dot",
+            ...     ),
+            ...     retrieval_encoder=KeyEmbeddingRetrievalEncoder(),
+            ...     fusion=ReplaceFusion(),
+            ...     pooling=IdentityPooling(),
+            ...     head=_NH(),
+            ...     marginalized_retrieval=True,
+            ... )
+            >>> m_bad_head(mb)  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+            ...
+            ValueError: marginalized_retrieval requires a LinearHead...
+            >>> class _NoKeyRet(nn.Module):
+            ...     def forward(self, _q):
+            ...         from medrap.types import RetrieverOutput
+            ...         return RetrieverOutput(
+            ...             doc_tokens=torch.zeros(2, 1, 2, 2, dtype=torch.long),
+            ...             doc_attention_mask=torch.ones(2, 1, 2, 2, dtype=torch.bool),
+            ...             doc_key_embeddings=None,
+            ...         )
+            >>> from medrap.retrieval_encoder import MeanPooledRetrievalEncoder
+            >>> m_no_key = RetrievalAugmentedModel(
+            ...     encoder=MEDSCodeEncoder(),
+            ...     query_projector=SequenceMeanQueryProjector(in_dim=1, out_dim=4),
+            ...     retriever=_NoKeyRet(),
+            ...     retrieval_encoder=MeanPooledRetrievalEncoder(vocab_size=16, embedding_dim=4),
+            ...     fusion=ReplaceFusion(),
+            ...     pooling=IdentityPooling(),
+            ...     head=LinearHead(in_dim=4, out_dim=2),
+            ...     marginalized_retrieval=True,
+            ... )
+            >>> m_no_key(mb)  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+            ...
+            ValueError: ...doc_key_embeddings...
+            >>> class _BadFus(nn.Module):
+            ...     def forward(self, fusion_input):
+            ...         from medrap.types import FusionOutput
+            ...         return FusionOutput(fused_state=torch.zeros(2, 4))
+            >>> m_bad_fus = RetrievalAugmentedModel(
+            ...     encoder=MEDSCodeEncoder(),
+            ...     query_projector=SequenceMeanQueryProjector(in_dim=1, out_dim=4),
+            ...     retriever=InMemoryRetriever(
+            ...         doc_key_embeddings=torch.FloatTensor(
+            ...             [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]]
+            ...         ),
+            ...         doc_tokens=torch.LongTensor([[1, 2], [3, 4], [5, 6]]),
+            ...         doc_attention_mask=torch.BoolTensor([[True, True], [True, True], [True, True]]),
+            ...         k=2,
+            ...         similarity="dot",
+            ...     ),
+            ...     retrieval_encoder=KeyEmbeddingRetrievalEncoder(),
+            ...     fusion=_BadFus(),
+            ...     pooling=IdentityPooling(),
+            ...     head=LinearHead(in_dim=4, out_dim=2),
+            ...     marginalized_retrieval=True,
+            ... )
+            >>> m_bad_fus(mb)  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+            ...
+            ValueError: ...fused_state...
+            >>> with patch(
+            ...     "medrap.model.differentiable_retrieval_scores", lambda *a, **k: torch.zeros(2, 99)
+            ... ):
+            ...     m(mb)  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+            ...
+            ValueError: ...differentiable scores...
         """
         encoder_out = self.encoder(batch)
         query_out = self.query_projector(encoder_out.patient_state)

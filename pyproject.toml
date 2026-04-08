@@ -51,12 +51,14 @@ medrap = ["conf/**/*.yaml"]
 medrap = "medrap.cli:main"
 
 [tool.pytest.ini_options]
+testpaths = ["tests", "src/medrap"]
 addopts = [
   "--color=yes",
   "--doctest-modules",
   "--ignore=docs",
   "--ignore=AGENTS.md",
   "--ignore=CONTRIBUTORS.md",
+  "--ignore=src/medrap/preparation.py",
   "--doctest-glob=*.md",
 ]
 markers = []

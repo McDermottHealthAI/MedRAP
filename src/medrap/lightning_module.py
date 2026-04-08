@@ -232,5 +232,26 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
             ... }
             >>> id(task.scale) in optimized_params
             True
+            >>> from medrap.losses import MarginalizedRetrievalSupervisedLoss
+            >>> from medrap.task import MarginalizedBinaryClassificationTask
+            >>> class _MargModel(nn.Module):
+            ...     def forward(self, batch: MEDSTorchBatch) -> ModelOutput:
+            ...         return ModelOutput(
+            ...             logits=torch.zeros(2, 2),
+            ...             metadata={
+            ...                 "differentiable_doc_scores": torch.randn(2, 3),
+            ...                 "per_doc_logits": torch.randn(2, 3, 2),
+            ...             },
+            ...         )
+            >>> mm = MedRAPSupervisedLightningModule(
+            ...     model=_MargModel(),
+            ...     task=MarginalizedBinaryClassificationTask(),
+            ...     loss_fn=MarginalizedRetrievalSupervisedLoss(),
+            ... )
+            >>> log_names: list = []
+            >>> mm.log = lambda *a, **k: log_names.append(a[0])
+            >>> _ = mm._run_supervised_step(make_supervised_batch(), stage="train")
+            >>> any(str(n).startswith("train/retrieval/") for n in log_names)
+            True
         """
         return self.optimizer_factory(self._grouped_parameters())

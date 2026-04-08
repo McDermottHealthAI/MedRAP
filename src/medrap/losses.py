@@ -139,6 +139,44 @@ class MarginalizedRetrievalSupervisedLoss(SupervisedLoss):
         Traceback (most recent call last):
             ...
         ValueError: ModelOutput.metadata must include tensor 'per_doc_logits'
+
+        Missing or invalid metadata:
+
+            >>> MarginalizedRetrievalSupervisedLoss()(
+            ...     ModelOutput(logits=torch.zeros(2, 2)), {"x": torch.tensor(1.0)}
+            ... )  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+            ...
+            ValueError: ...tensor targets...
+            >>> MarginalizedRetrievalSupervisedLoss()(
+            ...     ModelOutput(logits=torch.zeros(1, 2), metadata={}), torch.tensor([0.0])
+            ... )  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+            ...
+            ValueError: ...per_doc_logits...
+            >>> MarginalizedRetrievalSupervisedLoss()(
+            ...     ModelOutput(
+            ...         logits=torch.zeros(1, 2),
+            ...         metadata={"per_doc_logits": torch.zeros(1, 2, 2)},
+            ...     ),
+            ...     torch.tensor([0.0]),
+            ... )  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+            ...
+            ValueError: ...differentiable_doc_scores...
+            >>> MarginalizedRetrievalSupervisedLoss()(
+            ...     ModelOutput(
+            ...         logits=torch.zeros(1, 2),
+            ...         metadata={
+            ...             "per_doc_logits": torch.zeros(1, 2, 2),
+            ...             "differentiable_doc_scores": torch.zeros(1, 2, 3),
+            ...         },
+            ...     ),
+            ...     torch.tensor([0.0]),
+            ... )  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+            ...
+            ValueError: ...(B, K)...
     """
 
     def __init__(self) -> None:

@@ -39,6 +39,27 @@ def count_unique_retrieved_documents(
         ... )
         >>> count_unique_retrieved_documents(ro2, fingerprint_tokens=3)
         3
+        >>> empty = RetrieverOutput(
+        ...     doc_tokens=torch.empty(0, 1, 2, 3, dtype=torch.long),
+        ...     doc_attention_mask=torch.empty(0, 1, 2, 3, dtype=torch.bool),
+        ...     doc_ids=None,
+        ... )
+        >>> count_unique_retrieved_documents(empty) is None
+        True
+        >>> ro3 = RetrieverOutput(
+        ...     doc_tokens=torch.ones(2, 1, 2, 3, dtype=torch.long),
+        ...     doc_attention_mask=torch.ones(2, 1, 2, 3, dtype=torch.bool),
+        ...     doc_ids=None,
+        ... )
+        >>> count_unique_retrieved_documents(ro3, fingerprint_tokens=0) is None
+        True
+        >>> ro4 = RetrieverOutput(
+        ...     doc_tokens=torch.zeros(2, 1, 2, 0, dtype=torch.long),
+        ...     doc_attention_mask=torch.ones(2, 1, 2, 0, dtype=torch.bool),
+        ...     doc_ids=None,
+        ... )
+        >>> count_unique_retrieved_documents(ro4, fingerprint_tokens=1) is None
+        True
     """
     if retrieval.doc_ids is not None:
         return int(torch.unique(retrieval.doc_ids.detach().long().flatten()).numel())
@@ -84,6 +105,22 @@ def retrieval_diagnostic_scalars(predictions: ModelOutput, targets: Tensor) -> d
         True
         >>> retrieval_diagnostic_scalars(ModelOutput(logits=torch.zeros(2, 1)), torch.zeros(2))
         {}
+        >>> pred3 = ModelOutput(
+        ...     logits=torch.zeros(2, 2),
+        ...     metadata={"differentiable_doc_scores": torch.zeros(2, 2, 3)},
+        ... )
+        >>> retrieval_diagnostic_scalars(pred3, torch.zeros(2))
+        {}
+        >>> pred4 = ModelOutput(
+        ...     logits=torch.zeros(2, 2),
+        ...     metadata={"differentiable_doc_scores": torch.tensor([[1.0, 2.0], [3.0, 4.0]])},
+        ... )
+        >>> d2 = retrieval_diagnostic_scalars(pred4, torch.zeros(3))
+        >>> "retrieval/doc_score_mean" in d2 and "retrieval/doc_score_positive_vs_negative" not in d2
+        True
+        >>> d3 = retrieval_diagnostic_scalars(pred4, torch.tensor([1.0, 1.0]))
+        >>> "retrieval/doc_score_mean_positive" in d3 and "retrieval/doc_score_mean_negative" not in d3
+        True
     """
     meta = predictions.metadata
     scores = meta.get("differentiable_doc_scores")

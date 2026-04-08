@@ -79,6 +79,19 @@ class ReplaceFusion(FusionModule):
             ... )
             >>> tuple(fusion.fuse(per_doc).fused_state.shape)
             (2, 3, 4)
+            >>> flat = FusionInput(
+            ...     patient_state=torch.randn(2, 1, 3),
+            ...     retrieval_memory=torch.randn(2, 1, 2, 2, 4),
+            ... )
+            >>> tuple(fusion.fuse(flat).fused_state.shape)
+            (2, 4, 4)
+            >>> fusion(FusionInput(
+            ...     patient_state=torch.zeros(2, 1, 3),
+            ...     retrieval_memory=torch.zeros(2, 1, 1, 4),
+            ... ))  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+            ...
+            ValueError: ReplaceFusion expects 5D retrieval_memory...
         """
         rm = fusion_input.retrieval_memory
         if rm.ndim != 5:
@@ -137,6 +150,12 @@ class ConcatFusion(FusionModule):
             Traceback (most recent call last):
                 ...
             ValueError: ConcatFusion expects patient_state shaped (B, 1, D_ehr), ...
+            >>> good = FusionInput(
+            ...     patient_state=torch.FloatTensor([[[1.0, 2.0]], [[3.0, 4.0]]]),
+            ...     retrieval_memory=torch.FloatTensor([[[[[10.0, 20.0]]]], [[[[30.0, 40.0]]]]]),
+            ... )
+            >>> tuple(fusion.fuse(good).fused_state.shape)
+            (2, 1, 4)
         """
         ps = fusion_input.patient_state
         rm = fusion_input.retrieval_memory

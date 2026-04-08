@@ -1,3 +1,6 @@
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
 from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import CSVLogger
@@ -142,6 +145,24 @@ def test_eval_entrypoint_requires_checkpoint_path(tmp_path) -> None:
         allowed_exceptions=(SystemExit, MissingMandatoryValue, ValueError),
         expected_message="checkpoint_path",
     )
+
+
+def test_prepare_train_run_overwrite_removes_stale_files(tmp_path: Path) -> None:
+    output_dir = tmp_path / "train"
+    output_dir.mkdir()
+    stale = output_dir / "stale.txt"
+    stale.write_text("old")
+    cfg = OmegaConf.create(
+        {
+            "output_dir": str(output_dir),
+            "do_overwrite": True,
+            "do_resume": False,
+            "training": {"trainer": {"default_root_dir": "."}},
+        }
+    )
+    OmegaConf.save(cfg, output_dir / "config.yaml")
+    assert cli._prepare_train_run(cfg) is None
+    assert not stale.exists()
 
 
 def test_train_entrypoint_refuses_existing_output_dir_without_flags(tmp_path) -> None:
@@ -332,6 +353,130 @@ def test_bind_trainer_paths_list_logger_without_save_dir_left_unchanged(tmp_path
 
     assert bound.training.trainer.logger[0].save_dir == str(output_dir / "loggers")
     assert "save_dir" not in bound.training.trainer.logger[1]
+
+
+def test_run_cfg_prints_yaml(capsys: pytest.CaptureFixture[str]) -> None:
+    cfg = OmegaConf.create({"a": 1})
+    assert cli._run_cfg(cfg) == 0
+    out = capsys.readouterr().out
+    assert "a:" in out
+
+
+def test_find_checkpoint_path_variants(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    ckpt_dir = run_dir / "checkpoints"
+    ckpt_dir.mkdir()
+    assert cli._find_checkpoint_path(run_dir) is None
+
+    last = ckpt_dir / "last.ckpt"
+    last.write_text("x")
+    assert cli._find_checkpoint_path(run_dir) == last
+
+    last.unlink()
+    old = ckpt_dir / "epoch=0-step=1.ckpt"
+    new = ckpt_dir / "epoch=1-step=2.ckpt"
+    old.write_text("a")
+    new.write_text("b")
+    assert cli._find_checkpoint_path(run_dir) == new
+
+    for p in ckpt_dir.iterdir():
+        p.unlink()
+    ckpt_dir.rmdir()
+    checkpoints_file = run_dir / "checkpoints"
+    checkpoints_file.write_text("not a directory")
+    with pytest.raises(NotADirectoryError):
+        cli._find_checkpoint_path(run_dir)
+
+
+def test_prepare_output_dir_rejects_file_path(tmp_path: Path) -> None:
+    f = tmp_path / "out"
+    f.write_text("x")
+    cfg = OmegaConf.create({"output_dir": str(f)})
+    with pytest.raises(NotADirectoryError):
+        cli._prepare_output_dir(cfg)
+
+
+def test_prepare_train_run_resume_without_checkpoint_raises(tmp_path: Path) -> None:
+    output_dir = tmp_path / "train"
+    output_dir.mkdir()
+    cfg = OmegaConf.create(
+        {
+            "output_dir": str(output_dir),
+            "do_overwrite": False,
+            "do_resume": True,
+            "training": {"trainer": {"default_root_dir": "."}},
+        }
+    )
+    OmegaConf.save(cfg, output_dir / "config.yaml")
+    with pytest.raises(FileNotFoundError, match="No checkpoint found"):
+        cli._prepare_train_run(cfg)
+
+
+def test_validate_resume_directory_missing_config_raises(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    cfg = OmegaConf.create({"output_dir": str(run_dir), "training": {"trainer": {"default_root_dir": "."}}})
+    with pytest.raises(FileNotFoundError, match="No saved config"):
+        cli._validate_resume_directory(run_dir, cfg)
+
+
+def test_validate_resume_directory_mismatch_raises(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    saved = OmegaConf.create(
+        {
+            "output_dir": str(run_dir),
+            "training": {"trainer": {"default_root_dir": "."}, "task": {"output_dim": 1}},
+        }
+    )
+    new_cfg = OmegaConf.create(
+        {
+            "output_dir": str(run_dir),
+            "training": {"trainer": {"default_root_dir": "."}, "task": {"output_dim": 2}},
+        }
+    )
+    OmegaConf.save(saved, run_dir / "config.yaml")
+    with pytest.raises(ValueError, match="Config mismatch"):
+        cli._validate_resume_directory(run_dir, new_cfg)
+
+
+def test_bind_trainer_paths_sets_callback_dirpath(tmp_path: Path) -> None:
+    output_dir = tmp_path / "run"
+    cfg = OmegaConf.create(
+        {
+            "training": {
+                "trainer": {
+                    "default_root_dir": ".",
+                    "callbacks": [
+                        {
+                            "_target_": "lightning.pytorch.callbacks.ModelCheckpoint",
+                            "dirpath": "/old/ckpt",
+                        }
+                    ],
+                }
+            }
+        }
+    )
+    bound = cli._bind_trainer_paths(cfg, output_dir=output_dir)
+    assert bound.training.trainer.callbacks[0].dirpath == str(output_dir / "checkpoints")
+
+
+def test_copy_best_checkpoint_copies_when_present(tmp_path: Path) -> None:
+    src = tmp_path / "best.ckpt"
+    src.write_text("weights")
+    cb = SimpleNamespace(best_model_path=str(src))
+    trainer = SimpleNamespace(checkpoint_callback=cb)
+    out = tmp_path / "run"
+    out.mkdir()
+    cli._copy_best_checkpoint(trainer, out)
+    assert (out / "best_model.ckpt").read_text() == "weights"
+
+
+def test_copy_best_checkpoint_noops_without_callback_or_path(tmp_path: Path) -> None:
+    cli._copy_best_checkpoint(SimpleNamespace(checkpoint_callback=None), tmp_path)
+    empty_best = SimpleNamespace(best_model_path="")
+    cli._copy_best_checkpoint(SimpleNamespace(checkpoint_callback=empty_best), tmp_path)
 
 
 def test_run_eval_rejects_unknown_eval_mode(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:

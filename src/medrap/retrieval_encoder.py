@@ -119,7 +119,22 @@ class KeyEmbeddingRetrievalEncoder(nn.Module):
         super().__init__()
 
     def encode(self, retrieval: RetrieverOutput) -> RetrievalEncoderOutput:
-        """View key embeddings as singleton-length document memory."""
+        """View key embeddings as singleton-length document memory.
+
+        Examples:
+            >>> import torch
+            >>> from medrap.types import RetrieverOutput
+            >>> enc = KeyEmbeddingRetrievalEncoder()
+            >>> ro = RetrieverOutput(
+            ...     doc_tokens=torch.zeros(1, 1, 1, 1, dtype=torch.long),
+            ...     doc_attention_mask=torch.ones(1, 1, 1, 1, dtype=torch.bool),
+            ...     doc_key_embeddings=None,
+            ... )
+            >>> enc(ro)  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+            ...
+            ValueError: ...doc_key_embeddings...
+        """
         keys = retrieval.doc_key_embeddings
         if keys is None:
             raise ValueError("KeyEmbeddingRetrievalEncoder requires doc_key_embeddings on RetrieverOutput")

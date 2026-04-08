@@ -25,6 +25,14 @@ def _positive_class_probs(logits: Tensor) -> Tensor:
         >>> p1 = _positive_class_probs(torch.tensor([[0.0], [2.0]]))
         >>> bool(p1[1] > p1[0])
         True
+        >>> _positive_class_probs(torch.zeros(3))  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+        ...
+        ValueError: Expected logits (N, C)...
+        >>> _positive_class_probs(torch.zeros(2, 3))  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+        ...
+        ValueError: ...1 or 2 output dims...
     """
     if logits.ndim != 2:
         raise ValueError(f"Expected logits (N, C), got {tuple(logits.shape)}")
@@ -36,6 +44,29 @@ def _positive_class_probs(logits: Tensor) -> Tensor:
 
 
 def _resolve_val_dataloader(trainer: pl.Trainer):
+    """Resolve the first validation dataloader from a Lightning trainer.
+
+    Examples:
+        >>> from types import SimpleNamespace
+        >>> class _DM:
+        ...     def val_dataloader(self):
+        ...         return "from_dm"
+        >>> _resolve_val_dataloader(SimpleNamespace(datamodule=_DM(), val_dataloaders="ignored"))
+        'from_dm'
+        >>> class _DMNone:
+        ...     def val_dataloader(self):
+        ...         return None
+        >>> _resolve_val_dataloader(SimpleNamespace(datamodule=_DMNone(), val_dataloaders=["fb"]))
+        'fb'
+        >>> _resolve_val_dataloader(SimpleNamespace(datamodule=None, val_dataloaders=[])) is None
+        True
+        >>> _resolve_val_dataloader(SimpleNamespace(datamodule=None, val_dataloaders=[1]))
+        1
+        >>> _resolve_val_dataloader(SimpleNamespace(datamodule=None, val_dataloaders="solo"))
+        'solo'
+        >>> _resolve_val_dataloader(SimpleNamespace(datamodule=None, val_dataloaders=None)) is None
+        True
+    """
     if getattr(trainer, "datamodule", None) is not None:
         dl = trainer.datamodule.val_dataloader()
         if dl is not None:
@@ -151,6 +182,180 @@ class EndOfFitValAUROCCallback(Callback):
         ... )
         >>> tr2.state.finished
         True
+        >>> from types import SimpleNamespace
+        >>> from unittest.mock import patch
+        >>> cb = EndOfFitValAUROCCallback()
+        >>> cb.on_fit_end(SimpleNamespace(sanity_checking=True), MagicMock())
+        >>> cb.on_fit_end(
+        ...     SimpleNamespace(sanity_checking=False, datamodule=None, val_dataloaders=None),
+        ...     MagicMock(),
+        ... )
+        >>> empty_b = MEDSTorchBatch(
+        ...     code=torch.zeros(0, 2, dtype=torch.long),
+        ...     numeric_value=torch.zeros(0, 2, dtype=torch.float32),
+        ...     numeric_value_mask=torch.zeros(0, 2, dtype=torch.bool),
+        ...     time_delta_days=torch.zeros(0, 2, dtype=torch.float32),
+        ... )
+        >>> empty_b.boolean_value = torch.zeros(0, dtype=torch.bool)
+        >>> plm = MagicMock(spec=pl.LightningModule)
+        >>> plm.training = True
+        >>> plm.device = torch.device("cpu")
+        >>> plm.eval = MagicMock()
+        >>> plm.train = MagicMock()
+        >>> plm.transfer_batch_to_device = lambda batch, device, dataloader_idx=0: batch
+        >>> plm.task = BinaryClassificationTask()
+        >>> plm.return_value = ModelOutput(logits=torch.zeros(0, 2))
+        >>> cb.on_fit_end(
+        ...     SimpleNamespace(
+        ...         sanity_checking=False,
+        ...         global_step=0,
+        ...         loggers=[],
+        ...         datamodule=None,
+        ...         val_dataloaders=DataLoader([empty_b], batch_size=None),
+        ...     ),
+        ...     plm,
+        ... )
+        >>> ev = _Inner()
+        >>> _ = ev.eval()
+        >>> EndOfFitValAUROCCallback().on_fit_end(
+        ...     SimpleNamespace(
+        ...         sanity_checking=False,
+        ...         global_step=1,
+        ...         loggers=[],
+        ...         datamodule=None,
+        ...         val_dataloaders=DataLoader(
+        ...             [_auroc_batch2(False), _auroc_batch2(True)], batch_size=None
+        ...         ),
+        ...     ),
+        ...     ev,
+        ... )
+        >>> ev.training
+        False
+        >>> plm2 = MagicMock(spec=pl.LightningModule)
+        >>> plm2.training = True
+        >>> plm2.device = torch.device("cpu")
+        >>> plm2.eval = MagicMock()
+        >>> plm2.train = MagicMock()
+        >>> plm2.transfer_batch_to_device = lambda batch, device, dataloader_idx=0: batch
+        >>> plm2.task = MagicMock()
+        >>> plm2.task.extract_targets = MagicMock(return_value={"k": torch.tensor(1.0)})
+        >>> plm2.return_value = ModelOutput(logits=torch.tensor([[0.0, 1.0]]))
+        >>> cb.on_fit_end(
+        ...     SimpleNamespace(
+        ...         sanity_checking=False,
+        ...         global_step=0,
+        ...         loggers=[],
+        ...         datamodule=None,
+        ...         val_dataloaders=DataLoader([_auroc_batch2(True)], batch_size=None),
+        ...     ),
+        ...     plm2,
+        ... )
+        >>> cb.on_fit_end(
+        ...     SimpleNamespace(
+        ...         sanity_checking=False,
+        ...         datamodule=SimpleNamespace(
+        ...             val_dataloader=lambda: DataLoader([_auroc_batch2(True)], batch_size=None),
+        ...         ),
+        ...         val_dataloaders=None,
+        ...         global_step=3,
+        ...         loggers=[],
+        ...     ),
+        ...     SimpleNamespace(task=None, training=False, eval=lambda: None),
+        ... )
+        >>> plm3 = MagicMock(spec=pl.LightningModule)
+        >>> plm3.training = True
+        >>> plm3.device = torch.device("cpu")
+        >>> plm3.eval = MagicMock()
+        >>> plm3.train = MagicMock()
+        >>> plm3.transfer_batch_to_device = lambda batch, device, dataloader_idx=0: batch
+        >>> plm3.task = BinaryClassificationTask()
+        >>> plm3.return_value = torch.tensor(0.0)
+        >>> cb.on_fit_end(
+        ...     SimpleNamespace(
+        ...         sanity_checking=False,
+        ...         global_step=0,
+        ...         loggers=[],
+        ...         datamodule=None,
+        ...         val_dataloaders=DataLoader(
+        ...             [_auroc_batch2(False), _auroc_batch2(True)], batch_size=None
+        ...         ),
+        ...     ),
+        ...     plm3,
+        ... )
+        >>> log_one = SimpleNamespace(log_metrics=MagicMock())
+        >>> cb.on_fit_end(
+        ...     SimpleNamespace(
+        ...         sanity_checking=False,
+        ...         global_step=0,
+        ...         loggers=[log_one],
+        ...         datamodule=None,
+        ...         val_dataloaders=DataLoader(
+        ...             [_auroc_batch2(False), _auroc_batch2(False)], batch_size=None
+        ...         ),
+        ...     ),
+        ...     ev,
+        ... )
+        >>> log_one.log_metrics.called
+        False
+        >>> log_bad = SimpleNamespace(log_metrics=MagicMock())
+        >>> with patch("medrap.callbacks.binary_auroc", side_effect=RuntimeError("fail")):
+        ...     EndOfFitValAUROCCallback().on_fit_end(
+        ...         SimpleNamespace(
+        ...             sanity_checking=False,
+        ...             global_step=0,
+        ...             loggers=[log_bad],
+        ...             datamodule=None,
+        ...             val_dataloaders=DataLoader(
+        ...                 [_auroc_batch2(False), _auroc_batch2(True)], batch_size=None
+        ...             ),
+        ...         ),
+        ...         ev,
+        ...     )
+        >>> log_bad.log_metrics.called
+        False
+        >>> log_nan = SimpleNamespace(log_metrics=MagicMock())
+        >>> with patch(
+        ...     "medrap.callbacks.binary_auroc", return_value=torch.tensor(float("nan"))
+        ... ):
+        ...     EndOfFitValAUROCCallback().on_fit_end(
+        ...         SimpleNamespace(
+        ...             sanity_checking=False,
+        ...             global_step=0,
+        ...             loggers=[log_nan],
+        ...             datamodule=None,
+        ...             val_dataloaders=DataLoader(
+        ...                 [_auroc_batch2(False), _auroc_batch2(True)], batch_size=None
+        ...             ),
+        ...         ),
+        ...         ev,
+        ...     )
+        >>> log_nan.log_metrics.called
+        False
+        >>> import medrap.callbacks as _cb_mod
+        >>> class _StubWB:
+        ...     pass
+        >>> _saved_wb = _cb_mod.WandbLogger
+        >>> _cb_mod.WandbLogger = _StubWB
+        >>> metrics_l = SimpleNamespace(log_metrics=MagicMock())
+        >>> wb = _StubWB()
+        >>> wb.experiment = SimpleNamespace(summary={})
+        >>> EndOfFitValAUROCCallback().on_fit_end(
+        ...     SimpleNamespace(
+        ...         sanity_checking=False,
+        ...         global_step=9,
+        ...         loggers=[metrics_l, wb],
+        ...         datamodule=None,
+        ...         val_dataloaders=DataLoader(
+        ...             [_auroc_batch2(False), _auroc_batch2(True)], batch_size=None
+        ...         ),
+        ...     ),
+        ...     wrapped,
+        ... )
+        >>> metrics_l.log_metrics.called
+        True
+        >>> "final_val_auroc" in wb.experiment.summary
+        True
+        >>> _cb_mod.WandbLogger = _saved_wb
     """
 
     def on_fit_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
@@ -258,6 +463,48 @@ class GradientNormCallback(Callback):
         ...     train_dataloaders=DataLoader(torch.randn(4, 2), batch_size=2),
         ... )
         >>> any(str(k).startswith("train/grad_norm") for k in tr.callback_metrics)
+        True
+        >>> from types import SimpleNamespace
+        >>> class _QPG(pl.LightningModule):
+        ...     def __init__(self) -> None:
+        ...         super().__init__()
+        ...         self.query_projector = torch.nn.Linear(2, 2)
+        ...         self.other = torch.nn.Linear(2, 2)
+        ...     def training_step(self, batch, _i):
+        ...         return self.query_projector(self.other(batch)).sum()
+        ...     def configure_optimizers(self):
+        ...         return torch.optim.SGD(self.parameters(), lr=0.1)
+        >>> gmod = _QPG()
+        >>> gcb = GradientNormCallback(every_n_steps=50)
+        >>> gcalls: list = []
+        >>> gmod.log = lambda *a, **k: gcalls.append(a[0])
+        >>> gb = torch.randn(2, 2)
+        >>> gmod.training_step(gb, 0).backward()
+        >>> gcb.on_after_backward(SimpleNamespace(global_step=5), gmod)
+        >>> gcalls
+        []
+        >>> gmod.training_step(gb, 0).backward()
+        >>> gcb.on_after_backward(SimpleNamespace(global_step=50), gmod)
+        >>> any(str(x).startswith("train/grad_norm") for x in gcalls)
+        True
+        >>> class _Mix(pl.LightningModule):
+        ...     def __init__(self) -> None:
+        ...         super().__init__()
+        ...         self.query_projector = torch.nn.Linear(2, 2)
+        ...         self.frozen = torch.nn.Linear(2, 2)
+        ...         for p in self.frozen.parameters():
+        ...             p.requires_grad_(False)
+        ...     def training_step(self, batch, _i):
+        ...         return self.query_projector(self.frozen(batch)).sum()
+        ...     def configure_optimizers(self):
+        ...         return torch.optim.SGD(self.query_projector.parameters(), lr=0.1)
+        >>> mx = _Mix()
+        >>> gcb2 = GradientNormCallback(every_n_steps=1)
+        >>> mxcalls: list = []
+        >>> mx.log = lambda *a, **k: mxcalls.append(a[0])
+        >>> mx.training_step(torch.randn(2, 2), 0).backward()
+        >>> gcb2.on_after_backward(SimpleNamespace(global_step=1), mx)
+        >>> any("query_projector" in str(x) for x in mxcalls)
         True
     """
 

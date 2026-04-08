@@ -12,6 +12,7 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 import torch
@@ -100,6 +101,7 @@ def _setup_doctest_namespace(
             "make_supervised_batch": make_supervised_batch,
             "ModelOutput": ModelOutput,
             "ModelOutputBinaryModel": ModelOutputBinaryModel,
+            "MagicMock": MagicMock,
             "DoctestTokenizer": DoctestTokenizer,
             "DoctestEmbedder": DoctestEmbedder,
         }

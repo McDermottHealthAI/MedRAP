@@ -24,6 +24,41 @@ def differentiable_retrieval_scores(
     Raises:
         ValueError: If shapes are incompatible, ``R`` does not match, or
             ``similarity`` is unknown.
+
+    Examples:
+        >>> import torch
+        >>> q = torch.randn(2, 1, 4, requires_grad=True)
+        >>> k = torch.randn(2, 1, 3, 4)
+        >>> differentiable_retrieval_scores(q, k).shape
+        torch.Size([2, 3])
+        >>> differentiable_retrieval_scores(q, k, similarity="cosine").shape
+        torch.Size([2, 3])
+        >>> differentiable_retrieval_scores(torch.randn(2, 2, 4), torch.randn(2, 2, 3, 4)).shape
+        torch.Size([2, 2, 3])
+        >>> differentiable_retrieval_scores(torch.zeros(2, 4), torch.zeros(2, 1, 3, 4))  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+        ...
+        ValueError: query_embeddings must be (B, R, D)...
+        >>> differentiable_retrieval_scores(torch.zeros(2, 1, 4), torch.zeros(2, 1, 3))  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+        ...
+        ValueError: doc_key_embeddings must be (B, R, K, D)...
+        >>> differentiable_retrieval_scores(torch.zeros(2, 1, 4), torch.zeros(2, 1, 3, 5))  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+        ...
+        ValueError: ...align on (B, R, D)...
+        >>> differentiable_retrieval_scores(
+        ...     torch.zeros(2, 1, 4), torch.zeros(3, 1, 3, 4)
+        ... )  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+        ...
+        ValueError: ...align on (B, R, D)...
+        >>> differentiable_retrieval_scores(
+        ...     torch.zeros(2, 1, 4), torch.zeros(2, 1, 3, 4), similarity="l2"
+        ... )  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+        ...
+        ValueError: similarity must be 'dot' or 'cosine'...
     """
     if query_embeddings.ndim != 3:
         raise ValueError(f"query_embeddings must be (B, R, D), got {tuple(query_embeddings.shape)}")

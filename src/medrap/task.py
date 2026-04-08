@@ -201,6 +201,10 @@ class MarginalizedBinaryClassificationTask(SupervisedTask):
     Examples:
         >>> import torch
         >>> from medrap.types import ModelOutput
+        >>> MarginalizedBinaryClassificationTask(output_dim=3)  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        ValueError: MarginalizedBinaryClassificationTask requires output_dim=2, got 3
         >>> task = MarginalizedBinaryClassificationTask()
         >>> m = task.metrics(
         ...     ModelOutput(logits=torch.FloatTensor([[2.0, -1.0], [-1.0, 2.0]])),
@@ -208,6 +212,32 @@ class MarginalizedBinaryClassificationTask(SupervisedTask):
         ... )
         >>> "accuracy" in m and m["accuracy"].shape == torch.Size([])
         True
+        >>> tuple(task.extract_targets(make_supervised_batch()).shape)
+        (2,)
+        >>> mb = make_supervised_batch()
+        >>> mb.boolean_value = torch.BoolTensor([[True], [False]])
+        >>> tuple(task.extract_targets(mb).shape)
+        (2,)
+        >>> missing = MEDSTorchBatch(
+        ...     code=torch.LongTensor([[1, 2], [3, 4]]),
+        ...     numeric_value=torch.zeros((2, 2), dtype=torch.float32),
+        ...     numeric_value_mask=torch.zeros((2, 2), dtype=torch.bool),
+        ...     time_delta_days=torch.zeros((2, 2), dtype=torch.float32),
+        ... )
+        >>> task.extract_targets(missing)  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        ValueError: Expected boolean_value targets...
+        >>> bad = make_supervised_batch()
+        >>> bad.boolean_value = torch.BoolTensor([[True, False], [False, True]])
+        >>> task.extract_targets(bad)  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        ValueError: MarginalizedBinaryClassificationTask expects boolean_value shaped (B,) or (B, 1)...
+        >>> task.metrics(ModelOutput(logits=torch.zeros(2, 1)), torch.tensor([0.0, 1.0]))  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        ValueError: MarginalizedBinaryClassificationTask expects logits shaped (B, 2)...
     """
 
     def __init__(self, *, label_field: str = "boolean_value", output_dim: int = 2) -> None:
