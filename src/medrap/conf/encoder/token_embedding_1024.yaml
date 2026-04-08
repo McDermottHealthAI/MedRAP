@@ -1,0 +1,5 @@
+# Learned code embeddings sized for retrieval pipelines that use 1024-D queries/keys.
+# Override vocab_size to match your MEDS code vocabulary (tensorized cohort metadata).
+_target_: medrap.encoders.TokenEmbeddingEncoder
+vocab_size: 65536
+embedding_dim: 1024

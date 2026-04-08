@@ -17,13 +17,14 @@ from lightning.pytorch.loggers import CSVLogger
 from meds_torchdata import MEDSTorchBatch, MEDSTorchDataConfig
 from meds_torchdata.extensions.lightning_datamodule import Datamodule as MEDSLightningDatamodule
 from meds_torchdata.types import SubsequenceSamplingStrategy
-from omegaconf import MISSING
+from omegaconf import MISSING, OmegaConf
 
 from .datamodule import SyntheticSupervisedDatamodule
 from .encoders import MEDSCodeEncoder, TabularEncoder, TokenEmbeddingEncoder
 from .fusion import ConcatFusion, ReplaceFusion
 from .heads import LinearHead
 from .lightning_module import MedRAPSupervisedLightningModule
+from .losses import MarginalizedRetrievalSupervisedLoss
 from .model import RetrievalAugmentedModel
 from .pooling import IdentityPooling, MaskedMeanPooling
 from .preparation import (
@@ -31,9 +32,13 @@ from .preparation import (
     prepare_retrieval_dataset,
 )
 from .query_projection import LinearQueryProjector, SequenceMeanQueryProjector
-from .retrieval_encoder import MeanPooledRetrievalEncoder, TokenFeatureRetrievalEncoder
+from .retrieval_encoder import (
+    KeyEmbeddingRetrievalEncoder,
+    MeanPooledRetrievalEncoder,
+    TokenFeatureRetrievalEncoder,
+)
 from .retrievers import InMemoryRetriever, load_hf_dataset_retriever
-from .task import BinaryClassificationLoss, BinaryClassificationTask
+from .task import BinaryClassificationLoss, BinaryClassificationTask, MarginalizedBinaryClassificationTask
 
 ComponentConfig = Any
 builds_any = cast("Any", builds)
@@ -138,6 +143,10 @@ MeanPooledRetrievalEncoderConfig = builds_any(
     embedding_dim=4,
     zen_dataclass={"cls_name": "MeanPooledRetrievalEncoderConfig"},
 )
+KeyEmbeddingRetrievalEncoderConfig = builds_any(
+    KeyEmbeddingRetrievalEncoder,
+    zen_dataclass={"cls_name": "KeyEmbeddingRetrievalEncoderConfig"},
+)
 ReplaceFusionConfig = builds_any(
     ReplaceFusion,
     zen_dataclass={"cls_name": "ReplaceFusionConfig"},
@@ -167,6 +176,14 @@ BinaryClassificationTaskConfig = builds_any(
 BinaryClassificationLossConfig = builds_any(
     BinaryClassificationLoss,
     zen_dataclass={"cls_name": "BinaryClassificationLossConfig"},
+)
+MarginalizedBinaryClassificationTaskConfig = builds_any(
+    MarginalizedBinaryClassificationTask,
+    zen_dataclass={"cls_name": "MarginalizedBinaryClassificationTaskConfig"},
+)
+MarginalizedRetrievalSupervisedLossConfig = builds_any(
+    MarginalizedRetrievalSupervisedLoss,
+    zen_dataclass={"cls_name": "MarginalizedRetrievalSupervisedLossConfig"},
 )
 MedRAPSupervisedLightningModuleConfig = builds_any(
     MedRAPSupervisedLightningModule,
@@ -307,6 +324,8 @@ class PipelineConfig:
     fusion: ComponentConfig = field(default_factory=ReplaceFusionConfig)
     pooling: ComponentConfig = field(default_factory=IdentityPoolingConfig)
     head: ComponentConfig = field(default_factory=LinearHeadConfig)
+    marginalized_retrieval: bool = False
+    marginalized_score_similarity: str = "dot"
 
 
 @dataclass
@@ -457,6 +476,14 @@ def instantiate_model(config: Any) -> RetrievalAugmentedModel:
         >>> model.head.linear.in_features
         5
     """
+    if OmegaConf.is_config(config):
+        marginalized_retrieval = bool(OmegaConf.select(config, "marginalized_retrieval", default=False))
+        marginalized_score_similarity = str(
+            OmegaConf.select(config, "marginalized_score_similarity", default="dot")
+        )
+    else:
+        marginalized_retrieval = bool(getattr(config, "marginalized_retrieval", False))
+        marginalized_score_similarity = str(getattr(config, "marginalized_score_similarity", "dot"))
     return RetrievalAugmentedModel(
         encoder=instantiate_any(config.encoder),
         query_projector=instantiate_any(config.query_projector),
@@ -465,6 +492,8 @@ def instantiate_model(config: Any) -> RetrievalAugmentedModel:
         fusion=instantiate_any(config.fusion),
         pooling=instantiate_any(config.pooling),
         head=instantiate_any(config.head),
+        marginalized_retrieval=marginalized_retrieval,
+        marginalized_score_similarity=marginalized_score_similarity,
     )
 
 
@@ -534,6 +563,30 @@ def prepare_retrieval_dataset_from_config(config: Any) -> str:
         '/tmp/retrieval-artifact'
         >>> retriever_cfg.index_name
         'retrieval'
+
+    Delegation to :func:`medrap.preparation.prepare_retrieval_dataset` (smoke):
+
+        >>> from pathlib import Path
+        >>> from unittest.mock import patch
+        >>> captured = {}
+        >>> def _fake_prep(*_a, **kwargs):
+        ...     captured.clear()
+        ...     captured.update(kwargs)
+        ...     return "/tmp/prepared_out"
+        >>> import medrap.configs as _cfg_mod
+        >>> with (
+        ...     patch.object(_cfg_mod, "prepare_retrieval_dataset", _fake_prep),
+        ...     patch.object(_cfg_mod, "instantiate_any", lambda _c: object()),
+        ... ):
+        ...     artifact = Path("/tmp/artifact")
+        ...     cfg = PrepareRetrievalDatasetAppConfig(
+        ...         prep=PrepareRetrievalDatasetConfig(
+        ...             output=RetrievalDatasetOutputConfig(output_dir=str(artifact))
+        ...         )
+        ...     )
+        ...     r = prepare_retrieval_dataset_from_config(cfg)
+        >>> r == "/tmp/prepared_out" and captured.get("output_dir") == str(artifact)
+        True
     """
     prep_cfg = config.prep
     dataset = instantiate_any(prep_cfg.source)

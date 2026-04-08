@@ -4,6 +4,9 @@ import torch
 import torch.nn.functional as functional
 from torch import Tensor, nn
 
+from .task import SupervisedLoss, TaskTargets
+from .types import ModelOutput
+
 
 class MarginalizedRetrievalLoss(nn.Module):
     """REALM-style marginalized log-likelihood loss over retrieved documents.
@@ -108,3 +111,93 @@ class MarginalizedRetrievalLoss(nn.Module):
         log_marginal = torch.logsumexp(log_p_ret + log_p_pred_y, dim=-1)
 
         return -log_marginal.mean()
+
+
+class MarginalizedRetrievalSupervisedLoss(SupervisedLoss):
+    """Adapter wiring :class:`MarginalizedRetrievalLoss` to ``ModelOutput`` metadata.
+
+    Expects ``predictions.metadata`` to contain ``per_doc_logits`` and
+    ``differentiable_doc_scores`` as produced by
+    :class:`medrap.model.RetrievalAugmentedModel` with ``marginalized_retrieval=True``.
+
+    Examples:
+        >>> import torch
+        >>> from medrap.types import ModelOutput
+        >>> pred = ModelOutput(
+        ...     logits=torch.zeros(2, 2),
+        ...     metadata={
+        ...         "per_doc_logits": torch.randn(2, 2, 2),
+        ...         "differentiable_doc_scores": torch.randn(2, 2),
+        ...     },
+        ... )
+        >>> loss = MarginalizedRetrievalSupervisedLoss()(pred, torch.tensor([0.0, 1.0]))
+        >>> loss.shape
+        torch.Size([])
+        >>> MarginalizedRetrievalSupervisedLoss()(
+        ...     ModelOutput(logits=torch.zeros(2, 2)), torch.tensor([0.0, 1.0])
+        ... )  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        ValueError: ModelOutput.metadata must include tensor 'per_doc_logits'
+
+        Missing or invalid metadata:
+
+            >>> MarginalizedRetrievalSupervisedLoss()(
+            ...     ModelOutput(logits=torch.zeros(2, 2)), {"x": torch.tensor(1.0)}
+            ... )  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+            ...
+            ValueError: ...tensor targets...
+            >>> MarginalizedRetrievalSupervisedLoss()(
+            ...     ModelOutput(logits=torch.zeros(1, 2), metadata={}), torch.tensor([0.0])
+            ... )  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+            ...
+            ValueError: ...per_doc_logits...
+            >>> MarginalizedRetrievalSupervisedLoss()(
+            ...     ModelOutput(
+            ...         logits=torch.zeros(1, 2),
+            ...         metadata={"per_doc_logits": torch.zeros(1, 2, 2)},
+            ...     ),
+            ...     torch.tensor([0.0]),
+            ... )  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+            ...
+            ValueError: ...differentiable_doc_scores...
+            >>> MarginalizedRetrievalSupervisedLoss()(
+            ...     ModelOutput(
+            ...         logits=torch.zeros(1, 2),
+            ...         metadata={
+            ...             "per_doc_logits": torch.zeros(1, 2, 2),
+            ...             "differentiable_doc_scores": torch.zeros(1, 2, 3),
+            ...         },
+            ...     ),
+            ...     torch.tensor([0.0]),
+            ... )  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+            ...
+            ValueError: ...(B, K)...
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._inner = MarginalizedRetrievalLoss()
+
+    def forward(self, predictions: ModelOutput, targets: TaskTargets) -> Tensor:
+        if not isinstance(targets, Tensor):
+            raise ValueError("MarginalizedRetrievalSupervisedLoss expects tensor targets")
+        meta = predictions.metadata
+        per_doc_logits = meta.get("per_doc_logits")
+        doc_scores = meta.get("differentiable_doc_scores")
+        if not isinstance(per_doc_logits, Tensor):
+            raise ValueError("ModelOutput.metadata must include tensor 'per_doc_logits'")
+        if not isinstance(doc_scores, Tensor):
+            raise ValueError("ModelOutput.metadata must include tensor 'differentiable_doc_scores'")
+        if doc_scores.ndim != 2:
+            raise ValueError(f"differentiable_doc_scores must be (B, K), got {tuple(doc_scores.shape)}")
+        targets_long = targets.long()
+        return self._inner(
+            per_doc_logits=per_doc_logits,
+            doc_scores=doc_scores,
+            targets=targets_long,
+        )

@@ -8,6 +8,7 @@ from meds_torchdata import MEDSTorchBatch
 from torch import Tensor, nn
 from torch.optim import Optimizer
 
+from .retrieval_logging import retrieval_diagnostic_scalars
 from .task import (
     BinaryClassificationLoss,
     BinaryClassificationTask,
@@ -130,6 +131,16 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
                 prog_bar=not is_train,
                 batch_size=batch_size,
             )
+        if isinstance(targets, Tensor):
+            for name, value in retrieval_diagnostic_scalars(predictions, targets).items():
+                self.log(
+                    f"{stage}/{name}",
+                    value,
+                    on_step=is_train,
+                    on_epoch=True,
+                    prog_bar=False,
+                    batch_size=batch_size,
+                )
         return loss
 
     def training_step(self, batch: MEDSTorchBatch, _batch_idx: int) -> Tensor:
@@ -220,6 +231,27 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
             ...     id(parameter) for group in optimizer.param_groups for parameter in group["params"]
             ... }
             >>> id(task.scale) in optimized_params
+            True
+            >>> from medrap.losses import MarginalizedRetrievalSupervisedLoss
+            >>> from medrap.task import MarginalizedBinaryClassificationTask
+            >>> class _MargModel(nn.Module):
+            ...     def forward(self, batch: MEDSTorchBatch) -> ModelOutput:
+            ...         return ModelOutput(
+            ...             logits=torch.zeros(2, 2),
+            ...             metadata={
+            ...                 "differentiable_doc_scores": torch.randn(2, 3),
+            ...                 "per_doc_logits": torch.randn(2, 3, 2),
+            ...             },
+            ...         )
+            >>> mm = MedRAPSupervisedLightningModule(
+            ...     model=_MargModel(),
+            ...     task=MarginalizedBinaryClassificationTask(),
+            ...     loss_fn=MarginalizedRetrievalSupervisedLoss(),
+            ... )
+            >>> log_names: list = []
+            >>> mm.log = lambda *a, **k: log_names.append(a[0])
+            >>> _ = mm._run_supervised_step(make_supervised_batch(), stage="train")
+            >>> any(str(n).startswith("train/retrieval/") for n in log_names)
             True
         """
         return self.optimizer_factory(self._grouped_parameters())
