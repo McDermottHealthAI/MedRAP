@@ -345,6 +345,44 @@ class EndOfFitValAUROCCallback(Callback):
         True
         >>> "final_val_auroc" in wb.experiment.summary
         True
+        >>> import tempfile as _tf
+        >>> from lightning.pytorch.loggers import WandbLogger as _LightningWandb
+        >>> class _WandbNoExperiment(_LightningWandb):
+        ...     def log_metrics(self, _metrics, **_kwargs):
+        ...         pass
+        ...
+        ...     @property
+        ...     def experiment(self):
+        ...         return None
+        >>> wnx = _WandbNoExperiment(
+        ...     project="medrap-cb-doctest",
+        ...     offline=True,
+        ...     save_dir=_tf.mkdtemp(),
+        ... )
+        >>> EndOfFitValAUROCCallback().on_fit_end(
+        ...     SimpleNamespace(
+        ...         sanity_checking=False,
+        ...         global_step=10,
+        ...         loggers=[wnx],
+        ...         datamodule=None,
+        ...         val_dataloaders=DataLoader([_auroc_batch2(False), _auroc_batch2(True)], batch_size=None),
+        ...     ),
+        ...     wrapped,
+        ... )
+        >>> wr_idle = MedRAPSupervisedLightningModule(model=_Inner(), task=BinaryClassificationTask())
+        >>> _ = wr_idle.eval()
+        >>> EndOfFitValAUROCCallback().on_fit_end(
+        ...     SimpleNamespace(
+        ...         sanity_checking=False,
+        ...         global_step=11,
+        ...         loggers=[],
+        ...         datamodule=None,
+        ...         val_dataloaders=DataLoader([_auroc_batch2(False), _auroc_batch2(True)], batch_size=None),
+        ...     ),
+        ...     wr_idle,
+        ... )
+        >>> not wr_idle.training
+        True
         >>> _cb_mod.WandbLogger = _saved_wb
     """
 
@@ -500,6 +538,8 @@ class GradientNormCallback(Callback):
         >>> gcb2.on_after_backward(SimpleNamespace(global_step=1), mx)
         >>> any("query_projector" in str(x) for x in mxcalls)
         True
+        >>> GradientNormCallback(every_n_steps=0).every_n_steps
+        1
     """
 
     def __init__(self, *, every_n_steps: int = 50) -> None:
