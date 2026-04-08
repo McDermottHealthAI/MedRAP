@@ -6,16 +6,18 @@
 # embedding dimension around the fast-run baseline. All runs
 # share the same data/step constraints as the ~15-min baseline.
 #
-# Baseline (idx 0):
-#   k=4, lr=1e-3, encoder_dim=128
-#   max_epochs=3, max_seq_len=128, batch_size=32
+# Baseline: k=4, lr=1e-3, enc_dim=128, max_epochs=3, max_seq_len=128, batch_size=32
+#
+# Sweep 1 (idx 0-3): large k values — 32, 64, 128, 256
+# Sweep 2 (idx 4-7): epoch count — 1, 2, 3, 4
 #
 # Note: query_projector.out_dim and head.in_dim are fixed at 1024
 # to match the precomputed key embeddings in the retrieval DB.
 #
 # Usage:
 #   sbatch --array=0-7 scripts/sweep_slurm.sh
-#   sbatch --array=0   scripts/sweep_slurm.sh   # baseline only
+#   sbatch --array=0-3 scripts/sweep_slurm.sh   # k sweep only
+#   sbatch --array=4-7 scripts/sweep_slurm.sh   # epoch sweep only
 #
 # Extra arguments are forwarded to `medrap train` as Hydra overrides.
 # ============================================================
@@ -26,7 +28,8 @@
 #SBATCH --gres=gpu:L40S:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
-#SBATCH --time=01:00:00
+#SBATCH --time=03:00:00
+#SBATCH --array=0-7
 #SBATCH --output=logs/sweep_%A_%a.out
 #SBATCH --error=logs/sweep_%A_%a.err
 
@@ -38,21 +41,23 @@ RETRIEVAL_DB="${REPO_DIR}/data/retrieval_db"
 TENSORIZED_DIR="/groups/mm6677_gp/data/MIMIC_MEDS/MEDS_cohort/processed"
 TASK_LABELS_DIR="${REPO_DIR}/data/task_labels/mortality/in_icu/first_24h"
 
-# ---- Sweep configs (one-factor-at-a-time around baseline) ----
+# ---- Sweep configs ----
 #
-# Columns: NAME  K  LR    ENC_DIM
-# Baseline: k=4, lr=1e-3, enc_dim=128
+# Columns: NAME  K   LR    ENC_DIM  EPOCHS
+# Baseline: k=4, lr=1e-3, enc_dim=128, epochs=3
 #
-NAMES=(baseline  k_01  k_08  k_16  lr_1e-4  lr_3e-3  enc_32  enc_512)
-KS=(   4         1     8     16    4        4         4       4      )
-LRS=(  1e-3      1e-3  1e-3  1e-3  1e-4     3e-3      1e-3    1e-3   )
-ENC_DIMS=(128    128   128   128   128      128       32      512    )
+NAMES=(   k_32  k_64  k_128  k_256  ep_1  ep_2  ep_3  ep_4)
+KS=(      32    64    128    256    4     4     4     4   )
+LRS=(     1e-3  1e-3  1e-3   1e-3   1e-3  1e-3  1e-3  1e-3)
+ENC_DIMS=(128   128   128    128    128   128   128   128  )
+EPOCHS=(  3     3     3      3      1     2     3     4   )
 
 IDX=${SLURM_ARRAY_TASK_ID}
 NAME=${NAMES[$IDX]}
 K=${KS[$IDX]}
 LR=${LRS[$IDX]}
 ENC_DIM=${ENC_DIMS[$IDX]}
+EPOCH=${EPOCHS[$IDX]}
 
 OUTPUT_DIR="${REPO_DIR}/outputs/sweep/${NAME}"
 
@@ -64,6 +69,7 @@ echo "  GPU(s)     : ${CUDA_VISIBLE_DEVICES:-<unset>}"
 echo "  k          : ${K}"
 echo "  lr         : ${LR}"
 echo "  enc_dim    : ${ENC_DIM}"
+echo "  epochs     : ${EPOCH}"
 echo "  Started    : $(date)"
 echo ""
 
@@ -102,7 +108,7 @@ medrap train \
     training.datamodule.batch_size=32 \
     training.datamodule.config.seq_sampling_strategy=to_end \
     training/trainer=lightning_wandb \
-    training.trainer.max_epochs=3 \
+    training.trainer.max_epochs=${EPOCH} \
     training.trainer.accelerator=gpu \
     training.trainer.devices=1 \
     training.trainer.log_every_n_steps=10 \

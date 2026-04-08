@@ -7,6 +7,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+import lightning
 from lightning.pytorch.loggers import CSVLogger
 
 import hydra
@@ -301,6 +302,7 @@ def _load_training_module_checkpoint(cfg: DictConfig, checkpoint_path: str) -> o
 
 def _run_train(cfg: DictConfig) -> int:
     print(OmegaConf.to_yaml(cfg))
+    lightning.seed_everything(cfg.seed, workers=True)
     output_dir = _prepare_output_dir(cfg)
     ckpt_path = _prepare_train_run(cfg)
     module = instantiate_training_module(cfg)

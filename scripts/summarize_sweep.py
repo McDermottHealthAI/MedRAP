@@ -1,14 +1,17 @@
 """Summarize hyperparameter sweep results from outputs/sweep/.
 
-Reads per-run CSV logs and resolved configs to produce a sorted results table.
+Reads per-run CSV logs and resolved configs to produce a sorted CSV results
+table, including WandB run URLs where available.
 
 Usage:
-    python scripts/summarize_sweep.py [--sweep-dir outputs/sweep]
+    python scripts/summarize_sweep.py [--sweep-dir outputs/sweep] [--logs-dir logs] [--output sweep_results.csv]
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
+import re
 import sys
 from pathlib import Path
 
@@ -20,6 +23,18 @@ def _parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("outputs/sweep"),
         help="Directory containing per-run sweep outputs (default: outputs/sweep)",
+    )
+    parser.add_argument(
+        "--logs-dir",
+        type=Path,
+        default=Path("logs"),
+        help="Directory containing SLURM log files used to extract WandB URLs (default: logs)",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("sweep_results.csv"),
+        help="Output CSV file path (default: sweep_results.csv)",
     )
     return parser.parse_args()
 
@@ -58,32 +73,7 @@ def _read_best_val_loss(run_dir: Path) -> float | None:
         return None
 
 
-def _read_config(run_dir: Path) -> dict:
-    """Read key hyperparameters from resolved_config.yaml."""
-    config_path = run_dir / "resolved_config.yaml"
-    if not config_path.exists():
-        return {}
-    try:
-        import re
-
-        text = config_path.read_text()
-
-        def _find(pattern: str) -> str:
-            m = re.search(pattern, text)
-            return m.group(1).strip() if m else "?"
-
-        return {
-            "k": _find(r"^\s*k:\s*(\S+)", re.MULTILINE) if re.search(r"^\s*k:\s*(\S+)", text, re.MULTILINE) else "?",
-            "lr": _find(r"^\s*lr:\s*(\S+)", re.MULTILINE) if re.search(r"^\s*lr:\s*(\S+)", text, re.MULTILINE) else "?",
-            "enc_dim": _find(r"^\s*embedding_dim:\s*(\S+)", re.MULTILINE) if re.search(r"^\s*embedding_dim:\s*(\S+)", text, re.MULTILINE) else "?",
-            "epochs": _find(r"^\s*max_epochs:\s*(\S+)", re.MULTILINE) if re.search(r"^\s*max_epochs:\s*(\S+)", text, re.MULTILINE) else "?",
-        }
-    except Exception:
-        return {}
-
-
 def _read_config_yaml(run_dir: Path) -> dict:
-    """Read key hyperparameters using yaml if available, else regex fallback."""
     config_path = run_dir / "resolved_config.yaml"
     if not config_path.exists():
         return {}
@@ -95,27 +85,80 @@ def _read_config_yaml(run_dir: Path) -> dict:
         try:
             result["k"] = cfg["retriever"]["k"]
         except (KeyError, TypeError):
-            result["k"] = "?"
+            result["k"] = ""
         try:
-            result["lr"] = cfg["training"]["module"].get("lr", "?")
+            result["lr"] = cfg["training"]["module"].get("lr", "")
         except (KeyError, TypeError, AttributeError):
-            result["lr"] = "?"
+            result["lr"] = ""
         try:
             result["enc_dim"] = cfg["encoder"]["embedding_dim"]
         except (KeyError, TypeError):
-            result["enc_dim"] = "?"
+            result["enc_dim"] = ""
         try:
             result["epochs"] = cfg["training"]["trainer"]["max_epochs"]
         except (KeyError, TypeError):
-            result["epochs"] = "?"
+            result["epochs"] = ""
+        try:
+            result["wandb_project"] = cfg.get("wandb_project", "")
+        except (KeyError, TypeError, AttributeError):
+            result["wandb_project"] = ""
         return result
     except Exception:
-        return _read_config(run_dir)
+        return {}
+
+
+def _find_wandb_run_id(run_dir: Path) -> str | None:
+    """Extract WandB run ID from the local wandb directory name."""
+    wandb_dir = run_dir / "loggers" / "wandb"
+    if not wandb_dir.exists():
+        return None
+    for entry in wandb_dir.iterdir():
+        # Directory names look like: run-20260407_010725-h3yp242y
+        m = re.match(r"^run-\d{8}_\d{6}-(\w+)$", entry.name)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _build_run_id_to_url(logs_dir: Path) -> dict[str, str]:
+    """Scan SLURM log files for WandB 'View run at' lines and build run_id → URL map."""
+    url_map: dict[str, str] = {}
+    if not logs_dir.exists():
+        return url_map
+    # Strip ANSI escape codes before matching
+    ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
+    url_pattern = re.compile(r"https://wandb\.ai/[^/]+/[^/]+/runs/(\w+)")
+    for log_file in logs_dir.glob("*.out"):
+        try:
+            for line in log_file.read_text(errors="replace").splitlines():
+                clean = ansi_escape.sub("", line)
+                m = url_pattern.search(clean)
+                if m and ("View run" in clean or "wandb.ai" in clean):
+                    full_url = m.group(0)
+                    run_id = m.group(1)
+                    url_map[run_id] = full_url
+        except Exception:
+            continue
+    # Also scan .err files
+    for log_file in logs_dir.glob("*.err"):
+        try:
+            for line in log_file.read_text(errors="replace").splitlines():
+                clean = ansi_escape.sub("", line)
+                m = url_pattern.search(clean)
+                if m:
+                    full_url = m.group(0)
+                    run_id = m.group(1)
+                    url_map[run_id] = full_url
+        except Exception:
+            continue
+    return url_map
 
 
 def main() -> None:
     args = _parse_args()
     sweep_dir: Path = args.sweep_dir
+    logs_dir: Path = args.logs_dir
+    output_path: Path = args.output
 
     if not sweep_dir.exists():
         print(f"Sweep directory not found: {sweep_dir}", file=sys.stderr)
@@ -126,39 +169,41 @@ def main() -> None:
         print(f"No run directories found under {sweep_dir}", file=sys.stderr)
         sys.exit(1)
 
+    run_id_to_url = _build_run_id_to_url(logs_dir)
+
     rows = []
     for run_dir in run_dirs:
         auroc = _read_final_auroc(run_dir)
         val_loss = _read_best_val_loss(run_dir)
         cfg = _read_config_yaml(run_dir)
+        run_id = _find_wandb_run_id(run_dir)
+        wandb_url = run_id_to_url.get(run_id, "") if run_id else ""
+
         rows.append(
             {
                 "name": run_dir.name,
-                "k": cfg.get("k", "?"),
-                "lr": cfg.get("lr", "?"),
-                "enc_dim": cfg.get("enc_dim", "?"),
-                "epochs": cfg.get("epochs", "?"),
-                "val_auroc": auroc,
-                "best_val_loss": val_loss,
+                "k": cfg.get("k", ""),
+                "lr": cfg.get("lr", ""),
+                "enc_dim": cfg.get("enc_dim", ""),
+                "epochs": cfg.get("epochs", ""),
+                "val_auroc": auroc if auroc is not None else "",
+                "best_val_loss": val_loss if val_loss is not None else "",
                 "status": "done" if auroc is not None else ("running/failed" if val_loss is not None else "pending"),
+                "wandb_url": wandb_url,
             }
         )
 
-    # Sort by val_auroc descending (None last)
-    rows.sort(key=lambda r: (r["val_auroc"] is None, -(r["val_auroc"] or 0)))
+    # Sort by val_auroc descending (empty/missing last)
+    rows.sort(key=lambda r: (r["val_auroc"] == "", -(r["val_auroc"] or 0)))
 
-    header = f"{'name':<14} {'k':>4} {'lr':>8} {'enc_dim':>8} {'epochs':>6}  {'val_auroc':>10}  {'best_val_loss':>13}  {'status'}"
-    print(header)
-    print("-" * len(header))
-    for r in rows:
-        auroc_str = f"{r['val_auroc']:.4f}" if r["val_auroc"] is not None else "     -"
-        loss_str = f"{r['best_val_loss']:.4f}" if r["best_val_loss"] is not None else "            -"
-        print(
-            f"{r['name']:<14} {str(r['k']):>4} {str(r['lr']):>8} {str(r['enc_dim']):>8} {str(r['epochs']):>6}  {auroc_str:>10}  {loss_str:>13}  {r['status']}"
-        )
+    fieldnames = ["name", "k", "lr", "enc_dim", "epochs", "val_auroc", "best_val_loss", "status", "wandb_url"]
+    with output_path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
 
-    done = sum(1 for r in rows if r["val_auroc"] is not None)
-    print(f"\n{done}/{len(rows)} runs complete.")
+    done = sum(1 for r in rows if r["status"] == "done")
+    print(f"Written {output_path}  ({done}/{len(rows)} runs complete)")
 
 
 if __name__ == "__main__":
