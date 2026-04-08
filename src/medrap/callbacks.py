@@ -223,9 +223,7 @@ class EndOfFitValAUROCCallback(Callback):
         ...         global_step=1,
         ...         loggers=[],
         ...         datamodule=None,
-        ...         val_dataloaders=DataLoader(
-        ...             [_auroc_batch2(False), _auroc_batch2(True)], batch_size=None
-        ...         ),
+        ...         val_dataloaders=DataLoader([_auroc_batch2(False), _auroc_batch2(True)], batch_size=None),
         ...     ),
         ...     ev,
         ... )
@@ -276,9 +274,7 @@ class EndOfFitValAUROCCallback(Callback):
         ...         global_step=0,
         ...         loggers=[],
         ...         datamodule=None,
-        ...         val_dataloaders=DataLoader(
-        ...             [_auroc_batch2(False), _auroc_batch2(True)], batch_size=None
-        ...         ),
+        ...         val_dataloaders=DataLoader([_auroc_batch2(False), _auroc_batch2(True)], batch_size=None),
         ...     ),
         ...     plm3,
         ... )
@@ -289,9 +285,7 @@ class EndOfFitValAUROCCallback(Callback):
         ...         global_step=0,
         ...         loggers=[log_one],
         ...         datamodule=None,
-        ...         val_dataloaders=DataLoader(
-        ...             [_auroc_batch2(False), _auroc_batch2(False)], batch_size=None
-        ...         ),
+        ...         val_dataloaders=DataLoader([_auroc_batch2(False), _auroc_batch2(False)], batch_size=None),
         ...     ),
         ...     ev,
         ... )
@@ -314,9 +308,7 @@ class EndOfFitValAUROCCallback(Callback):
         >>> log_bad.log_metrics.called
         False
         >>> log_nan = SimpleNamespace(log_metrics=MagicMock())
-        >>> with patch(
-        ...     "medrap.callbacks.binary_auroc", return_value=torch.tensor(float("nan"))
-        ... ):
+        >>> with patch("medrap.callbacks.binary_auroc", return_value=torch.tensor(float("nan"))):
         ...     EndOfFitValAUROCCallback().on_fit_end(
         ...         SimpleNamespace(
         ...             sanity_checking=False,
@@ -345,9 +337,7 @@ class EndOfFitValAUROCCallback(Callback):
         ...         global_step=9,
         ...         loggers=[metrics_l, wb],
         ...         datamodule=None,
-        ...         val_dataloaders=DataLoader(
-        ...             [_auroc_batch2(False), _auroc_batch2(True)], batch_size=None
-        ...         ),
+        ...         val_dataloaders=DataLoader([_auroc_batch2(False), _auroc_batch2(True)], batch_size=None),
         ...     ),
         ...     wrapped,
         ... )
@@ -470,8 +460,10 @@ class GradientNormCallback(Callback):
         ...         super().__init__()
         ...         self.query_projector = torch.nn.Linear(2, 2)
         ...         self.other = torch.nn.Linear(2, 2)
+        ...
         ...     def training_step(self, batch, _i):
         ...         return self.query_projector(self.other(batch)).sum()
+        ...
         ...     def configure_optimizers(self):
         ...         return torch.optim.SGD(self.parameters(), lr=0.1)
         >>> gmod = _QPG()
@@ -494,8 +486,10 @@ class GradientNormCallback(Callback):
         ...         self.frozen = torch.nn.Linear(2, 2)
         ...         for p in self.frozen.parameters():
         ...             p.requires_grad_(False)
+        ...
         ...     def training_step(self, batch, _i):
         ...         return self.query_projector(self.frozen(batch)).sum()
+        ...
         ...     def configure_optimizers(self):
         ...         return torch.optim.SGD(self.query_projector.parameters(), lr=0.1)
         >>> mx = _Mix()

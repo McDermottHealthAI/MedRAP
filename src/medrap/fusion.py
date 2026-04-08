@@ -85,10 +85,12 @@ class ReplaceFusion(FusionModule):
             ... )
             >>> tuple(fusion.fuse(flat).fused_state.shape)
             (2, 4, 4)
-            >>> fusion(FusionInput(
-            ...     patient_state=torch.zeros(2, 1, 3),
-            ...     retrieval_memory=torch.zeros(2, 1, 1, 4),
-            ... ))  # doctest: +ELLIPSIS
+            >>> fusion(
+            ...     FusionInput(
+            ...         patient_state=torch.zeros(2, 1, 3),
+            ...         retrieval_memory=torch.zeros(2, 1, 1, 4),
+            ...     )
+            ... )  # doctest: +ELLIPSIS
             Traceback (most recent call last):
             ...
             ValueError: ReplaceFusion expects 5D retrieval_memory...

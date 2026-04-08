@@ -172,6 +172,7 @@ class RetrievalAugmentedModel(nn.Module):
             ...     def __init__(self) -> None:
             ...         super().__init__()
             ...         self.linear = nn.Linear(4, 2)
+            ...
             ...     def forward(self, x):
             ...         return self.linear(x)
             >>> m_bad_head = RetrievalAugmentedModel(
@@ -199,6 +200,7 @@ class RetrievalAugmentedModel(nn.Module):
             >>> class _NoKeyRet(nn.Module):
             ...     def forward(self, _q):
             ...         from medrap.types import RetrieverOutput
+            ...
             ...         return RetrieverOutput(
             ...             doc_tokens=torch.zeros(2, 1, 2, 2, dtype=torch.long),
             ...             doc_attention_mask=torch.ones(2, 1, 2, 2, dtype=torch.bool),
@@ -222,6 +224,7 @@ class RetrievalAugmentedModel(nn.Module):
             >>> class _BadFus(nn.Module):
             ...     def forward(self, fusion_input):
             ...         from medrap.types import FusionOutput
+            ...
             ...         return FusionOutput(fused_state=torch.zeros(2, 4))
             >>> m_bad_fus = RetrievalAugmentedModel(
             ...     encoder=MEDSCodeEncoder(),
