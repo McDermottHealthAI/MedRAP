@@ -28,7 +28,7 @@
 
 set -euo pipefail
 
-REPO_DIR="/groups/mm6677_gp/hs3627/MedRAP"
+REPO_DIR="${SLURM_SUBMIT_DIR}"
 VENV="${REPO_DIR}/.venv/bin/activate"
 RETRIEVAL_DB="${REPO_DIR}/data/retrieval_db"
 # MEDS cohort root for meds_torchdata: must contain data/{split}/*.nrt, tokenization/schemas, metadata/, etc.
