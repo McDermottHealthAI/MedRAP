@@ -211,8 +211,10 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
         =========  =====================  ========  ==============================
 
         ``InMemoryRetriever`` always provides ``doc_ids``, ``doc_scores``, and
-        ``doc_key_embeddings``. ``HFDatasetRetriever`` provides them only when
-        the corresponding column names are configured.
+        ``doc_key_embeddings``. ``HFDatasetRetriever`` always provides
+        ``doc_ids`` (using ``doc_ids_column`` if configured, otherwise the
+        FAISS dataset row indices) and ``doc_scores``; ``doc_key_embeddings``
+        is provided only when ``doc_key_embeddings_column`` is set.
 
         Args:
             batch: Input ``MEDSTorchBatch``.
