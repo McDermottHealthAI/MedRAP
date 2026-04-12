@@ -6,18 +6,8 @@
 # embedding dimension around the fast-run baseline. All runs
 # share the same data/step constraints as the ~15-min baseline.
 #
-# Baseline: k=4, lr=1e-3, enc_dim=128, max_epochs=3, max_seq_len=128, batch_size=32
-#
-# Sweep 1 (idx 0-3): large k values — 32, 64, 128, 256
-# Sweep 2 (idx 4-7): epoch count — 1, 2, 3, 4
-#
-# Note: query_projector.out_dim and head.in_dim are fixed at 1024
-# to match the precomputed key embeddings in the retrieval DB.
-#
 # Usage:
 #   sbatch --array=0-7 scripts/sweep_slurm.sh
-#   sbatch --array=0-3 scripts/sweep_slurm.sh   # k sweep only
-#   sbatch --array=4-7 scripts/sweep_slurm.sh   # epoch sweep only
 #
 # Extra arguments are forwarded to `medrap train` as Hydra overrides.
 # ============================================================
@@ -42,10 +32,6 @@ TENSORIZED_DIR="/groups/mm6677_gp/data/MIMIC_MEDS/MEDS_cohort/processed"
 TASK_LABELS_DIR="${REPO_DIR}/data/task_labels/mortality/in_icu/first_24h"
 
 # ---- Sweep configs ----
-#
-# Columns: NAME  K   LR    ENC_DIM  EPOCHS
-# Baseline: k=4, lr=1e-3, enc_dim=128, epochs=3
-#
 NAMES=(   k_32  k_64  k_128  k_256  ep_1  ep_2  ep_3  ep_4)
 KS=(      32    64    128    256    4     4     4     4   )
 LRS=(     1e-3  1e-3  1e-3   1e-3   1e-3  1e-3  1e-3  1e-3)
