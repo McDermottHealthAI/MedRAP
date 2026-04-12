@@ -4,7 +4,7 @@ Reads per-run CSV logs and resolved configs to produce a sorted CSV results
 table, including WandB run URLs where available.
 
 Usage:
-    python scripts/summarize_sweep.py [--sweep-dir outputs/sweep] [--logs-dir logs] [--output sweep_results.csv]
+    python scripts/summarize_sweep.py [--sweep-dir DIR] [--logs-dir DIR] [--output FILE]
 """
 
 from __future__ import annotations
@@ -188,7 +188,9 @@ def main() -> None:
                 "epochs": cfg.get("epochs", ""),
                 "val_auroc": auroc if auroc is not None else "",
                 "best_val_loss": val_loss if val_loss is not None else "",
-                "status": "done" if auroc is not None else ("running/failed" if val_loss is not None else "pending"),
+                "status": "done"
+                if auroc is not None
+                else ("running/failed" if val_loss is not None else "pending"),
                 "wandb_url": wandb_url,
             }
         )
