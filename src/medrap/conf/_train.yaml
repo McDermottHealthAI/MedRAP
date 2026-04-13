@@ -20,6 +20,8 @@ output_dir: ???
 do_resume: false
 do_overwrite: false
 
+seed: 42
+
 marginalized_retrieval: false
 marginalized_score_similarity: dot
 
