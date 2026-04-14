@@ -54,21 +54,26 @@ mkdir -p logs "${OUTPUT_DIR}"
 echo "=== Starting medrap train ==="
 
 medrap train \
-    marginalized_retrieval=true \
-    marginalized_score_similarity=dot \
+    marginalized_retrieval=false \
     retriever=hf_dataset \
     "retriever.dataset_path=${RETRIEVAL_DB}" \
     retriever.doc_ids_column=null \
     retriever.doc_key_embeddings_column=doc_key_embeddings \
     retriever.k=4 \
     encoder=token_embedding_128 \
+    encoder.embedding_dim=512 \
     query_projector=sequence_mean_1024 \
-    query_projector.in_dim=128 \
+    query_projector.in_dim=512 \
     retrieval_encoder=key_embedding \
-    fusion=replace \
-    head=linear_1024_to_2 \
-    training/task=marginalized_binary \
-    training/loss=marginalized_retrieval \
+    fusion=patient_only \
+    pooling=masked_mean \
+    head=mlp \
+    head.in_dim=512 \
+    head.hidden_dim=256 \
+    head.dropout=0.3 \
+    training/task=binary_classification \
+    training/loss=binary_bce \
+    training.loss.pos_weight=9.75 \
     training/datamodule=meds \
     "training.datamodule.config.tensorized_cohort_dir=${TENSORIZED_DIR}" \
     training.datamodule.config.max_seq_len=128 \
@@ -76,10 +81,12 @@ medrap train \
     training.datamodule.batch_size=32 \
     training.datamodule.config.seq_sampling_strategy=to_end \
     training/trainer=lightning_wandb \
-    training.trainer.max_epochs=3 \
+    training.trainer.max_epochs=5 \
     training.trainer.accelerator=gpu \
     training.trainer.devices=1 \
     training.trainer.log_every_n_steps=10 \
+    training.module.lr=3e-4 \
+    training.module.weight_decay=0.1 \
     "wandb_run_name=retrieval-only-${SLURM_JOB_ID:-local}" \
     "output_dir=${OUTPUT_DIR}" \
     do_overwrite=true \

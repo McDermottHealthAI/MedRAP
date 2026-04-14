@@ -108,6 +108,37 @@ class ReplaceFusion(FusionModule):
         return FusionOutput(fused_state=fused_state)
 
 
+class PatientOnlyFusion(FusionModule):
+    """Fusion that discards retrieval memory and passes patient state through.
+
+    Used as a no-retrieval diagnostic baseline: the full retrieval pipeline
+    still runs (so retrieval cost is identical), but the prediction is driven
+    purely by the EHR patient state.  Comparing this against retrieval-based
+    fusion isolates whether retrieved documents actually help.
+
+    Returns ``fused_state`` with the same shape as ``patient_state``
+    ``(B, S_ehr, D_ehr)``.
+
+    Examples:
+        >>> from medrap.types import FusionInput
+        >>> fusion = PatientOnlyFusion()
+        >>> fi = FusionInput(
+        ...     patient_state=torch.randn(2, 5, 8),
+        ...     retrieval_memory=torch.randn(2, 1, 4, 1, 16),
+        ... )
+        >>> out = fusion.fuse(fi)
+        >>> tuple(out.fused_state.shape)
+        (2, 5, 8)
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+
+    def fuse(self, fusion_input: FusionInput) -> FusionOutput:
+        """Return patient state unchanged, ignoring retrieval memory."""
+        return FusionOutput(fused_state=fusion_input.patient_state)
+
+
 class ConcatFusion(FusionModule):
     """Tabular fusion that concatenates patient state with retrieval memory.
 

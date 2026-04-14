@@ -1,1 +1,2 @@
 _target_: medrap.task.BinaryClassificationLoss
+pos_weight: null

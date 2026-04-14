@@ -21,8 +21,8 @@ from omegaconf import MISSING, OmegaConf
 
 from .datamodule import SyntheticSupervisedDatamodule
 from .encoders import MEDSCodeEncoder, TabularEncoder, TokenEmbeddingEncoder
-from .fusion import ConcatFusion, ReplaceFusion
-from .heads import LinearHead
+from .fusion import ConcatFusion, PatientOnlyFusion, ReplaceFusion
+from .heads import LinearHead, MLPHead
 from .lightning_module import MedRAPSupervisedLightningModule
 from .losses import MarginalizedRetrievalSupervisedLoss
 from .model import RetrievalAugmentedModel
@@ -34,7 +34,9 @@ from .preparation import (
 from .query_projection import LinearQueryProjector, SequenceMeanQueryProjector
 from .retrieval_encoder import (
     KeyEmbeddingRetrievalEncoder,
+    LinearProjectionRetrievalEncoder,
     MeanPooledRetrievalEncoder,
+    PerDocMeanPooledRetrievalEncoder,
     TokenFeatureRetrievalEncoder,
 )
 from .retrievers import InMemoryRetriever, load_hf_dataset_retriever
@@ -147,9 +149,26 @@ KeyEmbeddingRetrievalEncoderConfig = builds_any(
     KeyEmbeddingRetrievalEncoder,
     zen_dataclass={"cls_name": "KeyEmbeddingRetrievalEncoderConfig"},
 )
+LinearProjectionRetrievalEncoderConfig = builds_any(
+    LinearProjectionRetrievalEncoder,
+    in_dim=1024,
+    out_dim=1024,
+    zen_dataclass={"cls_name": "LinearProjectionRetrievalEncoderConfig"},
+)
+PerDocMeanPooledRetrievalEncoderConfig = builds_any(
+    PerDocMeanPooledRetrievalEncoder,
+    vocab_size=1024,
+    embedding_dim=4,
+    pretrained_model_name_or_path=None,
+    zen_dataclass={"cls_name": "PerDocMeanPooledRetrievalEncoderConfig"},
+)
 ReplaceFusionConfig = builds_any(
     ReplaceFusion,
     zen_dataclass={"cls_name": "ReplaceFusionConfig"},
+)
+PatientOnlyFusionConfig = builds_any(
+    PatientOnlyFusion,
+    zen_dataclass={"cls_name": "PatientOnlyFusionConfig"},
 )
 ConcatFusionConfig = builds_any(
     ConcatFusion,
@@ -169,12 +188,21 @@ LinearHeadConfig = builds_any(
     out_dim=2,
     zen_dataclass={"cls_name": "LinearHeadConfig"},
 )
+MLPHeadConfig = builds_any(
+    MLPHead,
+    in_dim=128,
+    hidden_dim=256,
+    out_dim=2,
+    dropout=0.0,
+    zen_dataclass={"cls_name": "MLPHeadConfig"},
+)
 BinaryClassificationTaskConfig = builds_any(
     BinaryClassificationTask,
     zen_dataclass={"cls_name": "BinaryClassificationTaskConfig"},
 )
 BinaryClassificationLossConfig = builds_any(
     BinaryClassificationLoss,
+    pos_weight=None,
     zen_dataclass={"cls_name": "BinaryClassificationLossConfig"},
 )
 MarginalizedBinaryClassificationTaskConfig = builds_any(

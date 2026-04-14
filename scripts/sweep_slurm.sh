@@ -81,7 +81,9 @@ medrap train \
     query_projector=sequence_mean_1024 \
     query_projector.in_dim="${ENC_DIM}" \
     query_projector.out_dim=1024 \
-    retrieval_encoder=key_embedding \
+    retrieval_encoder=per_doc_mean_pooled \
+    retrieval_encoder.vocab_size=151669 \
+    retrieval_encoder.embedding_dim=1024 \
     fusion=replace \
     head=linear_1024_to_2 \
     head.in_dim=1024 \
