@@ -24,6 +24,7 @@ seed: 42
 
 marginalized_retrieval: false
 marginalized_score_similarity: dot
+patient_only: false
 
 # Used when training/trainer=lightning_wandb (ignored otherwise).
 wandb_project: medrap

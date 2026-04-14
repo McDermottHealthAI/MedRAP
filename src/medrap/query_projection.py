@@ -147,3 +147,66 @@ class SequenceMeanQueryProjector(QueryProjector):
             )
         pooled = patient_state.mean(dim=1)
         return QueryOutput(query_embeddings=self.linear(pooled).unsqueeze(1))
+
+
+class LastTokenQueryProjector(QueryProjector):
+    """Sequence query projector that uses the final token in the EHR sequence.
+
+    Takes ``patient_state[:, -1, :]`` — the last position — and projects it
+    through a linear layer to produce a single retrieval query per patient
+    (``R = 1``).  With ``seq_sampling_strategy=to_end`` the last position is
+    always the most recent real event before the prediction time, making this a
+    more temporally-aware alternative to mean-pooling.
+
+    Args:
+        in_dim: Input patient-state size ``D_ehr``.
+        out_dim: Retrieval query size ``D_ret``.
+    """
+
+    def __init__(self, *, in_dim: int, out_dim: int) -> None:
+        super().__init__()
+        self.in_dim = int(in_dim)
+        self.out_dim = int(out_dim)
+        self.linear = nn.Linear(self.in_dim, self.out_dim)
+
+    def project(self, patient_state: Tensor) -> QueryOutput:
+        """Take the last sequence position and emit one query per sample.
+
+        Args:
+            patient_state: Encoded patient tensor with shape
+                ``(B, S_ehr, D_ehr)``.
+
+        Returns:
+            ``QueryOutput`` with:
+                - ``query_embeddings`` shaped ``(B, 1, D_ret)``
+                - ``retrieval_step_ids=None``
+
+        Examples:
+            >>> projector = LastTokenQueryProjector(in_dim=2, out_dim=3)
+            >>> patient_state = torch.FloatTensor(
+            ...     [
+            ...         [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
+            ...         [[2.0, 4.0], [6.0, 8.0], [10.0, 12.0]],
+            ...     ]
+            ... )
+            >>> out = projector.project(patient_state)
+            >>> tuple(out.query_embeddings.shape)
+            (2, 1, 3)
+            >>> out.query_embeddings.dtype
+            torch.float32
+            >>> out.retrieval_step_ids is None
+            True
+            >>> tuple(projector(patient_state).query_embeddings.shape)
+            (2, 1, 3)
+            >>> projector.project(torch.randn(2, 4))
+            Traceback (most recent call last):
+                ...
+            ValueError: LastTokenQueryProjector expects patient_state shaped (B, S_ehr, D_ehr), got (2, 4)
+        """
+        if patient_state.ndim != 3:
+            raise ValueError(
+                "LastTokenQueryProjector expects patient_state shaped "
+                f"(B, S_ehr, D_ehr), got {tuple(patient_state.shape)}"
+            )
+        last = patient_state[:, -1, :]  # (B, D_ehr) — most recent event
+        return QueryOutput(query_embeddings=self.linear(last.float()).unsqueeze(1))

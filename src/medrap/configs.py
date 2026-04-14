@@ -20,7 +20,7 @@ from meds_torchdata.types import SubsequenceSamplingStrategy
 from omegaconf import MISSING, OmegaConf
 
 from .datamodule import SyntheticSupervisedDatamodule
-from .encoders import MEDSCodeEncoder, TabularEncoder, TokenEmbeddingEncoder
+from .encoders import MEDSCodeEncoder, TabularEncoder, TokenEmbeddingEncoder, TransformerPatientEncoder
 from .fusion import ConcatFusion, ReplaceFusion
 from .heads import LinearHead
 from .lightning_module import MedRAPSupervisedLightningModule
@@ -31,7 +31,7 @@ from .preparation import (
     OrderedFieldDocumentRenderer,
     prepare_retrieval_dataset,
 )
-from .query_projection import LinearQueryProjector, SequenceMeanQueryProjector
+from .query_projection import LastTokenQueryProjector, LinearQueryProjector, SequenceMeanQueryProjector
 from .retrieval_encoder import (
     KeyEmbeddingRetrievalEncoder,
     MeanPooledRetrievalEncoder,
@@ -89,6 +89,14 @@ TabularEncoderConfig = builds_any(
     embedding_dim=4,
     zen_dataclass={"cls_name": "TabularEncoderConfig"},
 )
+TransformerPatientEncoderConfig = builds_any(
+    TransformerPatientEncoder,
+    vocab_size=1024,
+    embedding_dim=4,
+    num_heads=2,
+    num_layers=2,
+    zen_dataclass={"cls_name": "TransformerPatientEncoderConfig"},
+)
 LinearQueryProjectorConfig = builds_any(
     LinearQueryProjector,
     in_dim=4,
@@ -100,6 +108,12 @@ SequenceMeanQueryProjectorConfig = builds_any(
     in_dim=1,
     out_dim=4,
     zen_dataclass={"cls_name": "SequenceMeanQueryProjectorConfig"},
+)
+LastTokenQueryProjectorConfig = builds_any(
+    LastTokenQueryProjector,
+    in_dim=1,
+    out_dim=4,
+    zen_dataclass={"cls_name": "LastTokenQueryProjectorConfig"},
 )
 InMemoryRetrieverConfig = builds_any(
     InMemoryRetriever,
@@ -326,6 +340,7 @@ class PipelineConfig:
     head: ComponentConfig = field(default_factory=LinearHeadConfig)
     marginalized_retrieval: bool = False
     marginalized_score_similarity: str = "dot"
+    patient_only: bool = False
 
 
 @dataclass
@@ -481,9 +496,22 @@ def instantiate_model(config: Any) -> RetrievalAugmentedModel:
         marginalized_score_similarity = str(
             OmegaConf.select(config, "marginalized_score_similarity", default="dot")
         )
+        patient_only = bool(OmegaConf.select(config, "patient_only", default=False))
     else:
         marginalized_retrieval = bool(getattr(config, "marginalized_retrieval", False))
         marginalized_score_similarity = str(getattr(config, "marginalized_score_similarity", "dot"))
+        patient_only = bool(getattr(config, "patient_only", False))
+    if patient_only:
+        return RetrievalAugmentedModel(
+            encoder=instantiate_any(config.encoder),
+            query_projector=instantiate_any(config.query_projector),
+            retriever=None,
+            retrieval_encoder=None,
+            fusion=None,
+            pooling=None,
+            head=instantiate_any(config.head),
+            patient_only=True,
+        )
     return RetrievalAugmentedModel(
         encoder=instantiate_any(config.encoder),
         query_projector=instantiate_any(config.query_projector),

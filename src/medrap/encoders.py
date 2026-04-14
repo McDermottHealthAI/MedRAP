@@ -4,10 +4,12 @@ These components convert MEDS batch inputs into dense patient representation use
 downstream fusion.
 """
 
+import math
 from abc import ABC, abstractmethod
 
+import torch
 from meds_torchdata import MEDSTorchBatch
-from torch import nn
+from torch import Tensor, nn
 
 from .types import EncoderOutput
 
@@ -170,3 +172,102 @@ class TabularEncoder(PatientEncoder):
         embedded = self.embedding(batch.code.long())  # (B, S_ehr, D_ehr)
         pooled = embedded.mean(dim=1, keepdim=True)  # (B, 1, D_ehr)
         return EncoderOutput(patient_state=pooled)
+
+
+class TransformerPatientEncoder(PatientEncoder):
+    """Transformer encoder that produces contextualised per-token patient representations.
+
+    Each EHR code is first mapped to a learned embedding, then sinusoidal positional
+    encodings are added, and the sequence is passed through a stack of
+    ``nn.TransformerEncoderLayer`` modules (pre-norm, ``batch_first=True``).
+    Padding positions (``code == 0``) are masked out so they do not contribute to
+    self-attention.  The output retains the full ``(B, S_ehr, D_ehr)`` shape so it
+    is a drop-in replacement for ``TokenEmbeddingEncoder`` in any downstream
+    query projector.
+
+    Args:
+        vocab_size: Size of the EHR code vocabulary.
+        embedding_dim: Token embedding and transformer hidden size ``D_ehr``.
+            Must be divisible by ``num_heads``.
+        num_heads: Number of attention heads.
+        num_layers: Number of transformer encoder layers.
+        feedforward_dim: Inner size of the position-wise FFN.
+            Defaults to ``4 * embedding_dim``.
+        dropout: Dropout probability applied inside each encoder layer.
+        max_seq_len: Maximum sequence length for positional encoding buffer.
+    """
+
+    def __init__(
+        self,
+        *,
+        vocab_size: int = 1024,
+        embedding_dim: int = 128,
+        num_heads: int = 4,
+        num_layers: int = 2,
+        feedforward_dim: int | None = None,
+        dropout: float = 0.1,
+        max_seq_len: int = 512,
+    ) -> None:
+        super().__init__()
+        self.embedding_dim = int(embedding_dim)
+        ff_dim = int(feedforward_dim) if feedforward_dim is not None else 4 * self.embedding_dim
+        # padding_idx=0 keeps the padding embedding fixed at zero
+        self.embedding = nn.Embedding(int(vocab_size), self.embedding_dim, padding_idx=0)
+        self.register_buffer("pe", self._sinusoidal_pe(int(max_seq_len), self.embedding_dim))
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.embedding_dim,
+            nhead=int(num_heads),
+            dim_feedforward=ff_dim,
+            dropout=float(dropout),
+            batch_first=True,
+            norm_first=True,  # pre-norm: more stable when training from scratch
+        )
+        self.transformer = nn.TransformerEncoder(
+            encoder_layer, num_layers=int(num_layers), enable_nested_tensor=False
+        )
+
+    @staticmethod
+    def _sinusoidal_pe(max_seq_len: int, d_model: int) -> Tensor:
+        position = torch.arange(max_seq_len).unsqueeze(1)  # (L, 1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(1, max_seq_len, d_model)
+        pe[0, :, 0::2] = torch.sin(position * div_term)
+        pe[0, :, 1::2] = torch.cos(position * div_term)
+        return pe
+
+    def encode(self, batch: MEDSTorchBatch) -> EncoderOutput:
+        """Encode a patient code sequence with self-attention.
+
+        Args:
+            batch: A ``MEDSTorchBatch`` containing a ``code`` field of shape
+                ``(B, S_ehr)``.
+
+        Returns:
+            An ``EncoderOutput`` where ``patient_state`` has shape
+            ``(B, S_ehr, D_ehr)`` with contextualised token representations.
+
+        Examples:
+            >>> encoder = TransformerPatientEncoder(
+            ...     vocab_size=16, embedding_dim=8, num_heads=2, num_layers=1
+            ... )
+            >>> batch = MEDSTorchBatch(
+            ...     code=torch.LongTensor([[1, 2, 3, 0], [4, 5, 0, 0]]),
+            ...     numeric_value=torch.zeros(2, 4),
+            ...     numeric_value_mask=torch.zeros(2, 4, dtype=torch.bool),
+            ...     time_delta_days=torch.zeros(2, 4),
+            ... )
+            >>> out = encoder.encode(batch)
+            >>> tuple(out.patient_state.shape)
+            (2, 4, 8)
+            >>> out.patient_state.dtype
+            torch.float32
+            >>> # padding positions (code==0) should be near-zero after masking
+            >>> out.patient_state[1, 2, :].abs().max().item() < 0.1
+            True
+        """
+        code = batch.code.long()  # (B, S)
+        padding_mask = code == 0  # (B, S) — True marks positions to ignore
+        x = self.embedding(code)  # (B, S, D)
+        x = x + self.pe[:, : x.size(1), :]  # sinusoidal positions
+        x = self.transformer(x, src_key_padding_mask=padding_mask)  # (B, S, D)
+        return EncoderOutput(patient_state=x)

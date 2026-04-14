@@ -36,6 +36,10 @@ class RetrievalAugmentedModel(nn.Module):
         marginalized_score_similarity: ``\"dot\"`` or ``\"cosine\"`` for recomputed
             query--key scores (should match the retriever's notion of similarity
             when possible).
+        patient_only: If true, skip retrieval entirely and predict directly from
+            the query-projected patient embedding (``query_embeddings.squeeze(1)``).
+            ``retriever``, ``retrieval_encoder``, ``fusion``, and ``pooling`` are
+            not called and may be ``None``.
     """
 
     def __init__(
@@ -43,13 +47,14 @@ class RetrievalAugmentedModel(nn.Module):
         *,
         encoder: nn.Module,
         query_projector: nn.Module,
-        retriever: nn.Module,
-        retrieval_encoder: nn.Module,
-        fusion: nn.Module,
-        pooling: nn.Module,
+        retriever: nn.Module | None,
+        retrieval_encoder: nn.Module | None,
+        fusion: nn.Module | None,
+        pooling: nn.Module | None,
         head: nn.Module,
         marginalized_retrieval: bool = False,
         marginalized_score_similarity: str = "dot",
+        patient_only: bool = False,
     ) -> None:
         super().__init__()
         self.encoder = encoder
@@ -61,6 +66,7 @@ class RetrievalAugmentedModel(nn.Module):
         self.head = head
         self.marginalized_retrieval = bool(marginalized_retrieval)
         self.marginalized_score_similarity = str(marginalized_score_similarity)
+        self.patient_only = bool(patient_only)
 
     def forward(self, batch: MEDSTorchBatch) -> ModelOutput:
         """Run the end-to-end RAP pipeline.
@@ -258,6 +264,19 @@ class RetrievalAugmentedModel(nn.Module):
         """
         encoder_out = self.encoder(batch)
         query_out = self.query_projector(encoder_out.patient_state)
+
+        if self.patient_only:
+            # Predict directly from the patient query embedding — no retrieval.
+            # query_embeddings: (B, R, D); R must be 1 (single retrieval step).
+            if query_out.query_embeddings.shape[1] != 1:
+                raise ValueError(
+                    f"patient_only requires a single retrieval step (R=1); "
+                    f"got R={query_out.query_embeddings.shape[1]}"
+                )
+            pooled = query_out.query_embeddings.squeeze(1)  # (B, D)
+            logits = self.head(pooled)
+            return ModelOutput(logits=logits, metadata={"query_output": query_out})
+
         retrieval_out = self.retriever(query_out.query_embeddings)
         retrieval_encoded = self.retrieval_encoder(retrieval_out)
         fusion_out = self.fusion(
