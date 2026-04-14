@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 from datasets import Dataset
 
 from medrap.demographic_analysis import TitleKeywordProvider
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_title_keyword_provider_resolves_doc_ids_column(tmp_path: Path) -> None:

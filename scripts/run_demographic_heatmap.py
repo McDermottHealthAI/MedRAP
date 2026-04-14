@@ -1,4 +1,4 @@
-"""Render keyword × demographic heatmaps from a trained MedRAP run.
+"""Render keyword x demographic heatmaps from a trained MedRAP run.
 
 If extraction artifacts already exist under ``<run_dir>/extraction/``, they
 are reused; otherwise we run extraction first via the same code path as
@@ -28,8 +28,8 @@ _repo_root = Path(__file__).resolve().parent.parent
 if str(_repo_root / "src") not in sys.path:
     sys.path.insert(0, str(_repo_root / "src"))
 
-from medrap.configs import instantiate_datamodule, instantiate_training_module
-from medrap.demographic_analysis import (
+from medrap.configs import instantiate_datamodule, instantiate_training_module  # noqa: E402
+from medrap.demographic_analysis import (  # noqa: E402
     LDATopicProvider,
     TitleKeywordProvider,
     aggregate_race,
@@ -38,7 +38,7 @@ from medrap.demographic_analysis import (
     load_subject_demographics,
     render_demographic_heatmaps,
 )
-from medrap.extraction import extract_artifacts
+from medrap.extraction import extract_artifacts  # noqa: E402
 
 # Reuse the checkpoint resolver from extract_and_visualize.
 sys.path.insert(0, str(_repo_root / "scripts"))
@@ -55,20 +55,35 @@ def _build_provider(name: str, retrieval_db: Path, *, n_topics: int = 30):
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Render keyword × demographic heatmaps for a MedRAP MIMIC run."
+        description="Render keyword x demographic heatmaps for a MedRAP MIMIC run."
     )
-    parser.add_argument("--run_dir", type=Path, required=True,
-                        help="Training run directory (must contain config.yaml).")
-    parser.add_argument("--retrieval_db", type=Path, required=True,
-                        help="HF dataset directory used as the retrieval corpus.")
-    parser.add_argument("--meds_cohort", type=Path, required=True,
-                        help="MEDS cohort root containing data/{train,tuning,held_out}/*.parquet.")
-    parser.add_argument("--keyword_provider", type=str, default="lda",
-                        help="Doc → keyword provider: 'lda' (default) or 'title'.")
-    parser.add_argument("--n_topics", type=int, default=30,
-                        help="Number of LDA topics (only used with --keyword_provider lda).")
-    parser.add_argument("--top_n_keywords", type=int, default=20,
-                        help="Cap on number of keywords shown per heatmap.")
+    parser.add_argument(
+        "--run_dir", type=Path, required=True, help="Training run directory (must contain config.yaml)."
+    )
+    parser.add_argument(
+        "--retrieval_db", type=Path, required=True, help="HF dataset directory used as the retrieval corpus."
+    )
+    parser.add_argument(
+        "--meds_cohort",
+        type=Path,
+        required=True,
+        help="MEDS cohort root containing data/{train,tuning,held_out}/*.parquet.",
+    )
+    parser.add_argument(
+        "--keyword_provider",
+        type=str,
+        default="lda",
+        help="Doc → keyword provider: 'lda' (default) or 'title'.",
+    )
+    parser.add_argument(
+        "--n_topics",
+        type=int,
+        default=30,
+        help="Number of LDA topics (only used with --keyword_provider lda).",
+    )
+    parser.add_argument(
+        "--top_n_keywords", type=int, default=20, help="Cap on number of keywords shown per heatmap."
+    )
     args = parser.parse_args()
 
     run_dir: Path = args.run_dir
@@ -150,12 +165,8 @@ def main() -> None:
     # Diagnostic: demographic distributions.
     from collections import Counter
 
-    gender_dist = Counter(
-        g if g is not None else "unknown" for g in patient_frame["gender"].to_list()
-    )
-    race_dist = Counter(
-        aggregate_race(r) for r in patient_frame["race"].to_list()
-    )
+    gender_dist = Counter(g if g is not None else "unknown" for g in patient_frame["gender"].to_list())
+    race_dist = Counter(aggregate_race(r) for r in patient_frame["race"].to_list())
     age_dist = Counter(patient_frame["age_bin"].to_list())
     print(f"\n  Gender distribution: {dict(gender_dist)}")
     print(f"  Race/Ethnicity distribution: {dict(race_dist)}")
@@ -178,14 +189,16 @@ def main() -> None:
         for kw, _ in provider.keywords_for(int(did)):
             unique_keywords.add(kw)
     print(f"\n  Unique docs retrieved: {n_unique_docs}")
-    print(f"  Unique keywords (book titles) among retrieved docs: {len(unique_keywords)} / {len(provider.vocab)}")
+    n_unique_kws = len(unique_keywords)
+    n_vocab = len(provider.vocab)
+    print(f"  Unique keywords (book titles) among retrieved docs: {n_unique_kws} / {n_vocab}")
     if len(unique_keywords) < len(provider.vocab):
         missing = sorted(set(provider.vocab) - unique_keywords)
         print(f"  Books NEVER retrieved: {missing}")
     print(f"  Top-5 doc_ids by frequency (of {total_retrievals} total retrievals):")
     for did, cnt in top5:
         title = provider.keywords_for(int(did))[0][0]
-        print(f"    doc_id={did} ({cnt} times, {100*cnt/total_retrievals:.1f}%): {title[:60]}")
+        print(f"    doc_id={did} ({cnt} times, {100 * cnt / total_retrievals:.1f}%): {title[:60]}")
 
     output_path = extract_dir / "keyword_demographic_heatmap.png"
     tables = render_demographic_heatmaps(
@@ -206,7 +219,7 @@ def main() -> None:
         csv_path = extract_dir / f"keyword_demographic_{axis_name}.csv"
         with open(csv_path, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow([""] + kws)
+            writer.writerow(["", *kws])
             for i, b in enumerate(bins):
                 writer.writerow([b] + [f"{tbl[i, j]:.6f}" for j in range(tbl.shape[1])])
         print(f"Table saved to {csv_path}")
@@ -222,7 +235,7 @@ def main() -> None:
         max_diff = float((tbl.max(axis=0) - tbl.min(axis=0)).max()) if tbl.size > 0 else 0.0
         print(f"  {axis_name}: {len(bins)} bins, max abs diff across bins = {max_diff:.8f}")
         if max_diff == 0.0:
-            print(f"    *** VALUES ARE EXACTLY IDENTICAL — likely a bug ***")
+            print("    *** VALUES ARE EXACTLY IDENTICAL — likely a bug ***")
         # Print first 3 keyword columns for each bin.
         kws = info["keywords"][:3]
         for i, b in enumerate(bins):

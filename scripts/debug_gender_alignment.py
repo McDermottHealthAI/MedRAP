@@ -1,7 +1,8 @@
 """Verify gender labels are correctly aligned with retrieval artifacts."""
+
 import sys
-from pathlib import Path
 from collections import Counter
+from pathlib import Path
 
 import numpy as np
 import polars as pl
@@ -11,12 +12,13 @@ _repo_root = Path(__file__).resolve().parent.parent
 if str(_repo_root / "src") not in sys.path:
     sys.path.insert(0, str(_repo_root / "src"))
 
-from omegaconf import OmegaConf
-from medrap.configs import instantiate_datamodule
-from medrap.demographic_analysis import (
+from omegaconf import OmegaConf  # noqa: E402
+
+from medrap.configs import instantiate_datamodule  # noqa: E402
+from medrap.demographic_analysis import (  # noqa: E402
+    build_patient_demographic_frame,
     extract_val_schema,
     load_subject_demographics,
-    build_patient_demographic_frame,
 )
 
 # Load artifacts
@@ -39,7 +41,7 @@ patient_frame = build_patient_demographic_frame(val_schema, demographics)
 
 print(f"Patient frame rows: {patient_frame.height}")
 print(f"Artifact rows: {doc_ids.shape[0]}")
-print(f"\nGender distribution:")
+print("\nGender distribution:")
 print(patient_frame["gender"].value_counts())
 
 # Check: do M and F patients retrieve different docs?
@@ -53,10 +55,10 @@ m_top = Counter(m_docs.reshape(-1).tolist()).most_common(5)
 f_top = Counter(f_docs.reshape(-1).tolist()).most_common(5)
 print(f"\nTop-5 docs for M ({m_docs.shape[0]} patients):")
 for did, cnt in m_top:
-    print(f"  doc_id={did}: {cnt} ({100*cnt/(m_docs.shape[0]*m_docs.shape[1]):.1f}%)")
+    print(f"  doc_id={did}: {cnt} ({100 * cnt / (m_docs.shape[0] * m_docs.shape[1]):.1f}%)")
 print(f"\nTop-5 docs for F ({f_docs.shape[0]} patients):")
 for did, cnt in f_top:
-    print(f"  doc_id={did}: {cnt} ({100*cnt/(f_docs.shape[0]*f_docs.shape[1]):.1f}%)")
+    print(f"  doc_id={did}: {cnt} ({100 * cnt / (f_docs.shape[0] * f_docs.shape[1]):.1f}%)")
 
 # Spot-check: first 5 F patients
 print("\n--- First 5 F patients ---")
@@ -72,7 +74,10 @@ for i, g in enumerate(genders):
 # Verify gender from raw MEDS
 print("\n--- Verify gender from raw MEDS for those 5 F patients ---")
 cohort = Path("/groups/mm6677_gp/data/MIMIC_MEDS/MEDS_cohort")
-raw = pl.scan_parquet(str(cohort / "data" / "*" / "*.parquet")).filter(
-    pl.col("subject_id").is_in(f_sids) & pl.col("code").str.starts_with("GENDER")
-).select(["subject_id", "code"]).collect()
+raw = (
+    pl.scan_parquet(str(cohort / "data" / "*" / "*.parquet"))
+    .filter(pl.col("subject_id").is_in(f_sids) & pl.col("code").str.starts_with("GENDER"))
+    .select(["subject_id", "code"])
+    .collect()
+)
 print(raw)

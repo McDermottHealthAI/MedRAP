@@ -1,7 +1,6 @@
+import lightning
 import torch
 from torch.utils.data import DataLoader
-
-import lightning
 
 from conftest import make_supervised_batch
 from medrap.encoders import MEDSCodeEncoder

@@ -10,85 +10,109 @@ train_batch:
     _target_: torch.LongTensor
     _args_:
       # 8 positive patients (high codes)
-      - [[100, 200, 300, 400],
-         [150, 250, 350, 450],
-         [110, 210, 310, 410],
-         [120, 220, 320, 420],
-         [130, 230, 330, 430],
-         [140, 240, 340, 440],
-         [105, 205, 305, 405],
-         [115, 215, 315, 415],
-         # 8 negative patients (low codes)
-         [10, 20, 30, 40],
-         [15, 25, 35, 45],
-         [11, 21, 31, 41],
-         [12, 22, 32, 42],
-         [13, 23, 33, 43],
-         [14, 24, 34, 44],
-         [16, 26, 36, 46],
-         [17, 27, 37, 47]]
+      - [
+          [100, 200, 300, 400],
+          [150, 250, 350, 450],
+          [110, 210, 310, 410],
+          [120, 220, 320, 420],
+          [130, 230, 330, 430],
+          [140, 240, 340, 440],
+          [105, 205, 305, 405],
+          [115, 215, 315, 415],
+          # 8 negative patients (low codes)
+          [10, 20, 30, 40],
+          [15, 25, 35, 45],
+          [11, 21, 31, 41],
+          [12, 22, 32, 42],
+          [13, 23, 33, 43],
+          [14, 24, 34, 44],
+          [16, 26, 36, 46],
+          [17, 27, 37, 47],
+        ]
   numeric_value:
     _target_: torch.FloatTensor
     _args_:
-      - [[0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0]]
+      - [
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+        ]
   numeric_value_mask:
     _target_: torch.BoolTensor
     _args_:
-      - [[false, false, false, false],
-         [false, false, false, false],
-         [false, false, false, false],
-         [false, false, false, false],
-         [false, false, false, false],
-         [false, false, false, false],
-         [false, false, false, false],
-         [false, false, false, false],
-         [false, false, false, false],
-         [false, false, false, false],
-         [false, false, false, false],
-         [false, false, false, false],
-         [false, false, false, false],
-         [false, false, false, false],
-         [false, false, false, false],
-         [false, false, false, false]]
+      - [
+          [false, false, false, false],
+          [false, false, false, false],
+          [false, false, false, false],
+          [false, false, false, false],
+          [false, false, false, false],
+          [false, false, false, false],
+          [false, false, false, false],
+          [false, false, false, false],
+          [false, false, false, false],
+          [false, false, false, false],
+          [false, false, false, false],
+          [false, false, false, false],
+          [false, false, false, false],
+          [false, false, false, false],
+          [false, false, false, false],
+          [false, false, false, false],
+        ]
   time_delta_days:
     _target_: torch.FloatTensor
     _args_:
-      - [[0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0],
-         [0.0, 0.0, 0.0, 0.0]]
+      - [
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+          [0.0, 0.0, 0.0, 0.0],
+        ]
   boolean_value:
     _target_: torch.BoolTensor
     _args_:
-      - [true, true, true, true, true, true, true, true,
-         false, false, false, false, false, false, false, false]
+      - [
+          true,
+          true,
+          true,
+          true,
+          true,
+          true,
+          true,
+          true,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+        ]
 
 val_batch: null
 test_batch: null

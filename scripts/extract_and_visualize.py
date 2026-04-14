@@ -15,22 +15,24 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import lightning
 import numpy as np
 import torch
 from omegaconf import OmegaConf
 from torch import Tensor
-from torch.utils.data import DataLoader
+
+if TYPE_CHECKING:
+    from torch.utils.data import DataLoader
 
 # Ensure the project is importable when run from the repo root.
 _repo_root = Path(__file__).resolve().parent.parent
 if str(_repo_root / "src") not in sys.path:
     sys.path.insert(0, str(_repo_root / "src"))
 
-from medrap.configs import instantiate_datamodule, instantiate_training_module
-from medrap.extraction import extract_artifacts
-
+from medrap.configs import instantiate_datamodule, instantiate_training_module  # noqa: E402
+from medrap.extraction import extract_artifacts  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Checkpoint resolution (mirrors cli._find_checkpoint_path)
@@ -99,11 +101,11 @@ def run_extraction(run_dir: Path) -> tuple[dict[str, Tensor], Path, Tensor | Non
 # ---------------------------------------------------------------------------
 
 
-def _pca_2d(X: np.ndarray) -> np.ndarray:
-    """Project rows of *X* to 2D via PCA (mean-centered SVD)."""
-    X_centered = X - X.mean(axis=0, keepdims=True)
-    _, _, Vt = np.linalg.svd(X_centered, full_matrices=False)
-    return X_centered @ Vt[:2].T
+def _pca_2d(x: np.ndarray) -> np.ndarray:
+    """Project rows of *x* to 2D via PCA (mean-centered SVD)."""
+    x_centered = x - x.mean(axis=0, keepdims=True)
+    _, _, vt = np.linalg.svd(x_centered, full_matrices=False)
+    return x_centered @ vt[:2].T
 
 
 # ---------------------------------------------------------------------------
@@ -164,18 +166,30 @@ def generate_plots(
     # ------------------------------------------------------------------
     ax1 = axes[0, 0]
     q_proj = _pca_2d(query_emb)
-    ax1.scatter(q_proj[neg_mask, 0], q_proj[neg_mask, 1], c="red", marker="o",
-                alpha=0.3, s=40, edgecolors="none", label="Label 0")
-    ax1.scatter(q_proj[pos_mask, 0], q_proj[pos_mask, 1], c="blue", marker="o",
-                alpha=0.3, s=40, edgecolors="none", label="Label 1")
+    ax1.scatter(
+        q_proj[neg_mask, 0],
+        q_proj[neg_mask, 1],
+        c="red",
+        marker="o",
+        alpha=0.3,
+        s=40,
+        edgecolors="none",
+        label="Label 0",
+    )
+    ax1.scatter(
+        q_proj[pos_mask, 0],
+        q_proj[pos_mask, 1],
+        c="blue",
+        marker="o",
+        alpha=0.3,
+        s=40,
+        edgecolors="none",
+        label="Label 1",
+    )
     ax1.set_xlabel("PC1")
     ax1.set_ylabel("PC2")
     ax1.set_title("Query Embeddings (PCA)")
     ax1.legend(fontsize=8)
-
-    # Precompute n_docs_from_ids for later plots.
-    if has_doc_ids:
-        n_docs_from_ids = int(doc_ids.max()) + 1
 
     # ------------------------------------------------------------------
     # Plot 2: Doc key embedding PCA scatter, colored by avg per-doc logit
@@ -207,10 +221,10 @@ def generate_plots(
         else:
             # Map each retrieved key to its nearest unique-key index (vectorized).
             flat_keys = doc_key_emb.reshape(-1, doc_key_emb.shape[-1])  # (N*K, D)
-            flat_logits = per_doc_logits[:, :, c_idx].reshape(-1)       # (N*K,)
+            flat_logits = per_doc_logits[:, :, c_idx].reshape(-1)  # (N*K,)
             # Cosine-style: use dot product against normalized keys for speed.
             sims = flat_keys @ corpus_keys.T  # (N*K, n_unique)
-            uids = sims.argmax(axis=1)        # (N*K,)
+            uids = sims.argmax(axis=1)  # (N*K,)
             for idx, uid in enumerate(uids):
                 doc_avg_logit[uid] += flat_logits[idx]
                 doc_count[uid] += 1
@@ -219,8 +233,16 @@ def generate_plots(
         doc_avg_logit[retrieved_mask] /= doc_count[retrieved_mask]
 
         k_proj = _pca_2d(corpus_keys)
-        sc = ax2.scatter(k_proj[:, 0], k_proj[:, 1], c=doc_avg_logit, cmap="RdBu_r",
-                         s=100, edgecolors="black", linewidths=1.0, zorder=5)
+        sc = ax2.scatter(
+            k_proj[:, 0],
+            k_proj[:, 1],
+            c=doc_avg_logit,
+            cmap="RdBu_r",
+            s=100,
+            edgecolors="black",
+            linewidths=1.0,
+            zorder=5,
+        )
         # Only label docs in small corpora.
         if n_corpus_docs <= 20:
             for i, (x, y) in enumerate(k_proj):
@@ -231,8 +253,15 @@ def generate_plots(
         ax2.set_title("Doc Key Embeddings (PCA)\ncolor = avg positive logit")
         fig.colorbar(sc, ax=ax2, fraction=0.046, pad=0.04)
     else:
-        ax2.text(0.5, 0.5, "doc_key_embeddings or\nper_doc_logits not available",
-                 ha="center", va="center", transform=ax2.transAxes, fontsize=10)
+        ax2.text(
+            0.5,
+            0.5,
+            "doc_key_embeddings or\nper_doc_logits not available",
+            ha="center",
+            va="center",
+            transform=ax2.transAxes,
+            fontsize=10,
+        )
         ax2.set_title("Doc Key Embeddings (N/A)")
 
     # ------------------------------------------------------------------
@@ -244,12 +273,10 @@ def generate_plots(
         n_patients, k_docs = diff_scores.shape
 
         x_vals = per_doc_logits[:, :, c_idx].reshape(-1)  # per-doc positive logit
-        y_vals = diff_scores.reshape(-1)                    # differentiable doc score
-        colors = np.array([
-            "blue" if pos_mask[i] else "red"
-            for i in range(n_patients)
-            for _ in range(k_docs)
-        ])
+        y_vals = diff_scores.reshape(-1)  # differentiable doc score
+        colors = np.array(
+            ["blue" if pos_mask[i] else "red" for i in range(n_patients) for _ in range(k_docs)]
+        )
 
         ax3.scatter(x_vals, y_vals, c=colors, s=20, alpha=0.2, edgecolors="none")
         ax3.set_xlabel("Per-doc positive logit")
@@ -261,8 +288,15 @@ def generate_plots(
         ax3.scatter([], [], c="red", label="Negative patient", s=40)
         ax3.legend(fontsize=8)
     else:
-        ax3.text(0.5, 0.5, "per_doc_logits not available", ha="center", va="center",
-                 transform=ax3.transAxes, fontsize=10)
+        ax3.text(
+            0.5,
+            0.5,
+            "per_doc_logits not available",
+            ha="center",
+            va="center",
+            transform=ax3.transAxes,
+            fontsize=10,
+        )
         ax3.set_title("Doc Prediction vs Score (N/A)")
 
     # ------------------------------------------------------------------
@@ -284,15 +318,23 @@ def generate_plots(
         score_weights = score_exp / score_exp.sum(axis=1, keepdims=True)  # (N, K)
         color_vals = score_weights.reshape(-1)
 
-        hb = ax4.hexbin(x_vals, y_vals, C=color_vals, reduce_C_function=np.mean,
-                        gridsize=30, cmap="viridis", mincnt=1)
+        hb = ax4.hexbin(
+            x_vals, y_vals, C=color_vals, reduce_C_function=np.mean, gridsize=30, cmap="viridis", mincnt=1
+        )
         ax4.set_xlabel("Per-doc positive logit")
         ax4.set_ylabel("Patient predicted logit (positive)")
         ax4.set_title("Doc Logit vs Patient Logit\ncolor = avg doc weight (softmax)")
         fig.colorbar(hb, ax=ax4, fraction=0.046, pad=0.04, label="Avg doc weight")
     else:
-        ax4.text(0.5, 0.5, "per_doc_logits not available", ha="center", va="center",
-                 transform=ax4.transAxes, fontsize=10)
+        ax4.text(
+            0.5,
+            0.5,
+            "per_doc_logits not available",
+            ha="center",
+            va="center",
+            transform=ax4.transAxes,
+            fontsize=10,
+        )
         ax4.set_title("Doc vs Patient Logit (N/A)")
 
     # ------------------------------------------------------------------
@@ -334,14 +376,20 @@ def generate_plots(
     if auroc is not None:
         metrics["AUROC"] = auroc
 
-    bars = ax5.bar(range(len(metrics)), list(metrics.values()), color=["steelblue", "coral"][:len(metrics)])
+    bars = ax5.bar(range(len(metrics)), list(metrics.values()), color=["steelblue", "coral"][: len(metrics)])
     ax5.set_xticks(range(len(metrics)))
     ax5.set_xticklabels(list(metrics.keys()))
     ax5.set_ylim(0, 1.05)
     ax5.set_title("Prediction Summary")
-    for bar, val in zip(bars, metrics.values()):
-        ax5.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.02,
-                 f"{val:.3f}", ha="center", va="bottom", fontsize=10)
+    for bar, val in zip(bars, metrics.values(), strict=False):
+        ax5.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + 0.02,
+            f"{val:.3f}",
+            ha="center",
+            va="bottom",
+            fontsize=10,
+        )
 
     # ------------------------------------------------------------------
     # Plot 6: Score-weighted average positive logit by class (box plot)
@@ -374,8 +422,15 @@ def generate_plots(
         ax6.set_ylabel("Score-weighted avg positive logit")
         ax6.set_title("Soft Retrieval Class-Conditionality")
     else:
-        ax6.text(0.5, 0.5, "per_doc_logits not available", ha="center", va="center",
-                 transform=ax6.transAxes, fontsize=10)
+        ax6.text(
+            0.5,
+            0.5,
+            "per_doc_logits not available",
+            ha="center",
+            va="center",
+            transform=ax6.transAxes,
+            fontsize=10,
+        )
         ax6.set_title("Soft Retrieval Class-Conditionality (N/A)")
 
     plt.tight_layout(rect=[0, 0, 1, 0.96])

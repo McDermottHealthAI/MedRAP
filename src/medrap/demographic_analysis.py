@@ -1,4 +1,4 @@
-"""Keyword × demographic aggregation for retrieval artifacts.
+"""Keyword x demographic aggregation for retrieval artifacts.
 
 Given the per-patient extraction artifacts produced by
 :func:`medrap.extraction.extract_artifacts`, this module aggregates which
@@ -13,12 +13,14 @@ aggregation or rendering code.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import numpy as np
 import polars as pl
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
 
 # ---------------------------------------------------------------------------
 # Age bins (edit here to change all downstream binning)
@@ -38,30 +40,67 @@ AGE_BIN_ORDER: list[str] = [label for _, _, label in AGE_BINS] + [UNKNOWN_BIN]
 # Race/ethnicity aggregation buckets.
 RACE_AGGREGATION: dict[str, str] = {}
 _RACE_BUCKETS: dict[str, list[str]] = {
-    "Asian": ["ASIAN", "ASIAN - ASIAN INDIAN", "ASIAN - CHINESE", "ASIAN - KOREAN",
-              "ASIAN - SOUTH EAST ASIAN", "ASIAN - OTHER"],
-    "Black": ["BLACK/AFRICAN AMERICAN", "BLACK/AFRICAN", "BLACK/CAPE VERDEAN",
-              "BLACK/CARIBBEAN ISLAND", "BLACK/HAITIAN"],
-    "Hispanic/Latino": ["HISPANIC/LATINO", "HISPANIC OR LATINO",
-                        "HISPANIC/LATINO - PUERTO RICAN", "HISPANIC/LATINO - DOMINICAN",
-                        "HISPANIC/LATINO - GUATEMALAN", "HISPANIC/LATINO - CUBAN",
-                        "HISPANIC/LATINO - SALVADORAN", "HISPANIC/LATINO - COLOMBIAN",
-                        "HISPANIC/LATINO - CENTRAL AMERICAN", "HISPANIC/LATINO - HONDURAN",
-                        "HISPANIC/LATINO - MEXICAN", "SOUTH AMERICAN"],
-    "American Indian/Alaska Native": ["AMERICAN INDIAN/ALASKA NATIVE",
-                                      "AMERICAN INDIAN/ALASKA NATIVE FEDERALLY RECOGNIZED TRIBE"],
-    "White": ["WHITE", "WHITE - BRAZILIAN", "WHITE - EASTERN EUROPEAN",
-              "WHITE - OTHER EUROPEAN", "WHITE - RUSSIAN", "PORTUGUESE"],
-    "Other/Unknown": ["OTHER", "UNKNOWN", "UNABLE TO OBTAIN", "PATIENT DECLINED TO ANSWER",
-                      "MULTI RACE ETHNICITY", "NATIVE HAWAIIAN OR OTHER PACIFIC ISLANDER",
-                      "MIDDLE EASTERN"],
+    "Asian": [
+        "ASIAN",
+        "ASIAN - ASIAN INDIAN",
+        "ASIAN - CHINESE",
+        "ASIAN - KOREAN",
+        "ASIAN - SOUTH EAST ASIAN",
+        "ASIAN - OTHER",
+    ],
+    "Black": [
+        "BLACK/AFRICAN AMERICAN",
+        "BLACK/AFRICAN",
+        "BLACK/CAPE VERDEAN",
+        "BLACK/CARIBBEAN ISLAND",
+        "BLACK/HAITIAN",
+    ],
+    "Hispanic/Latino": [
+        "HISPANIC/LATINO",
+        "HISPANIC OR LATINO",
+        "HISPANIC/LATINO - PUERTO RICAN",
+        "HISPANIC/LATINO - DOMINICAN",
+        "HISPANIC/LATINO - GUATEMALAN",
+        "HISPANIC/LATINO - CUBAN",
+        "HISPANIC/LATINO - SALVADORAN",
+        "HISPANIC/LATINO - COLOMBIAN",
+        "HISPANIC/LATINO - CENTRAL AMERICAN",
+        "HISPANIC/LATINO - HONDURAN",
+        "HISPANIC/LATINO - MEXICAN",
+        "SOUTH AMERICAN",
+    ],
+    "American Indian/Alaska Native": [
+        "AMERICAN INDIAN/ALASKA NATIVE",
+        "AMERICAN INDIAN/ALASKA NATIVE FEDERALLY RECOGNIZED TRIBE",
+    ],
+    "White": [
+        "WHITE",
+        "WHITE - BRAZILIAN",
+        "WHITE - EASTERN EUROPEAN",
+        "WHITE - OTHER EUROPEAN",
+        "WHITE - RUSSIAN",
+        "PORTUGUESE",
+    ],
+    "Other/Unknown": [
+        "OTHER",
+        "UNKNOWN",
+        "UNABLE TO OBTAIN",
+        "PATIENT DECLINED TO ANSWER",
+        "MULTI RACE ETHNICITY",
+        "NATIVE HAWAIIAN OR OTHER PACIFIC ISLANDER",
+        "MIDDLE EASTERN",
+    ],
 }
 for bucket, values in _RACE_BUCKETS.items():
     for v in values:
         RACE_AGGREGATION[v] = bucket
 RACE_BIN_ORDER: list[str] = [
-    "White", "Black", "Hispanic/Latino", "Asian",
-    "American Indian/Alaska Native", "Other/Unknown",
+    "White",
+    "Black",
+    "Hispanic/Latino",
+    "Asian",
+    "American Indian/Alaska Native",
+    "Other/Unknown",
 ]
 
 
@@ -97,12 +136,10 @@ class DocKeywordProvider(Protocol):
     proportion to ``weight``.
     """
 
-    def keywords_for(self, doc_id: int) -> list[tuple[str, float]]:
-        ...
+    def keywords_for(self, doc_id: int) -> list[tuple[str, float]]: ...
 
     @property
-    def vocab(self) -> list[str]:
-        ...
+    def vocab(self) -> list[str]: ...
 
 
 class TitleKeywordProvider:
@@ -205,11 +242,7 @@ class LDATopicProvider:
             doc_id, n_rows=self._doc_topic_dist.shape[0], doc_id_to_row=self._doc_id_to_row
         )
         weights = self._doc_topic_dist[row_idx]  # (n_topics,)
-        pairs = [
-            (self._topic_labels[t], float(w))
-            for t, w in enumerate(weights)
-            if w >= self._min_weight
-        ]
+        pairs = [(self._topic_labels[t], float(w)) for t, w in enumerate(weights) if w >= self._min_weight]
         if not pairs:
             best = int(weights.argmax())
             pairs = [(self._topic_labels[best], float(weights[best]))]
@@ -229,8 +262,7 @@ def _fit_lda(
 ) -> tuple[np.ndarray, list[str]]:
     """Fit LDA and return ``(doc_topic_dist, topic_labels)``.
 
-    Uses TF (raw term counts) with English stop words removed and medical
-    text-friendly tokenization.
+    Uses TF (raw term counts) with English stop words removed and medical text-friendly tokenization.
     """
     from sklearn.decomposition import LatentDirichletAllocation
     from sklearn.feature_extraction.text import CountVectorizer
@@ -257,7 +289,7 @@ def _fit_lda(
     doc_topic_dist = lda.fit_transform(tf_matrix)  # (n_docs, n_topics)
 
     topic_labels: list[str] = []
-    for topic_idx, topic_weights in enumerate(lda.components_):
+    for _topic_idx, topic_weights in enumerate(lda.components_):
         top_word_indices = topic_weights.argsort()[: -n_top_words - 1 : -1]
         top_words = [feature_names[i] for i in top_word_indices]
         topic_labels.append(" / ".join(top_words))
@@ -290,9 +322,7 @@ def _build_doc_id_to_row_map(dataset) -> dict[Any, int] | None:
     return mapping
 
 
-def _resolve_doc_row_index(
-    doc_id: int, *, n_rows: int, doc_id_to_row: dict[Any, int] | None
-) -> int:
+def _resolve_doc_row_index(doc_id: int, *, n_rows: int, doc_id_to_row: dict[Any, int] | None) -> int:
     """Resolve retriever-emitted ``doc_id`` to the corpus row index."""
     normalized_doc_id = int(doc_id)
     if doc_id_to_row is not None:
@@ -351,10 +381,7 @@ def extract_val_schema(datamodule) -> pl.DataFrame:
     needed = {"subject_id", "end_event_index", "prediction_time"}
     missing = needed - set(schema.columns)
     if missing:
-        raise RuntimeError(
-            f"Validation schema_df is missing columns {sorted(missing)}; "
-            f"got {schema.columns}"
-        )
+        raise RuntimeError(f"Validation schema_df is missing columns {sorted(missing)}; got {schema.columns}")
     return schema.select(["subject_id", "end_event_index", "prediction_time"])
 
 
@@ -379,7 +406,7 @@ def load_subject_demographics(
     """
     cohort_root = Path(meds_cohort_dir)
     parquet_glob = str(cohort_root / "data" / "*" / "*.parquet")
-    subject_set = list(set(int(s) for s in subject_ids))
+    subject_set = list({int(s) for s in subject_ids})
 
     # --- Birth and gender: extracted from code column ---
     lf_code = (
@@ -418,14 +445,12 @@ def load_subject_demographics(
             )
             .select(["subject_id", "race"])
         )
-        races = (
-            lf_race.collect()
-            .group_by("subject_id")
-            .agg(pl.col("race").first())
-        )
+        races = lf_race.collect().group_by("subject_id").agg(pl.col("race").first())
     except Exception:
         # "race" column doesn't exist in these parquets
-        races = pl.DataFrame({"subject_id": pl.Series([], dtype=pl.Int64), "race": pl.Series([], dtype=pl.Utf8)})
+        races = pl.DataFrame(
+            {"subject_id": pl.Series([], dtype=pl.Int64), "race": pl.Series([], dtype=pl.Utf8)}
+        )
 
     base = pl.DataFrame({"subject_id": subject_set})
     return (
@@ -453,11 +478,7 @@ def build_patient_demographic_frame(
         / 365.25
     ).alias("age_years")
     joined = joined.with_columns(age_expr)
-    age_bin = (
-        pl.col("age_years")
-        .map_elements(bin_age, return_dtype=pl.Utf8)
-        .alias("age_bin")
-    )
+    age_bin = pl.col("age_years").map_elements(bin_age, return_dtype=pl.Utf8).alias("age_bin")
     return joined.with_columns(age_bin)
 
 
@@ -502,13 +523,9 @@ def build_keyword_demographic_table(
     if doc_ids.ndim != 2:
         raise ValueError(f"doc_ids must be (N, K); got {doc_ids.shape}")
     if diff_scores.shape != doc_ids.shape:
-        raise ValueError(
-            f"diff_scores shape {diff_scores.shape} must match doc_ids {doc_ids.shape}"
-        )
+        raise ValueError(f"diff_scores shape {diff_scores.shape} must match doc_ids {doc_ids.shape}")
     if len(demographic_labels) != doc_ids.shape[0]:
-        raise ValueError(
-            f"demographic_labels length {len(demographic_labels)} != N={doc_ids.shape[0]}"
-        )
+        raise ValueError(f"demographic_labels length {len(demographic_labels)} != N={doc_ids.shape[0]}")
 
     weights = _softmax(diff_scores, axis=-1)  # (N, K)
 
@@ -608,16 +625,28 @@ def render_demographic_heatmaps(
     gender_labels = [g if g is not None else "unknown" for g in patient_frame["gender"].to_list()]
 
     age_table, age_bins, age_kws = build_keyword_demographic_table(
-        doc_ids, diff_scores, age_labels, provider,
-        bin_order=AGE_BIN_ORDER, top_n_keywords=top_n_keywords,
+        doc_ids,
+        diff_scores,
+        age_labels,
+        provider,
+        bin_order=AGE_BIN_ORDER,
+        top_n_keywords=top_n_keywords,
     )
     race_table, race_bins, race_kws = build_keyword_demographic_table(
-        doc_ids, diff_scores, race_labels, provider,
-        bin_order=RACE_BIN_ORDER, top_n_keywords=top_n_keywords,
+        doc_ids,
+        diff_scores,
+        race_labels,
+        provider,
+        bin_order=RACE_BIN_ORDER,
+        top_n_keywords=top_n_keywords,
     )
     gender_table, gender_bins, gender_kws = build_keyword_demographic_table(
-        doc_ids, diff_scores, gender_labels, provider,
-        bin_order=sorted(set(gender_labels)), top_n_keywords=top_n_keywords,
+        doc_ids,
+        diff_scores,
+        gender_labels,
+        provider,
+        bin_order=sorted(set(gender_labels)),
+        top_n_keywords=top_n_keywords,
     )
 
     fig, axes = plt.subplots(3, 1, figsize=(max(10, 0.5 * top_n_keywords + 4), 14))
@@ -629,8 +658,7 @@ def render_demographic_heatmaps(
         (axes[2], gender_table, gender_bins, gender_kws, "Gender"),
     ]:
         if table.size == 0:
-            ax.text(0.5, 0.5, f"No data for {title}", ha="center", va="center",
-                    transform=ax.transAxes)
+            ax.text(0.5, 0.5, f"No data for {title}", ha="center", va="center", transform=ax.transAxes)
             ax.set_title(title)
             ax.set_axis_off()
             continue

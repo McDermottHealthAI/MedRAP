@@ -1,6 +1,5 @@
 """RAP API model orchestration."""
 
-import torch.nn.functional as F
 from meds_torchdata import MEDSTorchBatch
 from torch import Tensor, nn
 from torch.nn import functional as nn_functional

@@ -1,6 +1,7 @@
 """Check if doc_ids / scores are identical across all patients."""
-import torch
+
 import numpy as np
+import torch
 
 a = torch.load("outputs/mimic_run_retrieval_only/extraction/extraction_artifacts.pt", weights_only=True)
 

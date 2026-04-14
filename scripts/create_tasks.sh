@@ -33,6 +33,7 @@ if [ ! -d "$TASK_VENV" ]; then
     echo "Creating task venv..."
     /usr/bin/python3.11 -m venv "$TASK_VENV"
 fi
+# shellcheck source=/dev/null
 source "$TASK_VENV/bin/activate"
 pip install --upgrade pip --quiet
 

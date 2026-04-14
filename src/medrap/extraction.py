@@ -34,12 +34,14 @@ Downstream usage examples
 **Loading artifacts**::
 
     import torch
+
     artifacts = torch.load("extraction_artifacts.pt")
 
 **Look up retrieved document text** (using ``doc_ids`` to index into the
 retrieval HuggingFace dataset)::
 
     from datasets import load_from_disk
+
     retrieval_ds = load_from_disk("path/to/retrieval_dataset")
     sample_idx = 0
     doc_id = artifacts["doc_ids"][sample_idx, 0, 0].item()  # first query, first doc
@@ -47,8 +49,8 @@ retrieval HuggingFace dataset)::
 
 **Embedding visualization** (t-SNE / UMAP of query vs key embeddings)::
 
-    query_embs = artifacts["query_embeddings"][:, 0, :]       # (N, D_ret)
-    key_embs = artifacts["doc_key_embeddings"][:, 0, 0, :]    # (N, D_ret) first doc
+    query_embs = artifacts["query_embeddings"][:, 0, :]  # (N, D_ret)
+    key_embs = artifacts["doc_key_embeddings"][:, 0, 0, :]  # (N, D_ret) first doc
     all_embs = torch.cat([query_embs, key_embs], dim=0)
     labels = ["query"] * len(query_embs) + ["key"] * len(key_embs)
     # ... pass all_embs.numpy() to sklearn.manifold.TSNE or umap.UMAP
@@ -56,11 +58,14 @@ retrieval HuggingFace dataset)::
 **Human validation spreadsheet**::
 
     import pandas as pd
-    df = pd.DataFrame({
-        "sample": range(len(artifacts["doc_ids"])),
-        "top_doc_id": artifacts["doc_ids"][:, 0, 0].tolist(),
-        "top_doc_score": artifacts["doc_scores"][:, 0, 0].tolist(),
-    })
+
+    df = pd.DataFrame(
+        {
+            "sample": range(len(artifacts["doc_ids"])),
+            "top_doc_id": artifacts["doc_ids"][:, 0, 0].tolist(),
+            "top_doc_score": artifacts["doc_scores"][:, 0, 0].tolist(),
+        }
+    )
     df.to_csv("retrieval_pairs.csv", index=False)
 """
 

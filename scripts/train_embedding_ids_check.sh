@@ -34,6 +34,7 @@ echo "  Start: $(date)"
 echo "  Repo:  ${REPO_DIR}"
 echo ""
 
+# shellcheck source=/dev/null
 source .venv/bin/activate
 
 RUN_ID="${SLURM_JOB_ID:-$(date +%s)}"

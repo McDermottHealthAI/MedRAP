@@ -22,6 +22,7 @@ echo "GPU:    $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null ||
 echo "Start:  $(date)"
 echo "REPO:   ${SLURM_SUBMIT_DIR}"
 
+# shellcheck source=/dev/null
 source .venv/bin/activate
 
 export WANDB_PROJECT=medrap
@@ -30,7 +31,7 @@ medrap train \
   training/datamodule=synthetic \
   training/trainer=lightning_wandb \
   wandb_project=medrap \
-  wandb_run_name=medrap-train-job-${SLURM_JOB_ID} \
-  output_dir=outputs/train_wandb_${SLURM_JOB_ID}
+  wandb_run_name="medrap-train-job-${SLURM_JOB_ID}" \
+  output_dir="outputs/train_wandb_${SLURM_JOB_ID}"
 
 echo "Done:   $(date)"
