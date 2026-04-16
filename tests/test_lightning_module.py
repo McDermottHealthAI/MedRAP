@@ -193,3 +193,79 @@ def test_lightning_module_test_step_runs(
 
     assert len(metrics) == 1
     assert "test/loss" in metrics[0]
+
+
+def test_predict_step_returns_targets_when_available(
+    supervised_batch: MEDSTorchBatch,
+    model_output_binary_model: nn.Module,
+) -> None:
+    module = MedRAPSupervisedLightningModule(
+        model=model_output_binary_model,
+        task=BinaryClassificationTask(),
+    )
+
+    result = module.predict_step(supervised_batch, batch_idx=0)
+
+    assert "logits" in result
+    assert "targets" in result
+    assert result["logits"].device.type == "cpu"
+    assert result["targets"].device.type == "cpu"
+
+
+def test_predict_step_skips_targets_when_extract_raises(
+    model_output_binary_model: nn.Module,
+) -> None:
+    """Covers the ``except Exception: pass`` branch in ``predict_step``."""
+    # A batch without boolean_value makes BinaryClassificationTask.extract_targets raise.
+    batch_without_labels = MEDSTorchBatch(
+        code=torch.LongTensor([[1, 2, 3], [3, 2, 1]]),
+        numeric_value=torch.zeros((2, 3), dtype=torch.float32),
+        numeric_value_mask=torch.zeros((2, 3), dtype=torch.bool),
+        time_delta_days=torch.zeros((2, 3), dtype=torch.float32),
+    )
+    module = MedRAPSupervisedLightningModule(
+        model=model_output_binary_model,
+        task=BinaryClassificationTask(),
+    )
+
+    result = module.predict_step(batch_without_labels, batch_idx=0)
+
+    assert "logits" in result
+    assert "targets" not in result
+
+
+def test_predict_step_captures_marginalized_tensors_from_metadata(
+    supervised_batch: MEDSTorchBatch,
+) -> None:
+    """Covers the ``per_doc_logits`` / ``differentiable_doc_scores`` branch."""
+
+    class MarginalizedModel(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.layer_norm = nn.LayerNorm(3)
+            self.linear = nn.Linear(3, 1)
+
+        def forward(self, batch: MEDSTorchBatch) -> ModelOutput:
+            features = self.layer_norm(batch.code.float())
+            logits = self.linear(features)
+            # Shape chosen arbitrarily; predict_step only checks isinstance(value, Tensor).
+            return ModelOutput(
+                logits=logits,
+                metadata={
+                    "per_doc_logits": logits.unsqueeze(-1),
+                    "differentiable_doc_scores": logits.squeeze(-1),
+                    "per_doc_logits_non_tensor": "skip-me",
+                },
+            )
+
+    module = MedRAPSupervisedLightningModule(
+        model=MarginalizedModel(),
+        task=BinaryClassificationTask(),
+    )
+
+    result = module.predict_step(supervised_batch, batch_idx=0)
+
+    assert "per_doc_logits" in result
+    assert "differentiable_doc_scores" in result
+    assert result["per_doc_logits"].device.type == "cpu"
+    assert result["differentiable_doc_scores"].device.type == "cpu"

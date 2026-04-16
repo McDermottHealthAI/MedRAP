@@ -387,7 +387,8 @@ class HFDatasetRetriever(Retriever):
                 - ``doc_tokens`` shaped ``(B, R, K, S_doc)``
                 - ``doc_attention_mask`` shaped ``(B, R, K, S_doc)``
                 - ``doc_scores`` shaped ``(B, R, K)``
-                - optional ``doc_ids`` shaped ``(B, R, K)``
+                - ``doc_ids`` shaped ``(B, R, K)`` (from ``doc_ids_column`` if
+                  configured, otherwise the FAISS dataset row indices)
                 - optional ``doc_key_embeddings`` shaped ``(B, R, K, D_ret)``
         """
         batch_size, n_retrieval_steps, k = row_indices.shape
@@ -406,13 +407,15 @@ class HFDatasetRetriever(Retriever):
             device=output_device,
         ).reshape(batch_size, n_retrieval_steps, k, -1)
 
-        doc_ids = None
         if self._doc_ids_column is not None:
             doc_ids = torch.as_tensor(
                 rows[self._doc_ids_column],
                 dtype=torch.long,
                 device=output_device,
             ).reshape(batch_size, n_retrieval_steps, k)
+        else:
+            # Fall back to FAISS row indices (the canonical dataset row id).
+            doc_ids = row_indices.to(output_device)
 
         doc_key_embeddings = None
         if self._doc_key_embeddings_column is not None:
@@ -485,6 +488,17 @@ class HFDatasetRetriever(Retriever):
             Traceback (most recent call last):
                 ...
             ValueError: query_embeddings must have shape (B, R, D_ret)
+
+            >>> retriever_no_ids = HFDatasetRetriever(
+            ...     dataset=dataset,
+            ...     index_name="retrieval",
+            ...     doc_tokens_column="doc_tokens",
+            ...     doc_attention_mask_column="doc_attention_mask",
+            ...     k=1,
+            ... )
+            >>> out_no_ids = retriever_no_ids(torch.FloatTensor([[[1.0, 0.0]], [[0.0, 1.0]]]))
+            >>> out_no_ids.doc_ids.tolist()
+            [[[0]], [[1]]]
         """
         if query_embeddings.ndim != 3:
             raise ValueError("query_embeddings must have shape (B, R, D_ret)")

@@ -1,3 +1,17 @@
+# SLURM job output
+*.out
+*.err
+
+# Data artifacts
+data/
+mimic/
+outputs/
+logs/
+
+# Task extraction tooling
+MEDS-DEV/
+task_venv/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

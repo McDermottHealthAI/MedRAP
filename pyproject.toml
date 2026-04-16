@@ -28,6 +28,7 @@ dependencies = [
   "torch==2.10.0",
   "torchmetrics>=1.4.0",
   "wandb>=0.16.0",
+  "scikit-learn>=1.5.0",
 ]
 
 [project.optional-dependencies]
@@ -35,10 +36,22 @@ prep = [
   "sentence-transformers",
   "transformers",
 ]
+wandb = [
+  "wandb>=0.16.0",
+]
+viz = [
+  "matplotlib>=3.8",
+]
 
 [dependency-groups]
 dev = [
-  "pre-commit<4", "ruff", "pytest", "pytest-cov", "pretty-print-directory"
+  "pre-commit<4",
+  "ruff",
+  "pytest",
+  "pytest-cov",
+  "pretty-print-directory",
+  "ipykernel>=7.2.0",
+  "notebook>=7.5.5",
 ]
 docs = []
 
@@ -56,6 +69,7 @@ addopts = [
   "--color=yes",
   "--doctest-modules",
   "--ignore=docs",
+  "--ignore=MEDS-DEV",
   "--ignore=AGENTS.md",
   "--ignore=CONTRIBUTORS.md",
   "--ignore=src/medrap/preparation.py",

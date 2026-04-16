@@ -86,4 +86,11 @@ medrap train \
     "$@"
 
 echo ""
+echo "=== Generating keyword × demographic heatmap ==="
+uv run python scripts/run_demographic_heatmap.py \
+    --run_dir "${OUTPUT_DIR}" \
+    --retrieval_db "${RETRIEVAL_DB}" \
+    --meds_cohort /groups/mm6677_gp/data/MIMIC_MEDS/MEDS_cohort
+
+echo ""
 echo "=== Done: $(date) ==="
