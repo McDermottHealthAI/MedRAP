@@ -38,12 +38,12 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Determine output directory: subdirectory when a subset is requested.
+PREP_NUM_DOCS_ARG=()
 if [[ -n "${NUM_DOCS}" ]]; then
   OUTPUT_DIR="data/retrieval_db_${NUM_DOCS}docs"
-  NUM_DOCS_OVERRIDE="prep.num_docs=${NUM_DOCS}"
+  PREP_NUM_DOCS_ARG=( "prep.num_docs=${NUM_DOCS}" )
 else
   OUTPUT_DIR="data/retrieval_db"
-  NUM_DOCS_OVERRIDE=""
 fi
 
 echo "Node:      $(hostname)"
@@ -63,7 +63,7 @@ uv run medrap prepare-retrieval-dataset \
   prep.index.tokenization_batch_size=512 \
   prep.index.embedding_batch_size=256 \
   prep.index.encode_batch_size=32 \
-  ${NUM_DOCS_OVERRIDE} \
+  "${PREP_NUM_DOCS_ARG[@]}" \
   "${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}"
 
 echo "Done:      $(date)"
