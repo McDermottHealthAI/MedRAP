@@ -595,12 +595,13 @@ def prepare_retrieval_dataset_from_config(config: Any) -> str:
         >>> class _RecordingDataset:
         ...     def __init__(self) -> None:
         ...         self.shuffle_seed: int | None = None
+        ...
         ...     def shuffle(self, seed: int = 42):
         ...         self.shuffle_seed = int(seed)
         ...         return self
+        ...
         ...     def select(self, indices):
         ...         return ("subset", self.shuffle_seed, list(indices))
-        ...
         >>> captured_subset = {}
         >>> def _fake_prep_subset(*_a, **kwargs):
         ...     captured_subset.clear()
