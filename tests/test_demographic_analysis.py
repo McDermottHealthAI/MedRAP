@@ -681,3 +681,32 @@ def test_render_demographic_heatmaps_rejects_row_count_mismatch(tmp_path: Path) 
             patient_frame,
             tmp_path / "heatmap.png",
         )
+
+
+def test_render_demographic_heatmaps_displays_placeholder_when_tables_are_empty(tmp_path: Path) -> None:
+    """Exercises the ``if table.size == 0`` placeholder branch."""
+    import torch
+
+    artifacts = {
+        "doc_ids": torch.zeros((0, 1, 2), dtype=torch.long),
+        "differentiable_doc_scores": torch.zeros((0, 2), dtype=torch.float32),
+    }
+    patient_frame = pl.DataFrame(
+        {
+            "age_bin": pl.Series([], dtype=pl.Utf8),
+            "race": pl.Series([], dtype=pl.Utf8),
+            "gender": pl.Series([], dtype=pl.Utf8),
+        }
+    )
+    output_path = tmp_path / "empty.png"
+
+    result = render_demographic_heatmaps(
+        artifacts,
+        StaticMappingProvider([[("x", 1.0)]]),
+        patient_frame,
+        output_path,
+    )
+
+    assert output_path.is_file()
+    for axis in ("age", "race", "gender"):
+        assert result[axis]["table"].size == 0

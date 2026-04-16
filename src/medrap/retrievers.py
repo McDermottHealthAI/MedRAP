@@ -488,6 +488,17 @@ class HFDatasetRetriever(Retriever):
             Traceback (most recent call last):
                 ...
             ValueError: query_embeddings must have shape (B, R, D_ret)
+
+            >>> retriever_no_ids = HFDatasetRetriever(
+            ...     dataset=dataset,
+            ...     index_name="retrieval",
+            ...     doc_tokens_column="doc_tokens",
+            ...     doc_attention_mask_column="doc_attention_mask",
+            ...     k=1,
+            ... )
+            >>> out_no_ids = retriever_no_ids(torch.FloatTensor([[[1.0, 0.0]], [[0.0, 1.0]]]))
+            >>> out_no_ids.doc_ids.tolist()
+            [[[0]], [[1]]]
         """
         if query_embeddings.ndim != 3:
             raise ValueError("query_embeddings must have shape (B, R, D_ret)")
