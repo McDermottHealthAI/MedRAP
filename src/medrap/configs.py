@@ -418,6 +418,8 @@ class PrepareRetrievalDatasetConfig:
     embedder: ComponentConfig = field(default_factory=SentenceTransformerEmbedderConfig)
     index: RetrievalDatasetIndexConfig = field(default_factory=RetrievalDatasetIndexConfig)
     output: RetrievalDatasetOutputConfig = field(default_factory=RetrievalDatasetOutputConfig)
+    num_docs: int | None = None
+    num_docs_seed: int = 42
 
 
 @dataclass
@@ -590,6 +592,10 @@ def prepare_retrieval_dataset_from_config(config: Any) -> str:
     """
     prep_cfg = config.prep
     dataset = instantiate_any(prep_cfg.source)
+    num_docs = getattr(prep_cfg, "num_docs", None)
+    if num_docs is not None:
+        num_docs_seed = int(getattr(prep_cfg, "num_docs_seed", 42))
+        dataset = dataset.shuffle(seed=num_docs_seed).select(range(int(num_docs)))
     renderer = instantiate_any(prep_cfg.document)
     tokenizer = instantiate_any(prep_cfg.tokenizer)
     embedder = instantiate_any(prep_cfg.embedder)
