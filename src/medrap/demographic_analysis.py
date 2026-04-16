@@ -322,15 +322,18 @@ def _build_doc_id_to_row_map(dataset) -> dict[Any, int] | None:
     return mapping
 
 
-def _resolve_doc_row_index(doc_id: int, *, n_rows: int, doc_id_to_row: dict[Any, int] | None) -> int:
+def _resolve_doc_row_index(doc_id: Any, *, n_rows: int, doc_id_to_row: dict[Any, int] | None) -> int:
     """Resolve retriever-emitted ``doc_id`` to the corpus row index."""
-    normalized_doc_id = int(doc_id)
     if doc_id_to_row is not None:
-        # Primary path: id in artifacts matches doc_ids column values.
         if doc_id in doc_id_to_row:
             return doc_id_to_row[doc_id]
-        # Backward-compatible path: older artifacts may store row indices even
-        # when the retrieval dataset has a separate doc_ids column.
+        try:
+            normalized_doc_id = int(doc_id)
+        except (TypeError, ValueError) as exc:
+            raise KeyError(
+                f"Retrieved doc_id {doc_id!r} not found in retrieval dataset doc_ids "
+                f"column and cannot be interpreted as a row index."
+            ) from exc
         if 0 <= normalized_doc_id < n_rows:
             return normalized_doc_id
         raise KeyError(
@@ -338,6 +341,7 @@ def _resolve_doc_row_index(doc_id: int, *, n_rows: int, doc_id_to_row: dict[Any,
             f"column and is not a valid row index for {n_rows} rows."
         )
 
+    normalized_doc_id = int(doc_id)
     if not (0 <= normalized_doc_id < n_rows):
         raise IndexError(f"Retrieved doc_id {normalized_doc_id} is out of range for {n_rows} corpus rows.")
     return normalized_doc_id
