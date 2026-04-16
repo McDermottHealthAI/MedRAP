@@ -277,50 +277,44 @@ class MarginalizedBinaryClassificationTask(SupervisedTask):
 class BinaryClassificationLoss(SupervisedLoss):
     """Binary BCE-with-logits loss for scalar binary predictions.
 
-    Args:
-        pos_weight: Optional scalar weight for the positive class passed to
-            ``torch.nn.functional.binary_cross_entropy_with_logits``.  Set to
-            ``(1 - prevalence) / prevalence`` to correct for class imbalance
-            (e.g. ``9.75`` for ~9.3 % positive rate in MIMIC ICU mortality).
-
-    Examples:
-        >>> loss_fn = BinaryClassificationLoss()
-        >>> predictions = ModelOutput(logits=torch.FloatTensor([[0.0], [2.0]]))
-        >>> targets = torch.BoolTensor([False, True])
-        >>> round(float(loss_fn(predictions, targets)), 4)
-        0.41
-        >>> loss_fn_weighted = BinaryClassificationLoss(pos_weight=9.75)
-        >>> round(float(loss_fn_weighted(predictions, targets)), 4)
-        2.7096
-        >>> loss_fn(
-        ...     ModelOutput(logits=torch.FloatTensor([[0.0], [2.0]])),
-        ...     {"labels": torch.FloatTensor([0.0, 1.0])},
-        ... )  # doctest: +ELLIPSIS
-        Traceback (most recent call last):
-            ...
-        ValueError: BinaryClassificationLoss expects tensor targets, not structured targets.
-        >>> loss_fn(
-        ...     ModelOutput(logits=torch.FloatTensor([[0.0], [2.0]])),
-        ...     torch.BoolTensor([[False], [True]]),
-        ... )  # doctest: +ELLIPSIS
-        Traceback (most recent call last):
-            ...
-        ValueError: BinaryClassificationLoss expects targets shaped (B,); got (2, 1)
+    Returns:
+        BinaryClassificationLoss: Loss helper that accepts ``ModelOutput``
+        predictions with logits shaped ``(B, 1)`` and binary tensor targets
+        shaped ``(B,)``.
     """
 
-    def __init__(self, *, pos_weight: float | None = None) -> None:
-        super().__init__()
-        self.pos_weight = float(pos_weight) if pos_weight is not None else None
-
     def forward(self, predictions: ModelOutput, targets: TaskTargets) -> Tensor:
-        """Compute BCE-with-logits loss from binary predictions and targets."""
+        """Compute BCE-with-logits loss from binary predictions and targets.
+
+        Args:
+            predictions: ``ModelOutput`` predictions with logits shaped
+                ``(B, 1)``.
+            targets: Binary tensor targets shaped ``(B,)``.
+
+        Returns:
+            Tensor: Scalar loss tensor with shape ``()``.
+
+        Examples:
+            >>> loss_fn = BinaryClassificationLoss()
+            >>> predictions = ModelOutput(logits=torch.FloatTensor([[0.0], [2.0]]))
+            >>> targets = torch.BoolTensor([False, True])
+            >>> round(float(loss_fn(predictions, targets)), 4)
+            0.41
+            >>> loss_fn(
+            ...     ModelOutput(logits=torch.FloatTensor([[0.0], [2.0]])),
+            ...     {"labels": torch.FloatTensor([0.0, 1.0])},
+            ... )  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: BinaryClassificationLoss expects tensor targets, not structured targets.
+            >>> loss_fn(
+            ...     ModelOutput(logits=torch.FloatTensor([[0.0], [2.0]])),
+            ...     torch.BoolTensor([[False], [True]]),
+            ... )  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: BinaryClassificationLoss expects targets shaped (B,); got (2, 1)
+        """
         flat_logits = _flatten_binary_logits(predictions, owner="BinaryClassificationLoss")
         flat_targets = _flatten_binary_targets(targets, owner="BinaryClassificationLoss")
-        pw = (
-            torch.tensor(self.pos_weight, dtype=flat_logits.dtype, device=flat_logits.device)
-            if self.pos_weight is not None
-            else None
-        )
-        return torch.nn.functional.binary_cross_entropy_with_logits(
-            flat_logits, flat_targets, pos_weight=pw
-        )
+        return torch.nn.functional.binary_cross_entropy_with_logits(flat_logits, flat_targets)

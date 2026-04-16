@@ -21,8 +21,8 @@ from omegaconf import MISSING, OmegaConf
 
 from .datamodule import SyntheticSupervisedDatamodule
 from .encoders import MEDSCodeEncoder, TabularEncoder, TokenEmbeddingEncoder
-from .fusion import ConcatFusion, PatientOnlyFusion, ReplaceFusion
-from .heads import LinearHead, MLPHead
+from .fusion import ConcatFusion, ReplaceFusion
+from .heads import LinearHead
 from .lightning_module import MedRAPSupervisedLightningModule
 from .losses import MarginalizedRetrievalSupervisedLoss
 from .model import RetrievalAugmentedModel
@@ -166,10 +166,6 @@ ReplaceFusionConfig = builds_any(
     ReplaceFusion,
     zen_dataclass={"cls_name": "ReplaceFusionConfig"},
 )
-PatientOnlyFusionConfig = builds_any(
-    PatientOnlyFusion,
-    zen_dataclass={"cls_name": "PatientOnlyFusionConfig"},
-)
 ConcatFusionConfig = builds_any(
     ConcatFusion,
     zen_dataclass={"cls_name": "ConcatFusionConfig"},
@@ -188,21 +184,12 @@ LinearHeadConfig = builds_any(
     out_dim=2,
     zen_dataclass={"cls_name": "LinearHeadConfig"},
 )
-MLPHeadConfig = builds_any(
-    MLPHead,
-    in_dim=128,
-    hidden_dim=256,
-    out_dim=2,
-    dropout=0.0,
-    zen_dataclass={"cls_name": "MLPHeadConfig"},
-)
 BinaryClassificationTaskConfig = builds_any(
     BinaryClassificationTask,
     zen_dataclass={"cls_name": "BinaryClassificationTaskConfig"},
 )
 BinaryClassificationLossConfig = builds_any(
     BinaryClassificationLoss,
-    pos_weight=None,
     zen_dataclass={"cls_name": "BinaryClassificationLossConfig"},
 )
 MarginalizedBinaryClassificationTaskConfig = builds_any(
