@@ -22,6 +22,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install viz extra
+        run: uv sync --locked --group dev --extra viz
+
       - name: Run tests
         run: >
           uv run pytest -v
