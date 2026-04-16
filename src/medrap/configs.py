@@ -589,6 +589,42 @@ def prepare_retrieval_dataset_from_config(config: Any) -> str:
         ...     r = prepare_retrieval_dataset_from_config(cfg)
         >>> r == "/tmp/prepared_out" and captured.get("output_dir") == str(artifact)
         True
+
+    ``num_docs`` applies a deterministic shuffle then takes the first ``num_docs`` rows:
+
+        >>> class _RecordingDataset:
+        ...     def __init__(self) -> None:
+        ...         self.shuffle_seed: int | None = None
+        ...     def shuffle(self, seed: int = 42):
+        ...         self.shuffle_seed = int(seed)
+        ...         return self
+        ...     def select(self, indices):
+        ...         return ("subset", self.shuffle_seed, list(indices))
+        ...
+        >>> captured_subset = {}
+        >>> def _fake_prep_subset(*_a, **kwargs):
+        ...     captured_subset.clear()
+        ...     captured_subset.update(kwargs)
+        ...     return "/tmp/prepared_subset"
+        >>> _stubs_subset = [_RecordingDataset(), object(), object(), object()]
+        >>> def _fake_inst_subset(_cfg):
+        ...     return _stubs_subset.pop(0)
+        >>> with (
+        ...     patch.object(_cfg_mod, "prepare_retrieval_dataset", _fake_prep_subset),
+        ...     patch.object(_cfg_mod, "instantiate_any", _fake_inst_subset),
+        ... ):
+        ...     cfg_subset = PrepareRetrievalDatasetAppConfig(
+        ...         prep=PrepareRetrievalDatasetConfig(
+        ...             output=RetrievalDatasetOutputConfig(output_dir="/tmp/artifact_subset"),
+        ...             num_docs=3,
+        ...             num_docs_seed=9,
+        ...         )
+        ...     )
+        ...     _r_subset = prepare_retrieval_dataset_from_config(cfg_subset)
+        >>> _r_subset == "/tmp/prepared_subset"
+        True
+        >>> captured_subset["dataset"]
+        ('subset', 9, [0, 1, 2])
     """
     prep_cfg = config.prep
     dataset = instantiate_any(prep_cfg.source)
