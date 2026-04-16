@@ -123,6 +123,7 @@ class LinearProjectionRetrievalEncoder(nn.Module):
         out_dim: Output dimension ``D_mem`` passed to fusion and the head.
 
     Examples:
+        >>> import torch
         >>> from medrap.types import RetrieverOutput
         >>> enc = LinearProjectionRetrievalEncoder(in_dim=4, out_dim=2)
         >>> ro = RetrieverOutput(
@@ -153,6 +154,18 @@ class LinearProjectionRetrievalEncoder(nn.Module):
         Returns:
             ``RetrievalEncoderOutput`` where ``retrieval_memory`` has shape
             ``(B, R, K, 1, D_out)``.
+
+        Examples:
+            >>> import torch
+            >>> from medrap.types import RetrieverOutput
+            >>> enc = LinearProjectionRetrievalEncoder(in_dim=4, out_dim=2)
+            >>> enc(RetrieverOutput(
+            ...     doc_tokens=torch.zeros(1, 1, 1, 1, dtype=torch.long),
+            ...     doc_attention_mask=torch.ones(1, 1, 1, 1, dtype=torch.bool),
+            ... ))  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+            ...
+            ValueError: ...doc_key_embeddings...
         """
         keys = retrieval.doc_key_embeddings
         if keys is None:
@@ -283,6 +296,35 @@ class PerDocMeanPooledRetrievalEncoder(nn.Module):
         Returns:
             ``RetrievalEncoderOutput`` where ``retrieval_memory`` has shape
             ``(B, R, K, 1, D_mem)``.
+
+        Examples:
+            >>> import torch
+            >>> from medrap.types import RetrieverOutput
+            >>> enc = PerDocMeanPooledRetrievalEncoder(vocab_size=8, embedding_dim=4)
+
+            Masked tokens do not contribute — a doc with one valid token plus a
+            masked token yields the same vector as a doc with only that token:
+
+            >>> ro_one = RetrieverOutput(
+            ...     doc_tokens=torch.LongTensor([[[[1, 0]]]]),
+            ...     doc_attention_mask=torch.BoolTensor([[[[True, False]]]]),
+            ... )
+            >>> ro_two = RetrieverOutput(
+            ...     doc_tokens=torch.LongTensor([[[[1, 7]]]]),
+            ...     doc_attention_mask=torch.BoolTensor([[[[True, False]]]]),
+            ... )
+            >>> (enc(ro_one).retrieval_memory == enc(ro_two).retrieval_memory).all().item()
+            True
+
+            A fully-masked document produces a zero vector (clamp_min(1) keeps
+            the denominator safe; the masked sum is zero):
+
+            >>> ro_all_masked = RetrieverOutput(
+            ...     doc_tokens=torch.LongTensor([[[[1, 2]]]]),
+            ...     doc_attention_mask=torch.BoolTensor([[[[False, False]]]]),
+            ... )
+            >>> enc(ro_all_masked).retrieval_memory.sum().item()
+            0.0
         """
         token_features = self.embedding(retrieval.doc_tokens.long())   # (B, R, K, S_doc, D_mem)
         mask = retrieval.doc_attention_mask.bool().unsqueeze(-1)        # (B, R, K, S_doc, 1)
