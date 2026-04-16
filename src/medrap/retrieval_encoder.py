@@ -4,7 +4,8 @@ These components consume ``RetrieverOutput`` objects and produce
 ``RetrievalEncoderOutput`` tensors for fusion.
 """
 
-from torch import nn            
+import torch
+from torch import nn
 from transformers import AutoModel
 
 from .types import RetrievalEncoderOutput, RetrieverOutput
@@ -159,18 +160,22 @@ class LinearProjectionRetrievalEncoder(nn.Module):
             >>> import torch
             >>> from medrap.types import RetrieverOutput
             >>> enc = LinearProjectionRetrievalEncoder(in_dim=4, out_dim=2)
-            >>> enc(RetrieverOutput(
-            ...     doc_tokens=torch.zeros(1, 1, 1, 1, dtype=torch.long),
-            ...     doc_attention_mask=torch.ones(1, 1, 1, 1, dtype=torch.bool),
-            ... ))  # doctest: +ELLIPSIS
+            >>> enc(
+            ...     RetrieverOutput(
+            ...         doc_tokens=torch.zeros(1, 1, 1, 1, dtype=torch.long),
+            ...         doc_attention_mask=torch.ones(1, 1, 1, 1, dtype=torch.bool),
+            ...     )
+            ... )  # doctest: +ELLIPSIS
             Traceback (most recent call last):
             ...
             ValueError: ...doc_key_embeddings...
         """
         keys = retrieval.doc_key_embeddings
         if keys is None:
-            raise ValueError("LinearProjectionRetrievalEncoder requires doc_key_embeddings on RetrieverOutput")
-        projected = self.linear(keys.float())   # (B, R, K, D_out)
+            raise ValueError(
+                "LinearProjectionRetrievalEncoder requires doc_key_embeddings on RetrieverOutput"
+            )
+        projected = self.linear(keys.float())  # (B, R, K, D_out)
         return RetrievalEncoderOutput(retrieval_memory=projected.unsqueeze(3))  # (B, R, K, 1, D_out)
 
     def forward(self, retrieval: RetrieverOutput) -> RetrievalEncoderOutput:
@@ -272,7 +277,7 @@ class PerDocMeanPooledRetrievalEncoder(nn.Module):
                 pretrained_model_name_or_path,
                 trust_remote_code=True,
             )
-            embed_tokens = getattr(pretrained, "embed_tokens", None) or getattr(pretrained.model, "embed_tokens")
+            embed_tokens = getattr(pretrained, "embed_tokens", None) or pretrained.model.embed_tokens
             pretrained_weight = embed_tokens.weight.detach().float()
             pre_v, pre_d = pretrained_weight.shape
             if pre_v != self.vocab_size or pre_d != self.embedding_dim:
@@ -326,12 +331,12 @@ class PerDocMeanPooledRetrievalEncoder(nn.Module):
             >>> enc(ro_all_masked).retrieval_memory.sum().item()
             0.0
         """
-        token_features = self.embedding(retrieval.doc_tokens.long())   # (B, R, K, S_doc, D_mem)
-        mask = retrieval.doc_attention_mask.bool().unsqueeze(-1)        # (B, R, K, S_doc, 1)
+        token_features = self.embedding(retrieval.doc_tokens.long())  # (B, R, K, S_doc, D_mem)
+        mask = retrieval.doc_attention_mask.bool().unsqueeze(-1)  # (B, R, K, S_doc, 1)
         masked = token_features * mask
         counts = mask.sum(dim=3).clamp_min(1).to(dtype=token_features.dtype)  # (B, R, K, 1)
-        pooled = masked.sum(dim=3) / counts                             # (B, R, K, D_mem)
-        return RetrievalEncoderOutput(retrieval_memory=pooled.unsqueeze(3))    # (B, R, K, 1, D_mem)
+        pooled = masked.sum(dim=3) / counts  # (B, R, K, D_mem)
+        return RetrievalEncoderOutput(retrieval_memory=pooled.unsqueeze(3))  # (B, R, K, 1, D_mem)
 
     def forward(self, retrieval: RetrieverOutput) -> RetrievalEncoderOutput:
         """Call ``encode``."""
