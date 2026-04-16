@@ -4,7 +4,8 @@ These components consume ``RetrieverOutput`` objects and produce
 ``RetrievalEncoderOutput`` tensors for fusion.
 """
 
-from torch import nn
+from torch import nn            
+from transformers import AutoModel
 
 from .types import RetrievalEncoderOutput, RetrieverOutput
 
@@ -122,7 +123,6 @@ class LinearProjectionRetrievalEncoder(nn.Module):
         out_dim: Output dimension ``D_mem`` passed to fusion and the head.
 
     Examples:
-        >>> import torch
         >>> from medrap.types import RetrieverOutput
         >>> enc = LinearProjectionRetrievalEncoder(in_dim=4, out_dim=2)
         >>> ro = RetrieverOutput(
@@ -255,9 +255,6 @@ class PerDocMeanPooledRetrievalEncoder(nn.Module):
         self.embedding = nn.Embedding(self.vocab_size, self.embedding_dim)
 
         if pretrained_model_name_or_path is not None:
-            import torch
-            from transformers import AutoModel
-
             pretrained = AutoModel.from_pretrained(
                 pretrained_model_name_or_path,
                 trust_remote_code=True,
