@@ -97,6 +97,59 @@ Use `prep.embedder.device=cpu` when no GPU is available. For a dataset already o
 entrypoints (`@hydra.main`) internally, and `prepare-retrieval-dataset` is the
 offline artifact-preparation entrypoint.
 
+## Docker
+
+Build a local image with BuildKit enabled so `uv` downloads are cached across rebuilds:
+
+```bash
+DOCKER_BUILDKIT=1 docker build -t medrap:local .
+```
+
+GPU training requires Docker with NVIDIA Container Toolkit / NVIDIA container runtime configured on the host.
+Verify GPU access from the container with:
+
+```bash
+docker run --rm --gpus all medrap:local python -c "import torch; print(torch.cuda.is_available())"
+```
+
+The image is intended to consume prebuilt artifacts. For training, mount:
+
+- a tensorized MEDS cohort directory
+- a split task-label directory containing `train.parquet`, `tuning.parquet`, and `held_out.parquet`
+- a prepared retrieval dataset directory with `retrieval.faiss`
+- an output directory for logs and checkpoints
+
+Quick smoke check:
+
+```bash
+docker run --rm medrap:local medrap --help
+```
+
+Example training invocation:
+
+```bash
+docker run --rm --gpus all \
+	-v /host/tensorized:/data/tensorized:ro \
+	-v /host/task_labels:/data/task_labels:ro \
+	-v /host/retrieval_db:/data/retrieval_db:ro \
+	-v /host/outputs:/outputs \
+	medrap:local \
+	medrap train \
+	retriever=hf_dataset \
+	retriever.dataset_path=/data/retrieval_db \
+	training/datamodule=meds \
+	training.datamodule.config.tensorized_cohort_dir=/data/tensorized \
+	training.datamodule.config.task_labels_dir=/data/task_labels \
+	output_dir=/outputs/run_001
+```
+
+The image runs as a non-root user by default. If you need bind-mounted output files to match your current
+host user, override the runtime user:
+
+```bash
+docker run --rm --user "$(id -u):$(id -g)" ...
+```
+
 Hydra component groups live in:
 
 - `encoder/`
