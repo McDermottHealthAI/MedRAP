@@ -7,6 +7,10 @@ defaults:
   - prep/output: default
   - _self_
 
+prep:
+  num_docs: null
+  num_docs_seed: 42
+
 hydra:
   run:
     dir: .
