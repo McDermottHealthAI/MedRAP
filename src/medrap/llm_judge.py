@@ -308,21 +308,143 @@ class FakeJudge:
 # ---------------------------------------------------------------------------
 
 
-class PatientTimelineRenderer:
-    """Render a patient's MEDS code sequence as human-readable text.
+_TYPE_LABELS: dict[str, str] = {
+    "LAB": "Lab",
+    "PROCEDURE": "Procedure",
+    "MEDICATION": "Medication",
+    "DIAGNOSIS": "Diagnosis",
+    "SUBJECT_FLUID_OUTPUT": "Fluid output",
+    "HOSPITAL_ADMISSION": "Hospital admission",
+    "ICU_ADMISSION": "ICU admission",
+    "MEDS_BIRTH": "Birth",
+    "GENDER": "Gender",
+    "RACE": "Race",
+}
 
-    Loads ``codes.parquet`` once into a ``code → description`` dict and
-    uses it to annotate each event. The codes file must be a
-    **1-to-1 dictionary** (unique ``code`` values) — this is enforced at
-    construction time because an event-level file would silently leak
-    label-dependent information into the judge prompt.
+
+def _type_label(code: str) -> str:
+    """Map a MEDS code to a human-readable event-type prefix."""
+    head = code.split("//", 1)[0]
+    return _TYPE_LABELS.get(head, head.replace("_", " ").capitalize())
+
+
+def _procedure_action(code: str) -> str | None:
+    """Return 'start'/'end' for PROCEDURE//START/END codes, else None."""
+    parts = code.split("//")
+    if len(parts) >= 2 and parts[0] == "PROCEDURE" and parts[1] in ("START", "END"):
+        return parts[1].lower()
+    return None
+
+
+_NULL_UNIT_VALUES = frozenset({"UNK", "N/A", "NA", "NONE", "NULL", "-"})
+
+
+def _unit_from_code(code: str) -> str | None:
+    """Extract the unit slot (third ``//`` segment), or ``None`` when it is
+    missing / a sentinel for "unknown" / a bare numeric ID.
+
+    The third slot is a true unit only for LAB-style codes (``LAB//item//mg/dL``).
+    For codes like ``PROCEDURE//END//225459`` the third slot is an item ID,
+    not a unit — we reject purely-numeric slots to avoid treating them as units.
+    """
+    parts = code.split("//")
+    if len(parts) < 3:
+        return None
+    unit = parts[2].strip()
+    if not unit or unit.upper() in _NULL_UNIT_VALUES:
+        return None
+    # Reject purely-numeric slots (item IDs leaking through as units).
+    stripped = unit.replace(".", "").replace("-", "").replace("+", "").replace("/", "")
+    if stripped.isdigit():
+        return None
+    return unit
+
+
+def _format_numeric(value: float) -> str:
+    """Format a numeric lab value concisely (strip trailing zeros)."""
+    if value != value:  # NaN
+        return ""
+    if abs(value) >= 100 or float(value).is_integer():
+        return f"{value:.0f}"
+    if abs(value) >= 10:
+        return f"{value:.1f}"
+    return f"{value:.2f}"
+
+
+def _render_demographic_block(
+    demographics: dict[str, Any] | None,
+    prediction_time: datetime | None,
+) -> str | None:
+    """Render the leading 'PATIENT: ...' line, or None if nothing to show."""
+    if not demographics:
+        return None
+    parts: list[str] = []
+
+    birth = demographics.get("birth_time")
+    age_str: str | None = None
+    if birth is not None and prediction_time is not None:
+        try:
+            age_years = (prediction_time - birth).days // 365
+            if age_years >= 0:
+                age_str = f"{age_years}-year-old"
+        except (TypeError, ValueError):
+            age_str = None
+
+    gender_raw = demographics.get("gender")
+    gender_str: str | None = None
+    if gender_raw:
+        g = str(gender_raw).strip().upper()
+        gender_str = {"M": "male", "F": "female"}.get(g, str(gender_raw).lower())
+
+    if age_str and gender_str:
+        parts.append(f"{age_str} {gender_str}")
+    elif age_str:
+        parts.append(age_str)
+    elif gender_str:
+        parts.append(gender_str)
+
+    race = demographics.get("race")
+    if race:
+        parts.append(f"race {race}")
+
+    if prediction_time is not None:
+        parts.append(f"prediction time {prediction_time}")
+
+    if not parts:
+        return None
+    return "PATIENT: " + ", ".join(parts) + "."
+
+
+class PatientTimelineRenderer:
+    """Render a patient's MEDS event sequence as human-readable clinical text.
+
+    The rendered text is built in two parts:
+
+    1. A one-line **demographic header** (age, gender, race, prediction
+       time) when a ``demographics`` record is passed to :meth:`render`.
+       Always shown even when the static demographic MEDS codes have
+       fallen outside the last-N event window.
+
+    2. A **timeline** of the last N *described* events before the
+       prediction time. Events whose MEDS ``code`` has no entry in
+       ``codes.parquet``'s ``description`` column are **dropped** — they
+       are pure noise to the judge (bare MIMIC itemids like
+       ``LAB//227944//UNK``). Consecutive duplicates on
+       ``(event_type, description)`` are collapsed to a single line (the
+       last measurement's numeric value is kept so the LLM sees the most
+       recent reading).
+
+    ``codes.parquet`` must be a **1-to-1 dictionary** (unique ``code``
+    values) — this is enforced at construction time because an
+    event-level metadata file would silently leak label-dependent
+    information into the judge prompt.
     """
 
     def __init__(
         self,
         *,
         codes_parquet: Path,
-        max_events: int = 150,
+        max_events: int = 20,
         include_description: bool = True,
     ) -> None:
         self.codes_parquet = Path(codes_parquet)
@@ -349,28 +471,114 @@ class PatientTimelineRenderer:
         subject_id: int,
         prediction_time: datetime,
         meds_cohort_dir: Path,
+        *,
+        demographics: dict[str, Any] | None = None,
     ) -> str:
         parquet_glob = str(Path(meds_cohort_dir) / "data" / "*" / "*.parquet")
-        events = (
-            pl.scan_parquet(parquet_glob)
-            .filter((pl.col("subject_id") == int(subject_id)) & (pl.col("time") <= prediction_time))
-            .select(["time", "code"])
-            .sort("time")
-            .collect()
+        lf = pl.scan_parquet(parquet_glob).filter(
+            (pl.col("subject_id") == int(subject_id)) & (pl.col("time") <= prediction_time)
         )
-        events = events.tail(self.max_events)
-        lines: list[str] = []
+        available = set(lf.collect_schema().names())
+        select_cols = ["time", "code"]
+        if "numeric_value" in available:
+            select_cols.append("numeric_value")
+        events = lf.select(select_cols).sort("time").collect()
+
+        # Step 1: transform raw events into rendered rows, dropping those
+        # without a description (pure noise to the LLM judge).
+        rendered: list[tuple[str, str, str]] = []  # (type_key, description, formatted_line)
         for row in events.iter_rows(named=True):
             code = row["code"]
-            if self.include_description:
-                desc = self._code_to_description.get(code)
-                if desc:
-                    lines.append(f"{code} — {desc}")
-                else:
-                    lines.append(code)
+            desc = self._code_to_description.get(code) if self.include_description else None
+            if not desc:
+                continue
+            # Some MIMIC codes have multi-line descriptions (e.g. a single
+            # MEDS itemid maps to several drug preparations, joined by '\n').
+            # Collapse to a single line so later lines don't orphan without a
+            # type prefix.
+            desc = " / ".join(p.strip() for p in str(desc).splitlines() if p.strip())
+
+            type_key = code.split("//", 1)[0]
+            label = _type_label(code)
+            action = _procedure_action(code)
+            if action is not None:
+                label = f"{label} ({action})"
+            unit = _unit_from_code(code)
+
+            value_part = ""
+            value = row.get("numeric_value") if "numeric_value" in row else None
+            if value is not None and isinstance(value, (int, float)) and not (
+                isinstance(value, float) and value != value  # NaN
+            ):
+                formatted = _format_numeric(float(value))
+                if formatted:
+                    value_part = f" = {formatted}"
+
+            unit_part = f" ({unit})" if unit else ""
+            line = f"{label}: {desc}{value_part}{unit_part}"
+            rendered.append((type_key, desc, line))
+
+        # Step 2: collapse consecutive duplicates on (type, description),
+        # keeping the *latest* rendered line (so the most recent numeric
+        # value wins).
+        collapsed: list[str] = []
+        prev_key: tuple[str, str] | None = None
+        for type_key, desc, line in rendered:
+            key = (type_key, desc)
+            if key == prev_key:
+                collapsed[-1] = line
             else:
-                lines.append(code)
-        return "\n".join(lines)
+                collapsed.append(line)
+                prev_key = key
+
+        # Step 3: keep the last N rows after filter + dedupe.
+        tail = collapsed[-self.max_events :] if self.max_events > 0 else collapsed
+
+        # Step 4: assemble demographic header + timeline.
+        blocks: list[str] = []
+        header = _render_demographic_block(demographics, prediction_time)
+        if header is not None:
+            blocks.append(header)
+        if tail:
+            blocks.append(
+                f"TIMELINE (most recent {len(tail)} described events before prediction):"
+            )
+            blocks.extend(tail)
+        return "\n".join(blocks)
+
+
+def _resolve_doc_row(
+    doc_id: Any,
+    *,
+    doc_id_to_row: dict[Any, int] | None,
+    n_rows: int,
+) -> int | None:
+    """Resolve a doc_id to a retrieval_ds row index, or ``None`` if unresolvable.
+
+    Accepts both the case where the retriever emits real doc-id values that
+    key into ``doc_id_to_row``, and the case where the retriever emits raw
+    row indices (the retrieval_ds's own ``doc_ids`` column may be strings or
+    absent entirely). Mirrors the fallback pattern in
+    :func:`medrap.demographic_analysis._resolve_doc_row_index`.
+    """
+    if doc_id is None:
+        return None
+    if doc_id_to_row:
+        if doc_id in doc_id_to_row:
+            return int(doc_id_to_row[doc_id])
+        try:
+            key_int = int(doc_id)
+        except (TypeError, ValueError):
+            key_int = None
+        if key_int is not None and key_int in doc_id_to_row:
+            return int(doc_id_to_row[key_int])
+    try:
+        as_row = int(doc_id)
+    except (TypeError, ValueError):
+        return None
+    if 0 <= as_row < n_rows:
+        return as_row
+    return None
 
 
 class JudgePromptBuilder:
@@ -392,9 +600,15 @@ class JudgePromptBuilder:
         self.doc_text_column = doc_text_column
         self.doc_id_to_row = dict(doc_id_to_row) if doc_id_to_row is not None else {}
         self.max_doc_chars = max_doc_chars
+        try:
+            self._n_rows = len(retrieval_ds)
+        except TypeError:
+            self._n_rows = 0
 
     def _doc_text(self, doc_id: int) -> str:
-        row = self.doc_id_to_row.get(int(doc_id))
+        row = _resolve_doc_row(
+            doc_id, doc_id_to_row=self.doc_id_to_row, n_rows=self._n_rows
+        )
         if row is None:
             return f"[document id={doc_id} not available]"
         text = self.retrieval_ds[int(row)][self.doc_text_column]
@@ -411,7 +625,7 @@ class JudgePromptBuilder:
             doc_a, doc_b = other_text, target_text
         user_prompt = (
             f"TASK: {self.task_description}\n\n"
-            f"PATIENT (sequence of MEDS codes up to prediction time):\n{patient_timeline}\n\n"
+            f"{patient_timeline}\n\n"
             f"DOCUMENT A:\n{doc_a}\n\n"
             f"DOCUMENT B:\n{doc_b}\n\n"
             "Which document (A or B) is more relevant? Respond with "
@@ -776,12 +990,14 @@ def build_per_patient_rollup(
 
     ds_columns: set[str] = set(getattr(retrieval_ds, "column_names", []) or [])
     available_meta = [c for c in doc_metadata_columns if c in ds_columns]
+    try:
+        n_rows = len(retrieval_ds)
+    except TypeError:
+        n_rows = 0
 
     def _doc_fields(doc_id: int | None) -> dict[str, Any]:
         out: dict[str, Any] = {"text_preview": None, "meta": dict.fromkeys(available_meta)}
-        if doc_id is None:
-            return out
-        row = doc_id_to_row.get(int(doc_id))
+        row = _resolve_doc_row(doc_id, doc_id_to_row=doc_id_to_row, n_rows=n_rows)
         if row is None:
             return out
         try:
@@ -956,12 +1172,14 @@ def build_human_validation_subset(
     # Re-materialize docs into slot A / slot B according to target_position.
     ds_columns: set[str] = set(getattr(retrieval_ds, "column_names", []) or [])
     available_meta = [c for c in doc_metadata_columns if c in ds_columns]
+    try:
+        n_rows = len(retrieval_ds)
+    except TypeError:
+        n_rows = 0
 
     def _doc_fields(doc_id: int | None) -> dict[str, Any]:
         out: dict[str, Any] = {"text": "", "meta": {c: None for c in available_meta}}
-        if doc_id is None:
-            return out
-        row = doc_id_to_row.get(int(doc_id))
+        row = _resolve_doc_row(doc_id, doc_id_to_row=doc_id_to_row, n_rows=n_rows)
         if row is None:
             return out
         try:
@@ -1069,6 +1287,6 @@ def write_results_workbook(
         ("human_validation", human_validation),
     ]
 
-    with xlsxwriter.Workbook(str(path)) as wb:
+    with xlsxwriter.Workbook(str(path), {"nan_inf_to_errors": True}) as wb:
         for sheet_name, frame in sheets:
             frame.write_excel(workbook=wb, worksheet=sheet_name)

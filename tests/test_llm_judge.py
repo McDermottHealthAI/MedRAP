@@ -94,16 +94,38 @@ def _save_codes_parquet(tmp_path: Path, codes: list[str], descriptions: list[str
     return path
 
 
-def _make_meds_cohort(tmp_path: Path, subject_events: dict[int, list[tuple[datetime, str]]]) -> Path:
-    """Write a one-shard cohort with the given (time, code) per subject."""
+def _make_meds_cohort(
+    tmp_path: Path,
+    subject_events: dict[int, list[tuple]],
+) -> Path:
+    """Write a one-shard cohort with the given events per subject.
+
+    Each tuple may be ``(time, code)`` or ``(time, code, numeric_value)``;
+    a null ``numeric_value`` is written when omitted.
+    """
     cohort = tmp_path / "meds_cohort"
     data_dir = cohort / "data" / "train"
     data_dir.mkdir(parents=True)
     rows = []
     for sid, events in subject_events.items():
-        for t, code in events:
-            rows.append({"subject_id": sid, "time": t, "code": code})
-    pl.DataFrame(rows).write_parquet(data_dir / "shard_0.parquet")
+        for ev in events:
+            if len(ev) == 2:
+                t, code = ev
+                val = None
+            else:
+                t, code, val = ev
+            rows.append(
+                {"subject_id": sid, "time": t, "code": code, "numeric_value": val}
+            )
+    pl.DataFrame(
+        rows,
+        schema={
+            "subject_id": pl.Int64,
+            "time": pl.Datetime,
+            "code": pl.Utf8,
+            "numeric_value": pl.Float64,
+        },
+    ).write_parquet(data_dir / "shard_0.parquet")
     return cohort
 
 
@@ -450,48 +472,173 @@ def test_prompt_builder_truncates_doc_texts_to_max_chars(tmp_path: Path) -> None
 
 
 def test_timeline_renderer_returns_last_n_events_before_prediction_time(tmp_path: Path) -> None:
-    codes_fp = _save_codes_parquet(tmp_path, ["E1", "E2", "E3", "E4", "E5"], [None] * 5)
+    codes_fp = _save_codes_parquet(
+        tmp_path,
+        ["LAB//E1", "LAB//E2", "LAB//E3", "LAB//E4", "LAB//E5"],
+        ["d1", "d2", "d3", "d4", "d5"],
+    )
     cohort = _make_meds_cohort(
         tmp_path,
         {
             42: [
-                (datetime(2024, 1, 1), "E1"),
-                (datetime(2024, 1, 2), "E2"),
-                (datetime(2024, 1, 3), "E3"),
-                (datetime(2024, 1, 4), "E4"),
-                (datetime(2024, 1, 5), "E5"),
+                (datetime(2024, 1, 1), "LAB//E1"),
+                (datetime(2024, 1, 2), "LAB//E2"),
+                (datetime(2024, 1, 3), "LAB//E3"),
+                (datetime(2024, 1, 4), "LAB//E4"),
+                (datetime(2024, 1, 5), "LAB//E5"),
             ]
         },
     )
     renderer = PatientTimelineRenderer(codes_parquet=codes_fp, max_events=3)
     text = renderer.render(42, datetime(2024, 1, 4), cohort)
-    lines = [line for line in text.splitlines() if line.strip()]
-    assert lines == ["E2", "E3", "E4"]
+    # Header + timeline header + 3 tail events (d2, d3, d4).
+    rendered_lines = [line for line in text.splitlines() if line.startswith("Lab:")]
+    assert rendered_lines == ["Lab: d2", "Lab: d3", "Lab: d4"]
 
 
-def test_timeline_renderer_annotates_codes_with_descriptions_from_parquet(tmp_path: Path) -> None:
+def test_timeline_drops_null_description_events(tmp_path: Path) -> None:
+    """Events whose code has a null description in codes.parquet are noise
+    (raw MIMIC itemids like ``LAB//227944//UNK``) and must be dropped."""
     codes_fp = _save_codes_parquet(
         tmp_path,
-        ["DIAG//I509", "LAB//50811", "MEDS_BIRTH"],
-        ["Heart failure, unspecified", "Hemoglobin", None],
+        ["LAB//GOOD", "LAB//BAD//UNK", "DIAGNOSIS//ICD10//I509"],
+        ["Hemoglobin", None, "Heart failure, unspecified"],
     )
     cohort = _make_meds_cohort(
         tmp_path,
         {
             7: [
-                (datetime(2023, 1, 1), "MEDS_BIRTH"),
-                (datetime(2024, 1, 1), "DIAG//I509"),
-                (datetime(2024, 1, 2), "LAB//50811"),
+                (datetime(2024, 1, 1), "LAB//BAD//UNK"),
+                (datetime(2024, 1, 2), "LAB//GOOD"),
+                (datetime(2024, 1, 3), "LAB//BAD//UNK"),
+                (datetime(2024, 1, 4), "DIAGNOSIS//ICD10//I509"),
+                (datetime(2024, 1, 5), "LAB//BAD//UNK"),
             ]
         },
     )
-    renderer = PatientTimelineRenderer(codes_parquet=codes_fp, max_events=50)
+    renderer = PatientTimelineRenderer(codes_parquet=codes_fp, max_events=20)
     text = renderer.render(7, datetime(2025, 1, 1), cohort)
-    assert "DIAG//I509 — Heart failure, unspecified" in text
-    assert "LAB//50811 — Hemoglobin" in text
-    # Null description → bare code, no em-dash.
-    assert "MEDS_BIRTH\n" in text or text.endswith("MEDS_BIRTH")
-    assert "MEDS_BIRTH —" not in text
+    assert "LAB//BAD" not in text
+    assert "Hemoglobin" in text
+    assert "Heart failure, unspecified" in text
+
+
+def test_timeline_collapses_consecutive_duplicates(tmp_path: Path) -> None:
+    """Six back-to-back lactate draws should collapse to one line."""
+    codes_fp = _save_codes_parquet(
+        tmp_path,
+        ["LAB//LACTATE//mmol/L"],
+        ["Lactate in Blood"],
+    )
+    events = [
+        (datetime(2024, 1, 1, h, 0), "LAB//LACTATE//mmol/L", 2.0 + 0.1 * h)
+        for h in range(6)
+    ]
+    cohort = _make_meds_cohort(tmp_path, {7: events})
+    renderer = PatientTimelineRenderer(codes_parquet=codes_fp, max_events=20)
+    text = renderer.render(7, datetime(2025, 1, 1), cohort)
+    lactate_lines = [line for line in text.splitlines() if "Lactate" in line]
+    assert len(lactate_lines) == 1
+    # Dedup keeps the *latest* measurement (2.5).
+    assert "2.50" in lactate_lines[0] or "2.5" in lactate_lines[0]
+    assert "(mmol/L)" in lactate_lines[0]
+
+
+def test_timeline_prepends_demographic_block(tmp_path: Path) -> None:
+    """A demographic header should be rendered even when the static
+    demographic codes themselves fell outside the last-N event window."""
+    codes_fp = _save_codes_parquet(tmp_path, ["LAB//X"], ["Glucose"])
+    cohort = _make_meds_cohort(
+        tmp_path,
+        {9: [(datetime(2024, 6, 1), "LAB//X", 105.0)]},
+    )
+    renderer = PatientTimelineRenderer(codes_parquet=codes_fp, max_events=20)
+    demographics = {
+        "subject_id": 9,
+        "gender": "F",
+        "race": "WHITE",
+        "birth_time": datetime(1957, 6, 1),
+    }
+    text = renderer.render(9, datetime(2024, 6, 1), cohort, demographics=demographics)
+    first_line = text.splitlines()[0]
+    assert first_line.startswith("PATIENT: ")
+    assert "67-year-old" in first_line
+    assert "female" in first_line
+    assert "WHITE" in first_line
+
+
+def test_timeline_includes_numeric_values_with_units(tmp_path: Path) -> None:
+    codes_fp = _save_codes_parquet(
+        tmp_path,
+        ["LAB//LACTATE//mmol/L", "LAB//PH//units", "PROCEDURE//START//CXR"],
+        ["Lactate in Blood", "pH of Blood", "Plain chest X-ray"],
+    )
+    cohort = _make_meds_cohort(
+        tmp_path,
+        {
+            1: [
+                (datetime(2024, 1, 1, 8, 0), "PROCEDURE//START//CXR", None),
+                (datetime(2024, 1, 1, 8, 30), "LAB//LACTATE//mmol/L", 5.4),
+                (datetime(2024, 1, 1, 8, 31), "LAB//PH//units", 7.21),
+            ]
+        },
+    )
+    renderer = PatientTimelineRenderer(codes_parquet=codes_fp, max_events=20)
+    text = renderer.render(1, datetime(2024, 1, 1, 12, 0), cohort)
+    assert "Lab: Lactate in Blood = 5.40 (mmol/L)" in text
+    assert "Lab: pH of Blood = 7.21" in text
+    # PROCEDURE//START carries no numeric_value: no '=' suffix.
+    assert "Procedure (start): Plain chest X-ray" in text
+    assert "Procedure (start): Plain chest X-ray = " not in text
+
+
+def test_timeline_collapses_multiline_descriptions(tmp_path: Path) -> None:
+    """Some MIMIC codes (e.g. INFUSION_START itemids) have descriptions that
+    span multiple preparations joined by '\\n'. The renderer must collapse
+    them so later lines don't orphan without a type prefix."""
+    codes_fp = _save_codes_parquet(
+        tmp_path,
+        ["INFUSION_START//225798"],
+        ["vancomycin Injection\nvancomycin Oral Solution"],
+    )
+    cohort = _make_meds_cohort(
+        tmp_path,
+        {3: [(datetime(2024, 6, 1), "INFUSION_START//225798", None)]},
+    )
+    renderer = PatientTimelineRenderer(codes_parquet=codes_fp, max_events=20)
+    text = renderer.render(3, datetime(2024, 6, 2), cohort)
+    # The entire description belongs on a single labelled line.
+    assert "Infusion start: vancomycin Injection / vancomycin Oral Solution" in text
+    # No orphan continuation line without a type prefix.
+    lines = [line for line in text.splitlines() if line.strip()]
+    orphans = [line for line in lines if line.startswith("vancomycin")]
+    assert orphans == []
+
+
+def test_timeline_respects_max_events_after_filtering(tmp_path: Path) -> None:
+    """``max_events`` caps the number of rendered events *after* filtering
+    null-description events and deduplicating consecutive duplicates."""
+    codes_fp = _save_codes_parquet(
+        tmp_path,
+        ["LAB//NOISE//UNK", "LAB//KEEP"] + [f"LAB//E{i}" for i in range(5)],
+        [None, "kept"] + [f"d{i}" for i in range(5)],
+    )
+    events = [
+        (datetime(2024, 1, 1, 0, 0), "LAB//NOISE//UNK"),
+        (datetime(2024, 1, 2), "LAB//KEEP"),
+        (datetime(2024, 1, 2, 0, 1), "LAB//KEEP"),  # consecutive dup → collapses
+        (datetime(2024, 1, 3), "LAB//E0"),
+        (datetime(2024, 1, 4), "LAB//E1"),
+        (datetime(2024, 1, 5), "LAB//E2"),
+        (datetime(2024, 1, 6), "LAB//E3"),
+        (datetime(2024, 1, 7), "LAB//NOISE//UNK"),
+    ]
+    cohort = _make_meds_cohort(tmp_path, {5: events})
+    renderer = PatientTimelineRenderer(codes_parquet=codes_fp, max_events=3)
+    text = renderer.render(5, datetime(2025, 1, 1), cohort)
+    rendered = [line for line in text.splitlines() if line.startswith("Lab:")]
+    # After noise-drop + dedup we have [kept, d0, d1, d2, d3]; last 3 = [d1, d2, d3].
+    assert rendered == ["Lab: d1", "Lab: d2", "Lab: d3"]
 
 
 def test_codes_parquet_must_be_one_to_one(tmp_path: Path) -> None:

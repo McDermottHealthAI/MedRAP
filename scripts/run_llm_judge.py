@@ -95,7 +95,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--out_dir", type=Path, default=None)
     parser.add_argument("--human_validation_n", type=int, default=50)
     parser.add_argument("--max_total_calls_cap", type=int, default=1000)
-    parser.add_argument("--timeline_max_events", type=int, default=150)
+    parser.add_argument("--timeline_max_events", type=int, default=20)
     parser.add_argument("--doc_max_chars", type=int, default=4000)
     parser.add_argument("--dry_run", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
@@ -245,6 +245,12 @@ def main() -> None:  # noqa: C901 - CLI pipeline, branches are linear
         max_events=args.timeline_max_events,
     )
 
+    # Lookup table: subject_id → demographics record (gender/race/birth_time).
+    demo_by_sid: dict[int, dict] = {}
+    if demographics is not None and demographics.height > 0:
+        for rec in demographics.iter_rows(named=True):
+            demo_by_sid[int(rec["subject_id"])] = rec
+
     # Pre-render a representative timeline for cost estimation.
     anchor_sid_sample = pairs[0].anchor_subject_id if pairs else None
     if anchor_sid_sample is not None:
@@ -252,7 +258,10 @@ def main() -> None:  # noqa: C901 - CLI pipeline, branches are linear
             val_schema.filter(pl.col("subject_id") == anchor_sid_sample)["prediction_time"].to_list()[0]
         )
         sample_timeline = timeline_renderer.render(
-            anchor_sid_sample, pred_t, args.meds_cohort
+            anchor_sid_sample,
+            pred_t,
+            args.meds_cohort,
+            demographics=demo_by_sid.get(int(anchor_sid_sample)),
         )
     else:
         sample_timeline = ""
@@ -298,7 +307,12 @@ def main() -> None:  # noqa: C901 - CLI pipeline, branches are linear
         if pred_t is None:
             timelines[int(sid)] = ""
             continue
-        timelines[int(sid)] = timeline_renderer.render(int(sid), pred_t, args.meds_cohort)
+        timelines[int(sid)] = timeline_renderer.render(
+            int(sid),
+            pred_t,
+            args.meds_cohort,
+            demographics=demo_by_sid.get(int(sid)),
+        )
 
     judge = OpenAIJudge(model=args.model)
     verdicts_df = run_judge(
