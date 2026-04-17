@@ -42,6 +42,12 @@ wandb = [
 viz = [
   "matplotlib>=3.8",
 ]
+llm_judge = [
+  "openai>=1.0.0",
+  "tiktoken>=0.7.0",
+  "xlsxwriter>=3.2",
+  "openpyxl>=3.1",
+]
 
 [dependency-groups]
 dev = [
