@@ -179,7 +179,7 @@ class _CrossAttentionLayer(nn.Module):
         self.norm1 = nn.LayerNorm(d_model)
         self.ff = nn.Sequential(
             nn.Linear(d_model, ff_dim),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Linear(ff_dim, d_model),
         )
         self.norm2 = nn.LayerNorm(d_model)

@@ -62,7 +62,7 @@ medrap train \
     retriever=hf_dataset \
     "retriever.dataset_path=${RETRIEVAL_DB}" \
     retriever.doc_ids_column=null \
-    retriever.k=4 \
+    retriever.k=8 \
     retrieval_encoder=token_feature \
     retrieval_encoder.vocab_size=151936 \
     retrieval_encoder.embedding_dim=64 \
@@ -77,7 +77,7 @@ medrap train \
     training/loss=binary_bce \
     training/datamodule=meds \
     "training.datamodule.config.tensorized_cohort_dir=${TENSORIZED_DIR}" \
-    training.datamodule.config.max_seq_len=128 \
+    training.datamodule.config.max_seq_len=256 \
     "training.datamodule.config.task_labels_dir=${TASK_LABELS_DIR}" \
     training.datamodule.batch_size=32 \
     training.datamodule.config.seq_sampling_strategy=to_end \
@@ -89,6 +89,7 @@ medrap train \
     training.trainer.gradient_clip_val=1.0 \
     training.trainer.log_every_n_steps=10 \
     training.module.lr=1e-4 \
+    training.module.warmup_steps=200 \
     "wandb_run_name=cross-attn-medium-${SLURM_JOB_ID:-local}" \
     "output_dir=${OUTPUT_DIR}" \
     do_overwrite=true \

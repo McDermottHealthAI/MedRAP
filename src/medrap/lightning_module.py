@@ -39,6 +39,7 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
         optimizer: Callable[[list[dict[str, object]]], Optimizer] | None = None,
         lr: float = 1e-3,
         weight_decay: float = 0.01,
+        warmup_steps: int = 0,
     ) -> None:
         super().__init__()
         self.model = model
@@ -47,6 +48,7 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
         self.optimizer_factory = optimizer or (
             lambda params: torch.optim.AdamW(params, lr=lr, weight_decay=weight_decay)
         )
+        self.warmup_steps = warmup_steps
 
     def forward(self, batch: MEDSTorchBatch) -> ModelOutput:
         """Run the wrapped plain model on a MEDS batch.
@@ -370,4 +372,20 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
             >>> any(str(n).startswith("train/retrieval/") for n in log_names)
             True
         """
-        return self.optimizer_factory(self._grouped_parameters())
+        optimizer = self.optimizer_factory(self._grouped_parameters())
+        if self.warmup_steps == 0:
+            return optimizer
+        total_steps = self.trainer.estimated_stepping_batches
+        warmup = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=1e-8, end_factor=1.0, total_iters=self.warmup_steps
+        )
+        cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=max(1, total_steps - self.warmup_steps), eta_min=0.0
+        )
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer, schedulers=[warmup, cosine], milestones=[self.warmup_steps]
+        )
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {"scheduler": scheduler, "interval": "step", "frequency": 1},
+        }
