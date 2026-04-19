@@ -1,0 +1,8 @@
+_target_: medrap.fusion.CrossAttentionFusion
+d_model: 256
+num_heads: 8
+ff_dim: 512
+num_layers: 2
+d_in_patient: ???   # must match the patient encoder output dimension (D_ehr)
+d_in_doc: ???       # must match the retrieval encoder embedding_dim (D_mem)
+dropout: 0.1
