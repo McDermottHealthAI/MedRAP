@@ -64,7 +64,7 @@ medrap train \
     retriever.doc_ids_column=null \
     retriever.k=4 \
     retrieval_encoder=token_feature \
-    retrieval_encoder.vocab_size=65536 \
+    retrieval_encoder.vocab_size=151936 \
     retrieval_encoder.embedding_dim=64 \
     fusion=cross_attention_medium \
     fusion.d_in_patient=128 \
