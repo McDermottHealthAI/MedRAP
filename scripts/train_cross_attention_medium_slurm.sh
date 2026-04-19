@@ -95,4 +95,13 @@ medrap train \
     "$@"
 
 echo ""
+echo "=== Uploading to GCS ==="
+GCS_DEST="gs://retrieval-aug-pretraining/runs/cross_attention_medium_${SLURM_JOB_ID:-local}"
+gsutil -m rsync -r \
+    -x "loggers/wandb/.*" \
+    "${OUTPUT_DIR}" \
+    "${GCS_DEST}"
+echo "  Uploaded to ${GCS_DEST}"
+
+echo ""
 echo "=== Done: $(date) ==="
