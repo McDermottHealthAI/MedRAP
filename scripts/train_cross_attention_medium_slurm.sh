@@ -83,7 +83,7 @@ medrap train \
     training.datamodule.config.seq_sampling_strategy=to_end \
     "training.loss.pos_weight=9.0" \
     training/trainer=lightning_wandb \
-    training.trainer.max_epochs=20 \
+    training.trainer.max_epochs=5 \
     training.trainer.accelerator=gpu \
     training.trainer.devices=1 \
     training.trainer.gradient_clip_val=1.0 \
