@@ -72,7 +72,7 @@ medrap train \
     pooling=masked_mean \
     head=linear \
     head.in_dim=256 \
-    head.out_dim=2 \
+    head.out_dim=1 \
     training/task=binary_classification \
     training/loss=binary_bce \
     training/datamodule=meds \
@@ -81,11 +81,14 @@ medrap train \
     "training.datamodule.config.task_labels_dir=${TASK_LABELS_DIR}" \
     training.datamodule.batch_size=32 \
     training.datamodule.config.seq_sampling_strategy=to_end \
+    "training.loss.pos_weight=9.0" \
     training/trainer=lightning_wandb \
-    training.trainer.max_epochs=10 \
+    training.trainer.max_epochs=20 \
     training.trainer.accelerator=gpu \
     training.trainer.devices=1 \
+    training.trainer.gradient_clip_val=1.0 \
     training.trainer.log_every_n_steps=10 \
+    training.module.lr=1e-4 \
     "wandb_run_name=cross-attn-medium-${SLURM_JOB_ID:-local}" \
     "output_dir=${OUTPUT_DIR}" \
     do_overwrite=true \

@@ -277,11 +277,20 @@ class MarginalizedBinaryClassificationTask(SupervisedTask):
 class BinaryClassificationLoss(SupervisedLoss):
     """Binary BCE-with-logits loss for scalar binary predictions.
 
+    Args:
+        pos_weight: Weight for positive class, useful for imbalanced datasets.
+            A value of ``N`` means the positive class is weighted ``N`` times
+            more than the negative class (e.g. ``9.0`` for 90/10 imbalance).
+
     Returns:
         BinaryClassificationLoss: Loss helper that accepts ``ModelOutput``
         predictions with logits shaped ``(B, 1)`` and binary tensor targets
         shaped ``(B,)``.
     """
+
+    def __init__(self, *, pos_weight: float | None = None) -> None:
+        super().__init__()
+        self.pos_weight = pos_weight
 
     def forward(self, predictions: ModelOutput, targets: TaskTargets) -> Tensor:
         """Compute BCE-with-logits loss from binary predictions and targets.
@@ -300,6 +309,9 @@ class BinaryClassificationLoss(SupervisedLoss):
             >>> targets = torch.BoolTensor([False, True])
             >>> round(float(loss_fn(predictions, targets)), 4)
             0.41
+            >>> loss_fn_weighted = BinaryClassificationLoss(pos_weight=9.0)
+            >>> round(float(loss_fn_weighted(predictions, targets)), 4)
+            0.9177
             >>> loss_fn(
             ...     ModelOutput(logits=torch.FloatTensor([[0.0], [2.0]])),
             ...     {"labels": torch.FloatTensor([0.0, 1.0])},
@@ -317,4 +329,9 @@ class BinaryClassificationLoss(SupervisedLoss):
         """
         flat_logits = _flatten_binary_logits(predictions, owner="BinaryClassificationLoss")
         flat_targets = _flatten_binary_targets(targets, owner="BinaryClassificationLoss")
-        return torch.nn.functional.binary_cross_entropy_with_logits(flat_logits, flat_targets)
+        pw = None
+        if self.pos_weight is not None:
+            pw = flat_logits.new_tensor([self.pos_weight])
+        return torch.nn.functional.binary_cross_entropy_with_logits(
+            flat_logits, flat_targets, pos_weight=pw
+        )
