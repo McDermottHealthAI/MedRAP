@@ -57,7 +57,7 @@ echo "=== Starting medrap train ==="
 
 medrap train \
     encoder=token_embedding_128 \
-    query_projector=sequence_mean \
+    query_projector=sequence_mean_1024 \
     query_projector.in_dim=128 \
     retriever=hf_dataset \
     "retriever.dataset_path=${RETRIEVAL_DB}" \
