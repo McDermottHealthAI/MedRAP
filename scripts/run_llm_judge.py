@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -94,7 +95,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max_workers", type=int, default=8)
     parser.add_argument("--out_dir", type=Path, default=None)
     parser.add_argument("--human_validation_n", type=int, default=50)
-    parser.add_argument("--max_total_calls_cap", type=int, default=1000)
+    parser.add_argument("--max_total_calls_cap", type=int, default=10001)
     parser.add_argument("--timeline_max_events", type=int, default=20)
     parser.add_argument("--doc_max_chars", type=int, default=4000)
     parser.add_argument("--dry_run", action="store_true")
@@ -152,6 +153,14 @@ def main() -> None:  # noqa: C901 - CLI pipeline, branches are linear
 
     task_description = _resolve_task_description(args)
     families = tuple(f.strip() for f in args.families.split(",") if f.strip())
+
+    if not args.dry_run and not os.environ.get("OPENAI_API_KEY"):
+        print(
+            "Error: OPENAI_API_KEY is not set. Export it before running, or pass "
+            "--dry_run to estimate cost without calling the API.",
+            file=sys.stderr,
+        )
+        sys.exit(5)
     out_dir: Path = args.out_dir or (run_dir / "llm_judge")
     if out_dir.exists() and not args.overwrite and not args.dry_run:
         contents = [p.name for p in out_dir.iterdir()]
