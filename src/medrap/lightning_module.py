@@ -7,6 +7,7 @@ import torch
 from meds_torchdata import MEDSTorchBatch
 from torch import Tensor, nn
 from torch.optim import Optimizer
+from transformers import get_cosine_schedule_with_warmup
 
 from .retrieval_logging import retrieval_diagnostic_scalars
 from .task import (
@@ -375,15 +376,10 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
         optimizer = self.optimizer_factory(self._grouped_parameters())
         if self.warmup_steps == 0:
             return optimizer
-        total_steps = self.trainer.estimated_stepping_batches
-        warmup = torch.optim.lr_scheduler.LinearLR(
-            optimizer, start_factor=1e-8, end_factor=1.0, total_iters=self.warmup_steps
-        )
-        cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=max(1, total_steps - self.warmup_steps), eta_min=0.0
-        )
-        scheduler = torch.optim.lr_scheduler.SequentialLR(
-            optimizer, schedulers=[warmup, cosine], milestones=[self.warmup_steps]
+        scheduler = get_cosine_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=self.warmup_steps,
+            num_training_steps=self.trainer.estimated_stepping_batches,
         )
         return {
             "optimizer": optimizer,

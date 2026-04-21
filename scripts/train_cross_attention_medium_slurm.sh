@@ -10,9 +10,9 @@
 #   retrieval_enc   : token_feature        (D_mem=64)
 #   fusion          : cross_attention_medium
 #                       d_model=256, num_heads=8, ff_dim=512, layers=2
-#                       d_in_patient=128, d_in_doc=64
+#                       d_in_patient=128 (from encoder), d_in_doc=64 (from retrieval_encoder)
 #   pooling         : masked_mean
-#   head            : linear 256 → 2
+#   head            : linear 256 → 1
 #
 # Usage:
 #   sbatch scripts/train_cross_attention_medium_slurm.sh
@@ -67,8 +67,6 @@ medrap train \
     retrieval_encoder.vocab_size=151936 \
     retrieval_encoder.embedding_dim=64 \
     fusion=cross_attention_medium \
-    fusion.d_in_patient=128 \
-    fusion.d_in_doc=64 \
     pooling=masked_mean \
     head=linear \
     head.in_dim=256 \
@@ -81,9 +79,8 @@ medrap train \
     "training.datamodule.config.task_labels_dir=${TASK_LABELS_DIR}" \
     training.datamodule.batch_size=32 \
     training.datamodule.config.seq_sampling_strategy=to_end \
-    "training.loss.pos_weight=9.0" \
     training/trainer=lightning_wandb \
-    training.trainer.max_epochs=5 \
+    training.trainer.max_epochs=10 \
     training.trainer.accelerator=gpu \
     training.trainer.devices=1 \
     training.trainer.gradient_clip_val=1.0 \

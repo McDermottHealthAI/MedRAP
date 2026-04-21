@@ -7,7 +7,6 @@ prediction.
 from abc import ABC, abstractmethod
 
 import torch
-import torch.nn.functional as F
 from torch import nn
 
 from .types import FusionInput, FusionOutput
@@ -171,18 +170,26 @@ class ConcatFusion(FusionModule):
 
 
 class _CrossAttentionLayer(nn.Module):
-    """Single cross-attention layer: cross-attn → residual+LN → FFN → residual+LN."""
+    """Single pre-norm cross-attention layer: LN → cross-attn → residual → LN → FFN → residual."""
 
-    def __init__(self, d_model: int, num_heads: int, ff_dim: int, dropout: float) -> None:
+    def __init__(self, d_model: int, kv_dim: int, num_heads: int, ff_dim: int, dropout: float) -> None:
         super().__init__()
-        self.attn = nn.MultiheadAttention(d_model, num_heads, dropout=dropout, batch_first=True)
-        self.norm1 = nn.LayerNorm(d_model)
+        self.norm_q = nn.LayerNorm(d_model)
+        self.norm_kv = nn.LayerNorm(kv_dim)
+        self.attn = nn.MultiheadAttention(
+            embed_dim=d_model,
+            num_heads=num_heads,
+            kdim=kv_dim,
+            vdim=kv_dim,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.norm_ff = nn.LayerNorm(d_model)
         self.ff = nn.Sequential(
             nn.Linear(d_model, ff_dim),
             nn.GELU(),
             nn.Linear(ff_dim, d_model),
         )
-        self.norm2 = nn.LayerNorm(d_model)
         self.drop = nn.Dropout(dropout)
 
     def forward(
@@ -191,9 +198,14 @@ class _CrossAttentionLayer(nn.Module):
         kv: torch.Tensor,
         key_padding_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        attn_out, _ = self.attn(query, kv, kv, key_padding_mask=key_padding_mask)
-        x = self.norm1(query + self.drop(attn_out))
-        x = self.norm2(x + self.drop(self.ff(x)))
+        kvn = self.norm_kv(kv)
+        attn_out, _ = self.attn(
+            self.norm_q(query), kvn, kvn,
+            key_padding_mask=key_padding_mask,
+            need_weights=False,
+        )
+        x = query + self.drop(attn_out)
+        x = x + self.drop(self.ff(self.norm_ff(x)))
         return x
 
 
@@ -235,10 +247,10 @@ class CrossAttentionFusion(FusionModule):
     ) -> None:
         super().__init__()
         self.patient_proj = nn.Linear(d_in_patient, d_model)
-        self.doc_proj = nn.Linear(d_in_doc, d_model)
         self.layers = nn.ModuleList(
-            [_CrossAttentionLayer(d_model, num_heads, ff_dim, dropout) for _ in range(num_layers)]
+            [_CrossAttentionLayer(d_model, d_in_doc, num_heads, ff_dim, dropout) for _ in range(num_layers)]
         )
+        self.out_norm = nn.LayerNorm(d_model)
 
     def fuse(self, fusion_input: FusionInput) -> FusionOutput:
         """Enrich patient sequence by cross-attending to retrieved doc tokens.
@@ -310,18 +322,16 @@ class CrossAttentionFusion(FusionModule):
             )
         b, r, k, s_doc, d_mem = rm.shape
 
-        # Project inputs into shared d_model space
         query = self.patient_proj(ps)  # (B, S_ehr, d_model)
-        kv = self.doc_proj(rm.reshape(b, r * k * s_doc, d_mem))  # (B, R*K*S_doc, d_model)
+        kv = rm.reshape(b, r * k * s_doc, d_mem)  # (B, R*K*S_doc, D_mem)
 
-        # Build key_padding_mask: True where token is padding (PyTorch convention)
         key_padding_mask: torch.Tensor | None = None
         if fusion_input.doc_attention_mask is not None:
             flat_mask = fusion_input.doc_attention_mask.reshape(b, r * k * s_doc).bool()
-            key_padding_mask = ~flat_mask  # (B, R*K*S_doc)
+            key_padding_mask = ~flat_mask  # True = padding (PyTorch convention)
 
         x = query
         for layer in self.layers:
             x = layer(x, kv, key_padding_mask)
 
-        return FusionOutput(fused_state=x)
+        return FusionOutput(fused_state=self.out_norm(x))
