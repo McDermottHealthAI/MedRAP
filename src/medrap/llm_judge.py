@@ -31,6 +31,7 @@ can be collected without the optional ``llm_judge`` extra installed.
 
 from __future__ import annotations
 
+import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,17 +46,32 @@ if TYPE_CHECKING:
 
 
 SYSTEM_PROMPT = (
-    "You are a clinical research assistant judging which of two reference "
-    "documents is more relevant for predicting a specific clinical outcome "
-    "for a specific patient. You will receive (1) a one-sentence task "
-    "description, (2) a compact event-by-event timeline for the patient up "
-    "to the prediction time, and (3) two candidate documents labeled "
-    "DOCUMENT A and DOCUMENT B. Decide which document would be more useful "
-    "to a clinician reasoning about the outcome for THIS patient. Base your "
-    "decision only on the patient's clinical presentation and the documents' "
-    "content — not on writing style or length. Respond with a single JSON "
-    'object matching the schema: {"winner": "A"|"B"|"tie", "confidence": '
-    '0..1, "rationale": "<=1 sentence"}.'
+    "You are a board-certified clinician acting as a judge in a retrieval "
+    "evaluation. You will receive, inside XML tags:\n"
+    "  <task>    the clinical prediction task\n"
+    "  <patient> a compact summary of one patient up to the prediction time\n"
+    "  <document_a>, <document_b>  two candidate reference documents\n\n"
+    "Your job is to decide which document — A or B — a clinician reasoning "
+    "about the task for THIS specific patient would find more useful.\n\n"
+    "EVALUATION CRITERIA (in priority order):\n"
+    "  1. Patient specificity: does the document address the patient's actual "
+    "clinical picture (conditions, meds, labs, procedures), not just the "
+    "disease area?\n"
+    "  2. Task alignment: does the document's content inform the specific "
+    "outcome being predicted?\n"
+    "  3. Decision utility: would a clinician pull this document off a shelf "
+    "at the bedside for this patient?\n"
+    "Prefer concrete patient-relevant content over generic or tangentially "
+    "related material. If both documents are equally (ir)relevant, return "
+    '"tie".\n\n'
+    "BIAS CONTROLS — ignore these when judging:\n"
+    "  - Document length, writing style, formality\n"
+    "  - Position (A vs B) — the assignment is randomized\n"
+    "  - Title or source name alone (judge on content)\n\n"
+    "Respond with a SINGLE JSON object and nothing else, matching the schema:\n"
+    '  {"winner": "A" | "B" | "tie", '
+    '"confidence": number in [0, 1], '
+    '"rationale": string (<=1 sentence citing patient detail + doc content)}'
 )
 
 
@@ -360,6 +376,132 @@ def _unit_from_code(code: str) -> str | None:
     return unit
 
 
+# LOINC long-names in MIMIC codes.parquet carry measurement-property
+# qualifiers in square brackets (``[Moles/volume]``, ``[Mass/volume]``,
+# ``[Partial pressure]`` …) plus specimen/method suffixes (``in Serum or
+# Plasma``, ``by calculation``, ``by Automated count`` …) that are redundant
+# with the unit string and add noise without signal. :func:`_clean_lab_description`
+# strips both so the prompt reads like a bedside lab list.
+_LAB_DESC_BRACKETS = re.compile(r"\s*\[[^\]]*\]")
+_LAB_DESC_SUFFIXES: tuple[str, ...] = (
+    " in Serum or Plasma",
+    " in Serum",
+    " in Plasma",
+    " in Blood by calculation",
+    " in Blood by Automated count",
+    " in Blood by Manual count",
+    " in Blood",
+    " of Blood",
+    " in Urine",
+    " in Arterial blood",
+    " in Venous blood",
+    " by calculation",
+    " by Automated count",
+    " by Manual count",
+)
+
+
+def _clean_lab_description(desc: str) -> str:
+    """Strip LOINC bracketed qualifiers and specimen/method suffixes.
+
+    Examples::
+
+        "Carbon dioxide, total [Moles/volume] in Blood by calculation"
+          -> "Carbon dioxide, total"
+        "Lactate [Moles/volume] in Blood"  -> "Lactate"
+        "pH of Blood"                      -> "pH"
+        "Oxygen [Partial pressure] in Blood" -> "Oxygen"
+    """
+    cleaned = _LAB_DESC_BRACKETS.sub("", desc)
+    cleaned = " ".join(cleaned.split())
+    changed = True
+    while changed:
+        changed = False
+        for suffix in _LAB_DESC_SUFFIXES:
+            if cleaned.endswith(suffix):
+                cleaned = cleaned[: -len(suffix)].strip()
+                changed = True
+    return cleaned.rstrip(",").strip()
+
+
+def _render_patient_narrative(
+    demographics: dict[str, Any] | None,
+    prediction_time: datetime | None,
+    clinical_summary: dict[str, Any] | None,
+) -> str | None:
+    """Collapse demographics + clinical summary into a single prose paragraph.
+
+    Used by :meth:`PatientTimelineRenderer.render_categorical`. Matches the
+    case-report style GPT-4o/4o-mini see in training: HPI-style opening
+    sentence, utilization as a short enumeration, chronic conditions inline.
+    """
+    sentences: list[str] = []
+
+    if demographics:
+        age_str: str | None = None
+        birth = demographics.get("birth_time")
+        if birth is not None and prediction_time is not None:
+            try:
+                age_years = (prediction_time - birth).days // 365
+                if age_years >= 0:
+                    age_str = f"{age_years}-year-old"
+            except (TypeError, ValueError):
+                age_str = None
+
+        gender_raw = demographics.get("gender")
+        gender_str: str | None = None
+        if gender_raw:
+            g = str(gender_raw).strip().upper()
+            gender_str = {"M": "man", "F": "woman"}.get(g, str(gender_raw).lower())
+
+        race_raw = demographics.get("race")
+        race_str: str | None = None
+        if race_raw:
+            race_str = str(race_raw).replace("/", " / ").title()
+
+        head_parts: list[str] = []
+        if age_str:
+            head_parts.append(age_str)
+        if race_str:
+            head_parts.append(race_str)
+        if gender_str:
+            head_parts.append(gender_str)
+        if head_parts:
+            sentences.append("A " + " ".join(head_parts) + ".")
+
+    if clinical_summary:
+        util_bits: list[str] = []
+        n_hosp = int(clinical_summary.get("n_hospital_admissions", 0) or 0)
+        n_icu = int(clinical_summary.get("n_icu_admissions", 0) or 0)
+        n_ed = int(clinical_summary.get("n_ed_visits", 0) or 0)
+        if n_hosp:
+            util_bits.append(
+                f"{n_hosp} hospital admission" + ("s" if n_hosp != 1 else "")
+            )
+        if n_icu:
+            util_bits.append(
+                f"{n_icu} ICU stay" + ("s" if n_icu != 1 else "")
+            )
+        if n_ed:
+            util_bits.append(
+                f"{n_ed} ED visit" + ("s" if n_ed != 1 else "")
+            )
+        if util_bits:
+            sentences.append("Prior utilization: " + ", ".join(util_bits) + ".")
+
+        conditions = clinical_summary.get("chronic_conditions") or []
+        if conditions:
+            sentences.append(
+                "History notable for " + ", ".join(conditions) + "."
+            )
+        else:
+            sentences.append("No chronic conditions detected on ICD-10 history.")
+
+    if not sentences:
+        return None
+    return " ".join(sentences)
+
+
 def _format_numeric(value: float) -> str:
     """Format a numeric lab value concisely (strip trailing zeros)."""
     if value != value:  # NaN
@@ -413,6 +555,110 @@ def _render_demographic_block(
     if not parts:
         return None
     return "PATIENT: " + ", ".join(parts) + "."
+
+
+# Simplified Charlson-style chronic-condition flag set. Each key is a
+# display name emitted into the judge prompt / rollup; each value is the
+# set of ICD-10 code prefixes (without the ``DIAGNOSIS//ICD//10//``
+# MEDS prefix) that count as a hit. MIMIC-IV does not ship pre-computed
+# comorbidity scores, so we derive flags from the patient's diagnosis
+# history (see https://mimic.mit.edu/docs/iv/modules/hosp/diagnoses_icd/).
+_CHRONIC_CONDITION_ICD10_PREFIXES: dict[str, tuple[str, ...]] = {
+    "Ischemic heart disease / MI": ("I20", "I21", "I22", "I23", "I24", "I25"),
+    "Congestive heart failure": ("I50", "I110", "I130", "I132", "I43"),
+    "Cerebrovascular disease": (
+        "I60", "I61", "I62", "I63", "I64", "I65", "I66", "I67", "I68", "I69",
+        "G45", "G46",
+    ),
+    "Peripheral vascular disease": ("I70", "I71", "I72", "I73", "I74", "I77", "I79"),
+    "Chronic pulmonary disease / COPD": (
+        "J40", "J41", "J42", "J43", "J44", "J45", "J46", "J47",
+    ),
+    "Diabetes mellitus": ("E10", "E11", "E12", "E13", "E14"),
+    "Chronic kidney disease": ("N18", "N19"),
+    "Liver disease": ("K70", "K71", "K72", "K73", "K74", "K75", "K76", "K77", "B18"),
+    "Malignancy": tuple(f"C{i:02d}" for i in range(0, 98)),
+    "AIDS/HIV": ("B20", "B21", "B22", "B24"),
+}
+
+_DIAGNOSIS_ICD10_PREFIX = "DIAGNOSIS//ICD//10//"
+
+
+def compute_patient_clinical_summary(
+    subject_id: int,
+    prediction_time: datetime,
+    meds_cohort_dir: Path,
+) -> dict[str, Any]:
+    """Derive healthcare-utilization counts + chronic-condition flags from MEDS events.
+
+    Scans events with ``time <= prediction_time`` for the given patient and
+    returns a dict with keys:
+
+    - ``n_hospital_admissions``: count of ``HOSPITAL_ADMISSION//...`` codes.
+    - ``n_icu_admissions``: count of ``ICU_ADMISSION//...`` codes.
+    - ``n_ed_visits``: count of ``TRANSFER_TO//ED...`` codes.
+    - ``chronic_conditions``: sorted list of display names from
+      :data:`_CHRONIC_CONDITION_ICD10_PREFIXES` that matched at least one
+      diagnosis code in the patient's history.
+    - ``chronic_condition_count``: ``len(chronic_conditions)``.
+
+    The counts include events from the current admission (the patient's
+    ``HOSPITAL_ADMISSION`` event is counted once). MIMIC-IV does not ship
+    pre-computed utilization or Charlson/Elixhauser tables — this function
+    derives them from the raw ``diagnoses_icd`` + admission/transfer history
+    available in the MEDS event stream.
+    """
+    parquet_glob = str(Path(meds_cohort_dir) / "data" / "*" / "*.parquet")
+    lf = pl.scan_parquet(parquet_glob).filter(
+        (pl.col("subject_id") == int(subject_id)) & (pl.col("time") <= prediction_time)
+    )
+    codes = lf.select("code").collect()["code"].to_list()
+
+    n_hosp = 0
+    n_icu = 0
+    n_ed = 0
+    conditions: set[str] = set()
+    for code in codes:
+        if code is None:
+            continue
+        if code.startswith("HOSPITAL_ADMISSION//"):
+            n_hosp += 1
+        elif code.startswith("ICU_ADMISSION//"):
+            n_icu += 1
+        elif code.startswith("TRANSFER_TO//ED"):
+            n_ed += 1
+        elif code.startswith(_DIAGNOSIS_ICD10_PREFIX):
+            icd = code[len(_DIAGNOSIS_ICD10_PREFIX):]
+            for cond_name, prefixes in _CHRONIC_CONDITION_ICD10_PREFIXES.items():
+                if cond_name in conditions:
+                    continue
+                if any(icd.startswith(p) for p in prefixes):
+                    conditions.add(cond_name)
+
+    return {
+        "n_hospital_admissions": int(n_hosp),
+        "n_icu_admissions": int(n_icu),
+        "n_ed_visits": int(n_ed),
+        "chronic_conditions": sorted(conditions),
+        "chronic_condition_count": len(conditions),
+    }
+
+
+def _format_clinical_summary(summary: dict[str, Any]) -> str:
+    """Render a :func:`compute_patient_clinical_summary` result for the prompt."""
+    util = (
+        f"Healthcare utilization (to prediction time): "
+        f"{summary['n_hospital_admissions']} hospital admission(s), "
+        f"{summary['n_icu_admissions']} ICU stay(s), "
+        f"{summary['n_ed_visits']} ED visit(s)"
+    )
+    conditions = summary.get("chronic_conditions") or []
+    chronic = (
+        "Chronic conditions (from ICD-10 history): " + ", ".join(conditions)
+        if conditions
+        else "Chronic conditions (from ICD-10 history): none detected"
+    )
+    return f"CLINICAL SUMMARY:\n  {util}\n  {chronic}"
 
 
 class PatientTimelineRenderer:
@@ -473,6 +719,7 @@ class PatientTimelineRenderer:
         meds_cohort_dir: Path,
         *,
         demographics: dict[str, Any] | None = None,
+        clinical_summary: dict[str, Any] | None = None,
     ) -> str:
         parquet_glob = str(Path(meds_cohort_dir) / "data" / "*" / "*.parquet")
         lf = pl.scan_parquet(parquet_glob).filter(
@@ -534,16 +781,129 @@ class PatientTimelineRenderer:
         # Step 3: keep the last N rows after filter + dedupe.
         tail = collapsed[-self.max_events :] if self.max_events > 0 else collapsed
 
-        # Step 4: assemble demographic header + timeline.
+        # Step 4: assemble demographic header + clinical summary + timeline.
         blocks: list[str] = []
         header = _render_demographic_block(demographics, prediction_time)
         if header is not None:
             blocks.append(header)
+        if clinical_summary is not None:
+            blocks.append(_format_clinical_summary(clinical_summary))
         if tail:
             blocks.append(
                 f"TIMELINE (most recent {len(tail)} described events before prediction):"
             )
             blocks.extend(tail)
+        return "\n".join(blocks)
+
+    def render_categorical(
+        self,
+        subject_id: int,
+        prediction_time: datetime,
+        meds_cohort_dir: Path,
+        *,
+        demographics: dict[str, Any] | None = None,
+        clinical_summary: dict[str, Any] | None = None,
+        max_diagnoses: int = 30,
+        max_medications: int = 15,
+        max_procedures: int = 15,
+        max_labs: int = 15,
+    ) -> str:
+        """Render the patient as a compact, deduped, category-grouped summary.
+
+        Unlike :meth:`render` (chronological event-by-event), this emits four
+        sections — ``DIAGNOSES``, ``ACTIVE MEDICATIONS``, ``RECENT PROCEDURES``,
+        ``RECENT LABS`` — each deduped by description (latest instance wins
+        for labs, so the most recent numeric value appears). Admission/transfer
+        codes are skipped because they already appear in the
+        ``CLINICAL SUMMARY`` block. Typically ~3-5× shorter than ``render()``.
+        """
+        parquet_glob = str(Path(meds_cohort_dir) / "data" / "*" / "*.parquet")
+        lf = pl.scan_parquet(parquet_glob).filter(
+            (pl.col("subject_id") == int(subject_id)) & (pl.col("time") <= prediction_time)
+        )
+        available = set(lf.collect_schema().names())
+        select_cols = ["time", "code"]
+        if "numeric_value" in available:
+            select_cols.append("numeric_value")
+        events = lf.select(select_cols).sort("time").collect()
+
+        # One dict per bucket: description -> (rendered_line, last_seen_time).
+        # Later occurrences overwrite earlier ones so the most recent lab
+        # value wins; insertion order preserves chronology.
+        diagnoses: dict[str, str] = {}
+        medications: dict[str, str] = {}
+        procedures: dict[str, str] = {}
+        labs: dict[str, str] = {}
+
+        for row in events.iter_rows(named=True):
+            code = row["code"]
+            if code is None:
+                continue
+            # Skip codes already summarized in the CLINICAL SUMMARY block.
+            if (
+                code.startswith("HOSPITAL_ADMISSION")
+                or code.startswith("ICU_ADMISSION")
+                or code.startswith("TRANSFER_TO")
+            ):
+                continue
+
+            desc = self._code_to_description.get(code) if self.include_description else None
+            if not desc:
+                continue
+            desc = " / ".join(p.strip() for p in str(desc).splitlines() if p.strip())
+
+            head = code.split("//", 1)[0]
+            if head == "DIAGNOSIS":
+                diagnoses.pop(desc, None)
+                diagnoses[desc] = f"- {desc}"
+            elif head in ("MEDICATION", "INFUSION"):
+                medications.pop(desc, None)
+                medications[desc] = f"- {desc}"
+            elif head == "PROCEDURE":
+                action = _procedure_action(code)
+                suffix = f" ({action})" if action is not None else ""
+                key = desc + suffix
+                procedures.pop(key, None)
+                procedures[key] = f"- {desc}{suffix}"
+            elif head == "LAB":
+                clean_desc = _clean_lab_description(desc)
+                unit = _unit_from_code(code)
+                value = row.get("numeric_value") if "numeric_value" in row else None
+                value_part = ""
+                if value is not None and isinstance(value, (int, float)) and not (
+                    isinstance(value, float) and value != value
+                ):
+                    formatted = _format_numeric(float(value))
+                    if formatted:
+                        value_part = f" {formatted}"
+                unit_part = f" {unit}" if unit else ""
+                labs.pop(desc, None)
+                labs[desc] = f"- {clean_desc}:{value_part}{unit_part}".rstrip(":")
+            # All other code types (SUBJECT_FLUID_OUTPUT, MEDS_BIRTH, etc.)
+            # are dropped — demographics/admissions already covered elsewhere.
+
+        def _tail(d: dict[str, str], n: int) -> list[str]:
+            items = list(d.values())
+            return items[-n:] if n > 0 else items
+
+        sections: list[tuple[str, list[str]]] = [
+            ("Diagnoses (from history)", _tail(diagnoses, max_diagnoses)),
+            ("Active medications (recent)", _tail(medications, max_medications)),
+            ("Recent procedures", _tail(procedures, max_procedures)),
+            ("Recent labs (most recent value)", _tail(labs, max_labs)),
+        ]
+
+        blocks: list[str] = []
+        narrative = _render_patient_narrative(
+            demographics, prediction_time, clinical_summary
+        )
+        if narrative is not None:
+            blocks.append(narrative)
+        for title, items in sections:
+            if not items:
+                continue
+            blocks.append(f"{title}:")
+            blocks.extend(items)
         return "\n".join(blocks)
 
 
@@ -624,12 +984,13 @@ class JudgePromptBuilder:
         else:
             doc_a, doc_b = other_text, target_text
         user_prompt = (
-            f"TASK: {self.task_description}\n\n"
-            f"{patient_timeline}\n\n"
-            f"DOCUMENT A:\n{doc_a}\n\n"
-            f"DOCUMENT B:\n{doc_b}\n\n"
-            "Which document (A or B) is more relevant? Respond with "
-            '{"winner": "A"|"B"|"tie", "confidence": 0..1, "rationale": "<=1 sentence"}.'
+            f"<task>\n{self.task_description}\n</task>\n\n"
+            f"<patient>\n{patient_timeline}\n</patient>\n\n"
+            f"<document_a>\n{doc_a}\n</document_a>\n\n"
+            f"<document_b>\n{doc_b}\n</document_b>\n\n"
+            "Which document is more relevant for predicting this outcome for "
+            "THIS patient? Apply the criteria and bias controls from the "
+            "system instructions. Respond with a single JSON object only."
         )
         return SYSTEM_PROMPT, user_prompt
 
@@ -834,7 +1195,41 @@ def run_judge(
                 "raw_response": verdict.raw_response,
             }
         )
-    return pl.DataFrame(rows)
+    # Columns that can be None throughout the first infer-schema window
+    # (all-tie runs leave ``target_won`` null for > 100 rows). Pin their
+    # dtypes explicitly so polars doesn't infer Null and reject later rows.
+    schema_overrides = {
+        "target_won": pl.Boolean,
+        "other_rank": pl.Int64,
+        "other_source_subject_id": pl.Int64,
+        "confidence": pl.Float64,
+        "prompt_tokens": pl.Int64,
+        "completion_tokens": pl.Int64,
+    }
+    return pl.DataFrame(rows, schema_overrides=schema_overrides)
+
+
+def _classify_invalid_row(winner_position: str | None, rationale: str | None) -> str:
+    """Classify a verdict row by how (or whether) it failed to yield a winner.
+
+    Returns one of: ``"valid"``, ``"tie"``, ``"api_error"``, ``"parse_error"``,
+    ``"client_init_error"``, ``"other_invalid"``.
+
+    Classification is driven by :class:`OpenAIJudge`'s rationale prefixes:
+    ``"openai client init failed:"``, ``"api error:"``, ``"parse error:"``.
+    """
+    if winner_position in ("A", "B"):
+        return "valid"
+    if winner_position == "tie":
+        return "tie"
+    rat = (rationale or "").strip().lower()
+    if rat.startswith("openai client init failed"):
+        return "client_init_error"
+    if rat.startswith("api error"):
+        return "api_error"
+    if rat.startswith("parse error"):
+        return "parse_error"
+    return "other_invalid"
 
 
 def summarize_winrates(
@@ -849,7 +1244,9 @@ def summarize_winrates(
 
     Algorithm:
 
-    1. Count invalid verdicts (``target_won is None``) — surfaced as ``n_invalid``.
+    1. Count invalid verdicts (``target_won is None``) — surfaced as ``n_invalid``,
+       plus a labeled split into ``n_ties``, ``n_api_errors``, ``n_parse_errors``,
+       ``n_client_init_errors``, ``n_other_invalid`` (sum equals ``n_invalid``).
     2. Apply ``invalid_policy``: ``"drop"`` removes invalid rows;
        ``"count_as_loss"`` converts their ``target_won`` to ``False``.
     3. Within-patient averaging first — ``per_patient = mean(target_won)`` per
@@ -862,11 +1259,37 @@ def summarize_winrates(
     rng = np.random.default_rng(seed)
     alpha = (1.0 - ci_level) / 2.0
 
+    has_winner = "winner_position" in df.columns
+    has_rationale = "rationale" in df.columns
+
     results: list[dict[str, Any]] = []
     for family in sorted(df["family"].unique().to_list()):
         fam_df = df.filter(pl.col("family") == family)
         n_pairs = fam_df.height
         n_invalid = fam_df.filter(pl.col("target_won").is_null()).height
+
+        invalid_rows = fam_df.filter(pl.col("target_won").is_null())
+        winners = (
+            invalid_rows["winner_position"].to_list() if has_winner else [None] * invalid_rows.height
+        )
+        rationales = (
+            invalid_rows["rationale"].to_list() if has_rationale else [None] * invalid_rows.height
+        )
+        counts = {
+            "tie": 0,
+            "api_error": 0,
+            "parse_error": 0,
+            "client_init_error": 0,
+            "other_invalid": 0,
+        }
+        for w, r in zip(winners, rationales):
+            label = _classify_invalid_row(w, r)
+            if label == "valid":
+                # Shouldn't happen (target_won is null only when winner is tie/invalid),
+                # but guard for schema variations: treat as other_invalid.
+                counts["other_invalid"] += 1
+            else:
+                counts[label] += 1
 
         if invalid_policy == "drop":
             working = fam_df.filter(pl.col("target_won").is_not_null())
@@ -880,6 +1303,11 @@ def summarize_winrates(
                     "n_patients": 0,
                     "n_pairs": n_pairs,
                     "n_invalid": n_invalid,
+                    "n_ties": counts["tie"],
+                    "n_api_errors": counts["api_error"],
+                    "n_parse_errors": counts["parse_error"],
+                    "n_client_init_errors": counts["client_init_error"],
+                    "n_other_invalid": counts["other_invalid"],
                     "target_preferred_rate": float("nan"),
                     "standard_error": float("nan"),
                     "ci_low": float("nan"),
@@ -918,6 +1346,11 @@ def summarize_winrates(
                 "n_patients": n_patients,
                 "n_pairs": n_pairs,
                 "n_invalid": n_invalid,
+                "n_ties": counts["tie"],
+                "n_api_errors": counts["api_error"],
+                "n_parse_errors": counts["parse_error"],
+                "n_client_init_errors": counts["client_init_error"],
+                "n_other_invalid": counts["other_invalid"],
                 "target_preferred_rate": point,
                 "standard_error": se,
                 "ci_low": ci_low,
@@ -977,6 +1410,7 @@ def build_per_patient_rollup(
     doc_metadata_columns: Sequence[str] = ("title",),
     doc_text_preview_chars: int = 300,
     timelines_by_subject_id: dict[int, str] | None = None,
+    clinical_summaries_by_subject_id: dict[int, dict[str, Any]] | None = None,
     families: Sequence[str] = ("F1", "F2", "F3", "F4"),
 ) -> pl.DataFrame:
     """One row per sampled patient with per-family outcomes and rich metadata.
@@ -984,9 +1418,14 @@ def build_per_patient_rollup(
     The ``timeline_renderer`` argument is retained for API compatibility; the
     caller is expected to pre-render timelines and pass them via
     ``timelines_by_subject_id`` when it has access to the MEDS cohort dir.
+
+    ``clinical_summaries_by_subject_id`` (output of
+    :func:`compute_patient_clinical_summary`) adds healthcare-utilization
+    counts + chronic-condition flags as extra columns on each row.
     """
     del timeline_renderer  # kept in the signature per plan; rendering is caller's job
     timelines = timelines_by_subject_id or {}
+    summaries = clinical_summaries_by_subject_id or {}
 
     ds_columns: set[str] = set(getattr(retrieval_ds, "column_names", []) or [])
     available_meta = [c for c in doc_metadata_columns if c in ds_columns]
@@ -1059,6 +1498,21 @@ def build_per_patient_rollup(
         row["age_years_at_prediction"] = age_years
         row["age_bin"] = _age_bin(age_years)
         row["patient_timeline"] = timelines.get(anchor_sid, "")
+
+        summary = summaries.get(anchor_sid)
+        if summary is not None:
+            row["n_hospital_admissions"] = int(summary.get("n_hospital_admissions", 0))
+            row["n_icu_admissions"] = int(summary.get("n_icu_admissions", 0))
+            row["n_ed_visits"] = int(summary.get("n_ed_visits", 0))
+            conds = summary.get("chronic_conditions") or []
+            row["chronic_conditions"] = ", ".join(conds) if conds else ""
+            row["chronic_condition_count"] = int(summary.get("chronic_condition_count", len(conds)))
+        else:
+            row["n_hospital_admissions"] = None
+            row["n_icu_admissions"] = None
+            row["n_ed_visits"] = None
+            row["chronic_conditions"] = None
+            row["chronic_condition_count"] = None
 
         target_doc_id = int(doc_ids_array[anchor_row_idx, 0, 0])
         row["target_doc_id"] = target_doc_id

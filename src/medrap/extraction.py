@@ -74,7 +74,7 @@ from pathlib import Path
 import lightning
 import torch
 from torch import Tensor
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, RandomSampler
 
 
 def collate_prediction_batches(predictions: list[dict[str, Tensor]]) -> dict[str, Tensor]:
@@ -179,6 +179,18 @@ def extract_artifacts(
         ...     sorted(artifacts.keys())
         ['doc_ids', 'doc_key_embeddings', 'doc_scores', 'logits', 'query_embeddings', 'targets']
     """
+    if isinstance(dataloader.sampler, RandomSampler):
+        raise ValueError(
+            "extract_artifacts requires shuffle=False: row i of the saved .pt must "
+            "correspond to sample i of the dataset in dataloader-walk order."
+        )
+    num_devices = getattr(trainer, "num_devices", 1)
+    if num_devices and num_devices > 1:
+        raise ValueError(
+            "extract_artifacts requires a single-device trainer; multi-device predict "
+            f"can return rank-interleaved outputs (got num_devices={num_devices})."
+        )
+
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 

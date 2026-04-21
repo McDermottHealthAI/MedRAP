@@ -46,6 +46,7 @@ from medrap.llm_judge import (  # noqa: E402
     build_human_validation_subset,
     build_pairs,
     build_per_patient_rollup,
+    compute_patient_clinical_summary,
     run_judge,
     summarize_winrates,
     write_results_workbook,
@@ -262,15 +263,30 @@ def main() -> None:  # noqa: C901 - CLI pipeline, branches are linear
 
     # Pre-render a representative timeline for cost estimation.
     anchor_sid_sample = pairs[0].anchor_subject_id if pairs else None
+    sample_timeline_chrono_len: int | None = None
     if anchor_sid_sample is not None:
         pred_t = (
             val_schema.filter(pl.col("subject_id") == anchor_sid_sample)["prediction_time"].to_list()[0]
         )
-        sample_timeline = timeline_renderer.render(
+        sample_summary = compute_patient_clinical_summary(
+            int(anchor_sid_sample), pred_t, args.meds_cohort
+        )
+        sample_timeline = timeline_renderer.render_categorical(
             anchor_sid_sample,
             pred_t,
             args.meds_cohort,
             demographics=demo_by_sid.get(int(anchor_sid_sample)),
+            clinical_summary=sample_summary,
+        )
+        # Render the chronological version too for a compression comparison.
+        sample_timeline_chrono_len = len(
+            timeline_renderer.render(
+                anchor_sid_sample,
+                pred_t,
+                args.meds_cohort,
+                demographics=demo_by_sid.get(int(anchor_sid_sample)),
+                clinical_summary=sample_summary,
+            )
         )
     else:
         sample_timeline = ""
@@ -299,6 +315,25 @@ def main() -> None:  # noqa: C901 - CLI pipeline, branches are linear
     )
 
     if args.dry_run:
+        print()
+        print("=" * 80)
+        print("SAMPLE PROMPT (pair 0) — SYSTEM")
+        print("=" * 80)
+        print(sample_sys)
+        print()
+        print("=" * 80)
+        header = f"SAMPLE PROMPT (pair 0) — USER  ({len(sample_user)} chars"
+        if sample_timeline_chrono_len is not None and sample_timeline_chrono_len > 0:
+            # Prompt length - timeline length + chrono length = chrono-equivalent prompt length.
+            chrono_equiv = len(sample_user) - len(sample_timeline) + sample_timeline_chrono_len
+            saved = chrono_equiv - len(sample_user)
+            pct = 100 * saved / chrono_equiv if chrono_equiv > 0 else 0
+            header += f"; chronological would be ~{chrono_equiv} chars, saved {saved} / {pct:.0f}%"
+        header += ")"
+        print(header)
+        print("=" * 80)
+        print(sample_user)
+        print("=" * 80)
         print("Dry-run: exiting before API calls.")
         return
 
@@ -311,16 +346,20 @@ def main() -> None:  # noqa: C901 - CLI pipeline, branches are linear
         if int(r["subject_id"]) in unique_anchor_sids
     }
     timelines: dict[int, str] = {}
+    clinical_summaries: dict[int, dict] = {}
     for sid in unique_anchor_sids:
         pred_t = schema_lookup.get(int(sid))
         if pred_t is None:
             timelines[int(sid)] = ""
             continue
-        timelines[int(sid)] = timeline_renderer.render(
+        summary = compute_patient_clinical_summary(int(sid), pred_t, args.meds_cohort)
+        clinical_summaries[int(sid)] = summary
+        timelines[int(sid)] = timeline_renderer.render_categorical(
             int(sid),
             pred_t,
             args.meds_cohort,
             demographics=demo_by_sid.get(int(sid)),
+            clinical_summary=summary,
         )
 
     judge = OpenAIJudge(model=args.model)
@@ -345,6 +384,7 @@ def main() -> None:  # noqa: C901 - CLI pipeline, branches are linear
         retrieval_ds=retrieval_ds,
         doc_id_to_row=doc_id_to_row,
         timelines_by_subject_id=timelines,
+        clinical_summaries_by_subject_id=clinical_summaries,
         families=families,
     )
     human_df = build_human_validation_subset(

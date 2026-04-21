@@ -19,7 +19,9 @@ from typing import TYPE_CHECKING
 
 import lightning
 import numpy as np
+import pandas as pd
 import torch
+from datasets import load_from_disk
 from omegaconf import OmegaConf
 from torch import Tensor
 
@@ -32,6 +34,7 @@ if str(_repo_root / "src") not in sys.path:
     sys.path.insert(0, str(_repo_root / "src"))
 
 from medrap.configs import instantiate_datamodule, instantiate_training_module  # noqa: E402
+from medrap.demographic_analysis import LDATopicProvider  # noqa: E402
 from medrap.extraction import extract_artifacts  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -58,10 +61,13 @@ def _find_checkpoint(run_dir: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def run_extraction(run_dir: Path) -> tuple[dict[str, Tensor], Path, Tensor | None]:
+def run_extraction(
+    run_dir: Path,
+) -> tuple[dict[str, Tensor], Path, Tensor | None, Path | None]:
     """Load a trained model and extract artifacts from the val split.
 
-    Returns (artifacts, artifact_path, all_doc_key_embeddings).
+    Returns (artifacts, artifact_path, all_doc_key_embeddings, retrieval_db_path).
+    ``retrieval_db_path`` is ``None`` for runs that use an ``InMemoryRetriever``.
     """
     cfg = OmegaConf.load(run_dir / "config.yaml")
     ckpt_path = _find_checkpoint(run_dir)
@@ -76,6 +82,11 @@ def run_extraction(run_dir: Path) -> tuple[dict[str, Tensor], Path, Tensor | Non
     retriever = getattr(module.model, "retriever", None)
     if retriever is not None and hasattr(retriever, "_doc_key_embeddings"):
         all_doc_keys = retriever._doc_key_embeddings.detach().clone()
+
+    retrieval_db_path: Path | None = None
+    dataset_path = OmegaConf.select(cfg, "retriever.dataset_path")
+    if dataset_path is not None:
+        retrieval_db_path = Path(dataset_path)
 
     # Datamodule — val split (deterministic, no shuffle).
     datamodule = instantiate_datamodule(cfg)
@@ -93,7 +104,7 @@ def run_extraction(run_dir: Path) -> tuple[dict[str, Tensor], Path, Tensor | Non
     extract_dir = run_dir / "extraction"
     artifact_path = extract_artifacts(module, dataloader, trainer, output_dir=extract_dir)
     artifacts = torch.load(artifact_path, weights_only=True)
-    return artifacts, artifact_path, all_doc_keys
+    return artifacts, artifact_path, all_doc_keys, retrieval_db_path
 
 
 # ---------------------------------------------------------------------------
@@ -440,6 +451,87 @@ def generate_plots(
 
 
 # ---------------------------------------------------------------------------
+# Top retrieved docs CSV export
+# ---------------------------------------------------------------------------
+
+
+def write_top_retrieved_docs(
+    artifacts: dict[str, Tensor],
+    output_path: Path,
+    *,
+    retrieval_db_path: Path,
+    n_top: int = 100,
+    n_topics: int = 30,
+) -> Path:
+    """Write a CSV of the top-``n_top`` most-retrieved docs, ranked by top-1 frequency.
+
+    Each row carries the textbook title, retrieval counts (top-1 and top-K),
+    LDA topic keywords, and the raw ``content`` of the doc.
+
+    Rows with zero top-K retrievals are dropped so a collapsed retriever does
+    not pad the CSV with empty rows.
+    """
+    doc_ids_tensor = artifacts["doc_ids"]  # (N, R, K)
+    if doc_ids_tensor.ndim != 3 or doc_ids_tensor.shape[1] != 1:
+        raise ValueError(
+            f"Expected doc_ids with shape (N, 1, K); got {tuple(doc_ids_tensor.shape)}."
+        )
+    doc_ids = doc_ids_tensor[:, 0, :].cpu().numpy().astype(np.int64)  # (N, K)
+    n_patients, k_docs = doc_ids.shape
+
+    ds = load_from_disk(str(retrieval_db_path))
+    corpus_size = len(ds)
+
+    top_1_counts = np.bincount(doc_ids[:, 0], minlength=corpus_size)
+    top_k_counts = np.bincount(doc_ids.reshape(-1), minlength=corpus_size)
+
+    order = np.lexsort([-top_k_counts, -top_1_counts])
+    n_nonzero = int((top_k_counts > 0).sum())
+    n_rows = min(n_top, n_nonzero)
+    order = order[:n_rows]
+
+    provider = LDATopicProvider(retrieval_db_path, n_topics=n_topics)
+
+    rows = []
+    for rank, doc_id in enumerate(order, start=1):
+        doc_id = int(doc_id)
+        entry = ds[doc_id]
+        keyword_pairs = provider.keywords_for(doc_id)
+        keywords_str = "; ".join(f"{label} ({weight:.2f})" for label, weight in keyword_pairs)
+        rows.append(
+            {
+                "rank": rank,
+                "doc_id": doc_id,
+                "title": entry.get("title", ""),
+                "top_1_count": int(top_1_counts[doc_id]),
+                "top_k_count": int(top_k_counts[doc_id]),
+                "top_1_rate": float(top_1_counts[doc_id]) / n_patients,
+                "top_k_rate": float(top_k_counts[doc_id]) / (n_patients * k_docs),
+                "lda_keywords": keywords_str,
+                "content": entry.get("content", entry.get("contents", "")),
+            }
+        )
+
+    df = pd.DataFrame(
+        rows,
+        columns=[
+            "rank",
+            "doc_id",
+            "title",
+            "top_1_count",
+            "top_k_count",
+            "top_1_rate",
+            "top_k_rate",
+            "lda_keywords",
+            "content",
+        ],
+    )
+    df.to_csv(output_path, index=False)
+    print(f"Top-{n_rows} retrieved docs CSV saved to {output_path}")
+    return output_path
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -455,7 +547,7 @@ def main() -> None:
         sys.exit(1)
 
     print(f"Run directory: {run_dir}")
-    artifacts, artifact_path, all_doc_keys = run_extraction(run_dir)
+    artifacts, artifact_path, all_doc_keys, retrieval_db_path = run_extraction(run_dir)
     print(f"Artifacts saved to {artifact_path}")
     print(f"Keys: {sorted(artifacts.keys())}")
     for k, v in sorted(artifacts.items()):
@@ -467,6 +559,16 @@ def main() -> None:
 
     output_path = artifact_path.parent / "extraction_diagnostics.png"
     generate_plots(artifacts, output_path, all_doc_key_embeddings=all_doc_keys_np)
+
+    if retrieval_db_path is not None:
+        write_top_retrieved_docs(
+            artifacts,
+            artifact_path.parent / "top_retrieved_docs.csv",
+            retrieval_db_path=retrieval_db_path,
+            n_top=100,
+        )
+    else:
+        print("Skipping top_retrieved_docs.csv: no retrieval DB path (InMemoryRetriever run).")
 
 
 if __name__ == "__main__":
