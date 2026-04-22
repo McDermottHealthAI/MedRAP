@@ -24,7 +24,7 @@
 #SBATCH --partition=cpu
 #SBATCH --account=mm6677_gp
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
+#SBATCH --mem=16G
 #SBATCH --time=02:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
@@ -34,7 +34,7 @@ set -euo pipefail
 REPO_DIR="${SLURM_SUBMIT_DIR}"
 VENV="${REPO_DIR}/.venv/bin/activate"
 
-MEDS_COHORT_DIR="/groups/mm6677_gp/data/MIMIC_MEDS/MEDS_cohort/raw"
+MEDS_COHORT_DIR="/groups/mm6677_gp/data/MIMIC_MEDS/MEDS_cohort"
 MT_LABELS_DIR="${REPO_DIR}/data/mt_labels/top25_30d"
 
 NUM_TASKS=25

@@ -42,65 +42,69 @@ log = logging.getLogger(__name__)
 SPLITS = ("train", "tuning", "held_out")
 
 
-def _read_meds_split(cohort_dir: Path, split: str) -> pl.DataFrame:
+def _shard_files(cohort_dir: Path, split: str) -> list[Path]:
     shard_dir = cohort_dir / "data" / split
     if not shard_dir.exists():
         raise FileNotFoundError(f"No shard directory: {shard_dir}")
-    files = list(shard_dir.glob("*.parquet"))
+    files = sorted(shard_dir.glob("*.parquet"))
     if not files:
         raise FileNotFoundError(f"No parquet files in {shard_dir}")
-    return pl.concat([pl.read_parquet(f, columns=["subject_id", "time", "code"]) for f in files])
+    return files
 
 
 def _select_top_codes(cohort_dir: Path, num_tasks: int) -> list[str]:
-    """Identify top-N codes by occurrence count across the train split."""
+    """Identify top-N codes by occurrence count, processing one shard at a time."""
     log.info("Counting code frequencies in train split ...")
-    df = _read_meds_split(cohort_dir, "train")
-    counts = (
-        df.filter(pl.col("time").is_not_null())
-        .group_by("code")
-        .agg(pl.len().alias("count"))
-        .sort("count", descending=True)
-    )
-    top = counts.head(num_tasks)["code"].to_list()
+    files = _shard_files(cohort_dir, "train")
+    counts: dict[str, int] = {}
+    for f in files:
+        df = pl.read_parquet(f, columns=["time", "code"])
+        shard_counts = (
+            df.filter(pl.col("time").is_not_null())
+            .group_by("code")
+            .agg(pl.len().alias("n"))
+        )
+        for code, n in shard_counts.iter_rows():
+            counts[code] = counts.get(code, 0) + n
+    top = sorted(counts, key=counts.__getitem__, reverse=True)[:num_tasks]
     log.info("Selected %d codes, top-3: %s", len(top), top[:3])
     return top
 
 
-def _build_anchors(events: pl.DataFrame, anchor_offset_hours: float) -> pl.DataFrame:
-    """Derive one prediction_time per patient from their first dynamic event.
+def _process_shard(
+    f: Path,
+    codes: list[str],
+    offset_us: int,
+    horizon_days: float,
+) -> pl.DataFrame | None:
+    """Build label rows for one shard. Returns None if shard has no usable events."""
+    df = (
+        pl.read_parquet(f, columns=["subject_id", "time", "code"])
+        .filter(pl.col("time").is_not_null())
+    )
+    if df.is_empty():
+        return None
 
-    prediction_time = time of first non-null event + anchor_offset_hours. Patients whose entire record has
-    null timestamps are dropped.
-    """
-    offset_us = int(anchor_offset_hours * 3600 * 1_000_000)
+    # Exclude MEDS_BIRTH: it carries the birth year as a timestamp, not a clinical event,
+    # so including it makes the anchor decades before the actual ICU stay.
+    clinical = df.filter(~pl.col("code").str.starts_with("MEDS_BIRTH"))
+    if clinical.is_empty():
+        return None
+
     anchors = (
-        events.filter(pl.col("time").is_not_null())
-        .group_by("subject_id")
+        clinical.group_by("subject_id")
         .agg(pl.col("time").min().alias("first_event_time"))
         .with_columns(
             (pl.col("first_event_time") + pl.duration(microseconds=offset_us)).alias("prediction_time")
         )
         .select(["subject_id", "prediction_time"])
     )
-    log.info("Built %d anchors from EHR data.", len(anchors))
-    return anchors
 
-
-def _compute_labels_for_split(
-    cohort_dir: Path,
-    split: str,
-    codes: list[str],
-    horizon_days: float,
-    anchor_offset_hours: float,
-) -> pl.DataFrame:
-    events = _read_meds_split(cohort_dir, split).filter(pl.col("time").is_not_null())
-    anchors = _build_anchors(events, anchor_offset_hours)
-    log.info("Split %s: %d patients -> %d anchors", split, events["subject_id"].n_unique(), len(anchors))
-
-    joined = anchors.join(events, on="subject_id", how="left")
-    joined = joined.with_columns(
-        ((pl.col("time") - pl.col("prediction_time")).dt.total_seconds() / 86400.0).alias("delta_days")
+    joined = (
+        anchors.join(df, on="subject_id", how="left")
+        .with_columns(
+            ((pl.col("time") - pl.col("prediction_time")).dt.total_seconds() / 86400.0).alias("delta_days")
+        )
     )
 
     in_window = (
@@ -111,15 +115,19 @@ def _compute_labels_for_split(
         .with_columns(pl.lit(1.0).alias("occurred"))
     )
 
-    wide = in_window.pivot(
-        values="occurred", index=["subject_id", "prediction_time"], on="code", aggregate_function="first"
-    )
+    if in_window.is_empty():
+        result = anchors
+    else:
+        wide = in_window.pivot(
+            values="occurred",
+            index=["subject_id", "prediction_time"],
+            on="code",
+            aggregate_function="first",
+        )
+        result = anchors.join(wide, on=["subject_id", "prediction_time"], how="left")
 
-    result = anchors.join(wide, on=["subject_id", "prediction_time"], how="left")
-
-    code_to_task = {code: f"task_{i}" for i, code in enumerate(codes)}
-    for code in codes:
-        col = code_to_task[code]
+    for i, code in enumerate(codes):
+        col = f"task_{i}"
         if code in result.columns:
             result = result.rename({code: col}).with_columns(pl.col(col).fill_null(0.0).cast(pl.Float32))
         else:
@@ -127,6 +135,27 @@ def _compute_labels_for_split(
 
     task_cols = [f"task_{i}" for i in range(len(codes))]
     return result.select(["subject_id", "prediction_time", *task_cols])
+
+
+def _compute_labels_for_split(
+    cohort_dir: Path,
+    split: str,
+    codes: list[str],
+    horizon_days: float,
+    anchor_offset_hours: float,
+) -> pl.DataFrame:
+    files = _shard_files(cohort_dir, split)
+    offset_us = int(anchor_offset_hours * 3600 * 1_000_000)
+    shards = []
+    for f in files:
+        shard = _process_shard(f, codes, offset_us, horizon_days)
+        if shard is not None:
+            shards.append(shard)
+    if not shards:
+        return pl.DataFrame()
+    result = pl.concat(shards)
+    log.info("Split %s: %d patients", split, len(result))
+    return result
 
 
 def main() -> None:

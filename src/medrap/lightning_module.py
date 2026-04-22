@@ -114,6 +114,8 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
     def _run_supervised_step(self, raw_batch: MEDSTorchBatch, *, stage: str) -> Tensor:
         predictions = self.forward(raw_batch)
         targets = self.task.extract_targets(raw_batch)
+        if isinstance(targets, torch.Tensor):
+            targets = targets.to(predictions.logits.device)
         loss = self.loss_fn(predictions, targets)
 
         batch_size = getattr(raw_batch, "batch_size", None)
