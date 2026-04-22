@@ -1,6 +1,6 @@
 """Compute multi-task binary labels from MEDS cohort data.
 
-For each patient × prediction_time anchor (taken from an existing task label file),
+For each patient x prediction_time anchor (taken from an existing task label file),
 and for each of the top-N codes selected by corpus frequency, labels whether the code
 appears within a fixed horizon (days) after the prediction_time.
 
@@ -123,12 +123,20 @@ def _compute_labels_for_split(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Prepare multi-task binary labels from MEDS cohort.")
     parser.add_argument("--meds_cohort_dir", required=True, type=Path)
-    parser.add_argument("--task_labels_dir", required=True, type=Path,
-                        help="Dir containing train.parquet, tuning.parquet, held_out.parquet")
+    parser.add_argument(
+        "--task_labels_dir",
+        required=True,
+        type=Path,
+        help="Dir containing train.parquet, tuning.parquet, held_out.parquet",
+    )
     parser.add_argument("--output_dir", required=True, type=Path)
     parser.add_argument("--num_tasks", type=int, default=25)
-    parser.add_argument("--horizon_days", type=float, default=30.0,
-                        help="Days after prediction_time to look for code occurrence.")
+    parser.add_argument(
+        "--horizon_days",
+        type=float,
+        default=30.0,
+        help="Days after prediction_time to look for code occurrence.",
+    )
     parser.add_argument("--splits", nargs="+", default=list(SPLITS))
     args = parser.parse_args()
 

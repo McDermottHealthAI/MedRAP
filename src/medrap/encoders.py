@@ -104,27 +104,27 @@ class _TimeDeltaRoPEAttention(nn.Module):
         rope_sin: Tensor,
         key_padding_mask: Tensor | None = None,
     ) -> Tensor:
-        B, S, _ = x.shape
-        H, D_h = self.num_heads, self.head_dim
+        b, s, _ = x.shape
+        h, d_h = self.num_heads, self.head_dim
 
-        Q = self.q_proj(x).reshape(B, S, H, D_h)
-        K = self.k_proj(x).reshape(B, S, H, D_h)
-        V = self.v_proj(x).reshape(B, S, H, D_h)
+        q = self.q_proj(x).reshape(b, s, h, d_h)
+        k = self.k_proj(x).reshape(b, s, h, d_h)
+        v = self.v_proj(x).reshape(b, s, h, d_h)
 
-        Q = _apply_rope(Q, rope_cos, rope_sin)
-        K = _apply_rope(K, rope_cos, rope_sin)
+        q = _apply_rope(q, rope_cos, rope_sin)
+        k = _apply_rope(k, rope_cos, rope_sin)
 
-        Q = Q.transpose(1, 2)  # (B, H, S, D_h)
-        K = K.transpose(1, 2)
-        V = V.transpose(1, 2)
+        q = q.transpose(1, 2)  # (b, h, s, d_h)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
 
-        attn = (Q @ K.transpose(-2, -1)) * self.scale  # (B, H, S, S)
+        attn = (q @ k.transpose(-2, -1)) * self.scale  # (b, h, s, s)
         if key_padding_mask is not None:
-            # True = padding → mask out from attending
+            # True = padding -> mask out from attending
             attn = attn.masked_fill(key_padding_mask.unsqueeze(1).unsqueeze(2), float("-inf"))
         attn = self.drop(attn.softmax(dim=-1))
 
-        out = (attn @ V).transpose(1, 2).reshape(B, S, H * D_h)  # (B, S, d_model)
+        out = (attn @ v).transpose(1, 2).reshape(b, s, h * d_h)  # (b, s, d_model)
         return self.out_proj(out)
 
 

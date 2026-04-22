@@ -5,16 +5,17 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import lightning
 import polars as pl
 import torch
-from meds_torchdata import MEDSTorchBatch, MEDSTorchDataConfig
 from meds_torchdata.extensions.lightning_datamodule import Datamodule as MEDSLightningDatamodule
 from meds_torchdata.pytorch_dataset import MEDSPytorchDataset
-from meds_torchdata.types import SubsequenceSamplingStrategy
-from torch.utils.data import DataLoader
+
+if TYPE_CHECKING:
+    from meds_torchdata import MEDSTorchBatch, MEDSTorchDataConfig
+    from torch.utils.data import DataLoader
 
 log = logging.getLogger(__name__)
 
