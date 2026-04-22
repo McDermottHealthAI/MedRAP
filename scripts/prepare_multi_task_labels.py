@@ -1,8 +1,12 @@
 """Compute multi-task binary labels from MEDS cohort data.
 
-For each patient x prediction_time anchor (taken from an existing task label file),
-and for each of the top-N codes selected by corpus frequency, labels whether the code
-appears within a fixed horizon (days) after the prediction_time.
+For every patient in the cohort, a single prediction_time anchor is derived
+directly from the EHR: the patient's first dynamic (non-static) event time
+plus ``--anchor_offset_hours`` hours (default 24h).  No external task-label
+file is required.
+
+For each of the top-N codes (by corpus frequency) the script labels whether
+the code appears within ``--horizon_days`` after prediction_time.
 
 Outputs
 -------
@@ -14,14 +18,13 @@ Outputs
     Maps task index (str) -> MEDS code string.
 
 {output_dir}/metadata.json
-    Records num_tasks, horizon_days, split list used.
+    Records num_tasks, horizon_days, anchor_offset_hours.
 
 Usage
 -----
 python scripts/prepare_multi_task_labels.py \\
     --meds_cohort_dir  /path/to/MEDS_cohort \\
-    --task_labels_dir  /path/to/task_labels/in_hospital_mortality \\
-    --output_dir       /path/to/tte_labels \\
+    --output_dir       /path/to/mt_labels \\
     --num_tasks        25 \\
     --horizon_days     30
 """
@@ -64,32 +67,42 @@ def _select_top_codes(cohort_dir: Path, num_tasks: int) -> list[str]:
     return top
 
 
+def _build_anchors(events: pl.DataFrame, anchor_offset_hours: float) -> pl.DataFrame:
+    """Derive one prediction_time per patient from their first dynamic event.
+
+    prediction_time = time of first non-null event + anchor_offset_hours. Patients whose entire record has
+    null timestamps are dropped.
+    """
+    offset_us = int(anchor_offset_hours * 3600 * 1_000_000)
+    anchors = (
+        events.filter(pl.col("time").is_not_null())
+        .group_by("subject_id")
+        .agg(pl.col("time").min().alias("first_event_time"))
+        .with_columns(
+            (pl.col("first_event_time") + pl.duration(microseconds=offset_us)).alias("prediction_time")
+        )
+        .select(["subject_id", "prediction_time"])
+    )
+    log.info("Built %d anchors from EHR data.", len(anchors))
+    return anchors
+
+
 def _compute_labels_for_split(
     cohort_dir: Path,
-    task_labels_path: Path,
     split: str,
     codes: list[str],
     horizon_days: float,
+    anchor_offset_hours: float,
 ) -> pl.DataFrame:
-    label_file = task_labels_path / f"{split}.parquet"
-    if not label_file.exists():
-        log.warning("No task label file for split %s, skipping.", split)
-        return pl.DataFrame()
-
-    anchors = pl.read_parquet(label_file, columns=["subject_id", "prediction_time"])
-    log.info("Split %s: %d anchors", split, len(anchors))
-
     events = _read_meds_split(cohort_dir, split).filter(pl.col("time").is_not_null())
+    anchors = _build_anchors(events, anchor_offset_hours)
+    log.info("Split %s: %d patients -> %d anchors", split, events["subject_id"].n_unique(), len(anchors))
 
-    # Join events to anchors on subject_id
     joined = anchors.join(events, on="subject_id", how="left")
-
-    # Days from prediction_time to event time
     joined = joined.with_columns(
         ((pl.col("time") - pl.col("prediction_time")).dt.total_seconds() / 86400.0).alias("delta_days")
     )
 
-    # For each (subject_id, prediction_time, code): did code appear in (0, horizon_days]?
     in_window = (
         joined.filter((pl.col("delta_days") > 0) & (pl.col("delta_days") <= horizon_days))
         .filter(pl.col("code").is_in(codes))
@@ -98,15 +111,12 @@ def _compute_labels_for_split(
         .with_columns(pl.lit(1.0).alias("occurred"))
     )
 
-    # Pivot to wide: one column per code
     wide = in_window.pivot(
         values="occurred", index=["subject_id", "prediction_time"], on="code", aggregate_function="first"
     )
 
-    # Left-join back to anchors so every anchor row is present
     result = anchors.join(wide, on=["subject_id", "prediction_time"], how="left")
 
-    # Rename code columns to task_0, task_1, ...; fill missing with 0.0
     code_to_task = {code: f"task_{i}" for i, code in enumerate(codes)}
     for code in codes:
         col = code_to_task[code]
@@ -115,7 +125,6 @@ def _compute_labels_for_split(
         else:
             result = result.with_columns(pl.lit(0.0).cast(pl.Float32).alias(col))
 
-    # Ensure column order: subject_id, prediction_time, task_0, ..., task_{N-1}
     task_cols = [f"task_{i}" for i in range(len(codes))]
     return result.select(["subject_id", "prediction_time", *task_cols])
 
@@ -123,12 +132,6 @@ def _compute_labels_for_split(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Prepare multi-task binary labels from MEDS cohort.")
     parser.add_argument("--meds_cohort_dir", required=True, type=Path)
-    parser.add_argument(
-        "--task_labels_dir",
-        required=True,
-        type=Path,
-        help="Dir containing train.parquet, tuning.parquet, held_out.parquet",
-    )
     parser.add_argument("--output_dir", required=True, type=Path)
     parser.add_argument("--num_tasks", type=int, default=25)
     parser.add_argument(
@@ -136,6 +139,12 @@ def main() -> None:
         type=float,
         default=30.0,
         help="Days after prediction_time to look for code occurrence.",
+    )
+    parser.add_argument(
+        "--anchor_offset_hours",
+        type=float,
+        default=24.0,
+        help="Hours after a patient's first event to set as prediction_time.",
     )
     parser.add_argument("--splits", nargs="+", default=list(SPLITS))
     args = parser.parse_args()
@@ -151,7 +160,7 @@ def main() -> None:
     for split in args.splits:
         log.info("Processing split: %s", split)
         df = _compute_labels_for_split(
-            args.meds_cohort_dir, args.task_labels_dir, split, codes, args.horizon_days
+            args.meds_cohort_dir, split, codes, args.horizon_days, args.anchor_offset_hours
         )
         if df.is_empty():
             continue
@@ -162,7 +171,7 @@ def main() -> None:
     metadata = {
         "num_tasks": args.num_tasks,
         "horizon_days": args.horizon_days,
-        "splits": args.splits,
+        "anchor_offset_hours": args.anchor_offset_hours,
         "codes": codes,
     }
     (args.output_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
