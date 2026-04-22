@@ -25,7 +25,9 @@ from .retrievers import (
     load_hf_dataset_retriever,
     load_in_memory_retriever,
 )
-from .task import BinaryClassificationLoss, BinaryClassificationTask
+from .multitask_datamodule import MultiTaskMEDSDatamodule, MultiTaskMEDSDataset, load_code_index
+from .task import BinaryClassificationLoss, BinaryClassificationTask, MultiTaskBinaryClassificationTask
+from .losses import MultiTaskBCELoss
 from .types import (
     EncoderOutput,
     FusionInput,
@@ -39,6 +41,11 @@ from .types import (
 __all__ = [
     "BinaryClassificationLoss",
     "BinaryClassificationTask",
+    "MultiTaskBCELoss",
+    "MultiTaskBinaryClassificationTask",
+    "MultiTaskMEDSDatamodule",
+    "MultiTaskMEDSDataset",
+    "load_code_index",
     "ConcatFusion",
     "DemoInMemoryRetrieverConfig",
     "EncoderOutput",

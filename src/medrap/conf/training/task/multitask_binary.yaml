@@ -1,0 +1,3 @@
+_target_: medrap.task.MultiTaskBinaryClassificationTask
+num_tasks: ???
+output_dim: ${training.task.num_tasks}

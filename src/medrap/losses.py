@@ -8,6 +8,53 @@ from .task import SupervisedLoss, TaskTargets
 from .types import ModelOutput
 
 
+class MultiTaskBCELoss(SupervisedLoss):
+    """Masked mean BCE-with-logits loss across N simultaneous binary tasks.
+
+    Expects logits of shape ``(B, N)`` and float targets of shape ``(B, N)``
+    where ``NaN`` entries are excluded from the loss.
+
+    Examples:
+        >>> import torch
+        >>> from medrap.types import ModelOutput
+        >>> loss_fn = MultiTaskBCELoss()
+        >>> preds = ModelOutput(logits=torch.zeros(2, 3))
+        >>> targets = torch.tensor([[1.0, 0.0, float('nan')], [0.0, 1.0, 1.0]])
+        >>> loss = loss_fn(preds, targets)
+        >>> loss.shape
+        torch.Size([])
+        >>> float(loss) > 0
+        True
+
+        All-NaN batch raises no error but returns zero loss:
+
+        >>> all_nan = torch.full((2, 3), float('nan'))
+        >>> loss_fn(ModelOutput(logits=torch.zeros(2, 3)), all_nan).item()
+        0.0
+    """
+
+    def forward(self, predictions: ModelOutput, targets: TaskTargets) -> Tensor:
+        """Compute masked mean BCE across all valid (patient, task) pairs.
+
+        Args:
+            predictions: Model output with logits shaped ``(B, N)``.
+            targets: Float tensor shaped ``(B, N)``, NaN entries are masked out.
+
+        Returns:
+            Scalar loss.
+        """
+        if not isinstance(targets, Tensor):
+            raise ValueError("MultiTaskBCELoss expects tensor targets.")
+        logits = predictions.logits  # (B, N)
+        valid = ~targets.isnan()  # (B, N)
+        labels = targets.nan_to_num(0.0)
+        per_element = functional.binary_cross_entropy_with_logits(logits, labels, reduction="none")
+        denom = valid.float().sum()
+        if denom == 0:
+            return per_element.sum() * 0.0
+        return (per_element * valid.float()).sum() / denom
+
+
 class MarginalizedRetrievalLoss(nn.Module):
     """REALM-style marginalized log-likelihood loss over retrieved documents.
 

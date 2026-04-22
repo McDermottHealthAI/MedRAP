@@ -1,0 +1,14 @@
+_target_: medrap.multitask_datamodule.MultiTaskMEDSDatamodule
+
+config:
+  _target_: meds_torchdata.MEDSTorchDataConfig
+  tensorized_cohort_dir: ???
+  max_seq_len: ???
+  task_labels_dir: ???
+  seq_sampling_strategy: to_end
+
+mt_labels_dir: ???
+num_tasks: ???
+batch_size: 32
+num_workers: null
+pin_memory: null
