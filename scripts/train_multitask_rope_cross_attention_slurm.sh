@@ -43,7 +43,7 @@ VENV="${REPO_DIR}/.venv/bin/activate"
 
 RETRIEVAL_DB="${REPO_DIR}/data/retrieval_db"
 TENSORIZED_DIR="/groups/mm6677_gp/data/MIMIC_MEDS/MEDS_cohort/processed"
-MT_LABELS_DIR="${REPO_DIR}/data/mt_labels/top25_30d"
+MT_LABELS_DIR="${REPO_DIR}/data/mt_labels/top25_7d"
 NUM_TASKS=25
 
 OUTPUT_DIR="${REPO_DIR}/outputs/mt_rope_cross_attention"

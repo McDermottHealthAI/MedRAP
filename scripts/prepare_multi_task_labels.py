@@ -1,24 +1,39 @@
 """Compute multi-task binary labels from MEDS cohort data.
 
-For every patient in the cohort, a single prediction_time anchor is derived
-directly from the EHR: the patient's first dynamic (non-static) event time
-plus ``--anchor_offset_hours`` hours (default 24h).  No external task-label
-file is required.
+For every patient the prediction anchor is the first dynamic (non-birth) clinical
+event plus ``--anchor_offset_hours`` hours (default 24 h).
 
-For each of the top-N codes (by corpus frequency) the script labels whether
-the code appears within ``--horizon_days`` after prediction_time.
+Codes are selected by a two-pass procedure that avoids trivially easy tasks:
+
+  Pass 1 (train split only)
+    - Count distinct patients and numeric-value fraction per code.
+    - Drop *measurement* codes (those with ``numeric_value`` on more than
+      ``--measurement_threshold`` of rows, e.g. vitals, lab results).
+    - Rank remaining candidates by distinct-patient count (not raw row count)
+      and keep the top ``--num_candidates``.
+
+  Pass 2a (train split)
+    - Generate binary labels for the candidate codes.
+    - Compute positive rate = fraction of patients where the code occurred
+      within ``--horizon_days``.
+    - Keep only codes whose positive rate is in
+      [``--min_positive_rate``, ``--max_positive_rate``].
+    - Take the top ``--num_tasks`` by patient count.
+
+  Pass 2b (tuning / held_out)
+    - Generate labels for the final selected codes only.
 
 Outputs
 -------
 {output_dir}/{split}.parquet
-    Schema: subject_id | prediction_time | task_0 | task_1 | ... | task_{N-1}
+    Schema: subject_id | prediction_time | task_0 | ... | task_{N-1}
     task_i is 1.0 if the code occurred within horizon_days, else 0.0.
 
 {output_dir}/code_index.json
     Maps task index (str) -> MEDS code string.
 
 {output_dir}/metadata.json
-    Records num_tasks, horizon_days, anchor_offset_hours.
+    Records parameters and per-code positive rates.
 
 Usage
 -----
@@ -26,8 +41,10 @@ python scripts/prepare_multi_task_labels.py \\
     --meds_cohort_dir  /path/to/MEDS_cohort \\
     --output_dir       /path/to/mt_labels \\
     --num_tasks        25 \\
-    --horizon_days     30
+    --horizon_days     7
 """
+
+from __future__ import annotations
 
 import argparse
 import json
@@ -42,6 +59,11 @@ log = logging.getLogger(__name__)
 SPLITS = ("train", "tuning", "held_out")
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
 def _shard_files(cohort_dir: Path, split: str) -> list[Path]:
     shard_dir = cohort_dir / "data" / split
     if not shard_dir.exists():
@@ -52,23 +74,71 @@ def _shard_files(cohort_dir: Path, split: str) -> list[Path]:
     return files
 
 
-def _select_top_codes(cohort_dir: Path, num_tasks: int) -> list[str]:
-    """Identify top-N codes by occurrence count, processing one shard at a time."""
-    log.info("Counting code frequencies in train split ...")
+# ---------------------------------------------------------------------------
+# Pass 1: code statistics
+# ---------------------------------------------------------------------------
+
+
+def _compute_code_stats(cohort_dir: Path) -> pl.DataFrame:
+    """Return per-code (distinct_patients, value_frac) from the train split."""
+    log.info("Pass 1: computing code statistics on train split ...")
     files = _shard_files(cohort_dir, "train")
-    counts: dict[str, int] = {}
+    shards: list[pl.DataFrame] = []
     for f in files:
-        df = pl.read_parquet(f, columns=["time", "code"])
-        shard_counts = (
-            df.filter(pl.col("time").is_not_null())
-            .group_by("code")
-            .agg(pl.len().alias("n"))
+        df = pl.read_parquet(f, columns=["subject_id", "time", "code", "numeric_value"]).filter(
+            pl.col("time").is_not_null() & ~pl.col("code").str.starts_with("MEDS_BIRTH")
         )
-        for code, n in shard_counts.iter_rows():
-            counts[code] = counts.get(code, 0) + n
-    top = sorted(counts, key=counts.__getitem__, reverse=True)[:num_tasks]
-    log.info("Selected %d codes, top-3: %s", len(top), top[:3])
-    return top
+        if df.is_empty():
+            continue
+        shards.append(
+            df.group_by("code").agg(
+                pl.len().alias("total_rows"),
+                pl.col("numeric_value").is_not_null().sum().alias("rows_with_value"),
+                pl.col("subject_id").n_unique().alias("distinct_patients"),
+            )
+        )
+    if not shards:
+        raise RuntimeError("No usable events found in train split.")
+    stats = (
+        pl.concat(shards)
+        .group_by("code")
+        .agg(
+            pl.col("total_rows").sum(),
+            pl.col("rows_with_value").sum(),
+            pl.col("distinct_patients").sum(),
+        )
+        .with_columns((pl.col("rows_with_value") / pl.col("total_rows")).alias("value_frac"))
+        .sort("distinct_patients", descending=True)
+    )
+    log.info("Found %d distinct codes in train split.", len(stats))
+    return stats
+
+
+def _select_candidates(
+    stats: pl.DataFrame,
+    measurement_threshold: float,
+    min_patients: int,
+    num_candidates: int,
+) -> list[str]:
+    """Filter out measurement codes; return top candidates by patient count."""
+    df = stats.filter(
+        (pl.col("value_frac") <= measurement_threshold) & (pl.col("distinct_patients") >= min_patients)
+    ).head(num_candidates)
+    codes = df["code"].to_list()
+    log.info(
+        "Candidates after measurement filter: %d  (threshold=%.2f, min_patients=%d)",
+        len(codes),
+        measurement_threshold,
+        min_patients,
+    )
+    if codes:
+        log.info("  Top-3: %s", codes[:3])
+    return codes
+
+
+# ---------------------------------------------------------------------------
+# Pass 2: label generation
+# ---------------------------------------------------------------------------
 
 
 def _process_shard(
@@ -77,16 +147,11 @@ def _process_shard(
     offset_us: int,
     horizon_days: float,
 ) -> pl.DataFrame | None:
-    """Build label rows for one shard. Returns None if shard has no usable events."""
-    df = (
-        pl.read_parquet(f, columns=["subject_id", "time", "code"])
-        .filter(pl.col("time").is_not_null())
-    )
+    """Build binary label rows for one shard. Returns None if no usable events."""
+    df = pl.read_parquet(f, columns=["subject_id", "time", "code"]).filter(pl.col("time").is_not_null())
     if df.is_empty():
         return None
 
-    # Exclude MEDS_BIRTH: it carries the birth year as a timestamp, not a clinical event,
-    # so including it makes the anchor decades before the actual ICU stay.
     clinical = df.filter(~pl.col("code").str.starts_with("MEDS_BIRTH"))
     if clinical.is_empty():
         return None
@@ -100,16 +165,14 @@ def _process_shard(
         .select(["subject_id", "prediction_time"])
     )
 
-    joined = (
-        anchors.join(df, on="subject_id", how="left")
-        .with_columns(
-            ((pl.col("time") - pl.col("prediction_time")).dt.total_seconds() / 86400.0).alias("delta_days")
-        )
+    joined = anchors.join(df, on="subject_id", how="left").with_columns(
+        ((pl.col("time") - pl.col("prediction_time")).dt.total_seconds() / 86400.0).alias("delta_days")
     )
 
     in_window = (
-        joined.filter((pl.col("delta_days") > 0) & (pl.col("delta_days") <= horizon_days))
-        .filter(pl.col("code").is_in(codes))
+        joined.filter(
+            (pl.col("delta_days") > 0) & (pl.col("delta_days") <= horizon_days) & pl.col("code").is_in(codes)
+        )
         .group_by(["subject_id", "prediction_time", "code"])
         .agg(pl.len().alias("n"))
         .with_columns(pl.lit(1.0).alias("occurred"))
@@ -137,25 +200,85 @@ def _process_shard(
     return result.select(["subject_id", "prediction_time", *task_cols])
 
 
-def _compute_labels_for_split(
+def _generate_labels(
     cohort_dir: Path,
     split: str,
     codes: list[str],
     horizon_days: float,
     anchor_offset_hours: float,
 ) -> pl.DataFrame:
-    files = _shard_files(cohort_dir, split)
     offset_us = int(anchor_offset_hours * 3600 * 1_000_000)
-    shards = []
-    for f in files:
-        shard = _process_shard(f, codes, offset_us, horizon_days)
-        if shard is not None:
-            shards.append(shard)
+    shards = [
+        s
+        for f in _shard_files(cohort_dir, split)
+        if (s := _process_shard(f, codes, offset_us, horizon_days)) is not None
+    ]
     if not shards:
         return pl.DataFrame()
     result = pl.concat(shards)
-    log.info("Split %s: %d patients", split, len(result))
+    log.info("Split %s: %d patients.", split, len(result))
     return result
+
+
+# ---------------------------------------------------------------------------
+# Positive-rate filtering
+# ---------------------------------------------------------------------------
+
+
+def _filter_by_positive_rate(
+    train_labels: pl.DataFrame,
+    candidates: list[str],
+    stats: pl.DataFrame,
+    min_rate: float,
+    max_rate: float,
+    num_tasks: int,
+) -> list[str]:
+    """Keep codes whose train positive rate is in [min_rate, max_rate]."""
+    n = len(train_labels)
+    if n == 0:
+        return candidates[:num_tasks]
+
+    positive_rates: dict[str, float] = {}
+    for i, code in enumerate(candidates):
+        col = f"task_{i}"
+        if col in train_labels.columns:
+            positive_rates[code] = float(train_labels[col].mean())
+        else:
+            positive_rates[code] = 0.0
+
+    passing = [c for c in candidates if min_rate <= positive_rates[c] <= max_rate]
+    if len(passing) < num_tasks:
+        log.warning(
+            "Only %d codes pass positive-rate filter [%.2f, %.2f]; requested %d. "
+            "Consider relaxing --min_positive_rate / --max_positive_rate.",
+            len(passing),
+            min_rate,
+            max_rate,
+            num_tasks,
+        )
+
+    # Re-sort by patient count (preserve original ranking)
+    order = {c: i for i, c in enumerate(stats["code"].to_list())}
+    passing.sort(key=lambda c: order.get(c, 999_999))
+    selected = passing[:num_tasks]
+
+    if selected:
+        rates = [positive_rates[c] for c in selected]
+        log.info(
+            "Selected %d codes  positive_rate: min=%.3f  max=%.3f  mean=%.3f",
+            len(selected),
+            min(rates),
+            max(rates),
+            sum(rates) / len(rates),
+        )
+    for c in selected:
+        log.info("  %-60s  positive_rate=%.3f", c, positive_rates[c])
+    return selected
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 
 def main() -> None:
@@ -166,45 +289,135 @@ def main() -> None:
     parser.add_argument(
         "--horizon_days",
         type=float,
-        default=30.0,
-        help="Days after prediction_time to look for code occurrence.",
+        default=7.0,
+        help="Days after prediction_time to look for code occurrence. Default: 7.",
     )
     parser.add_argument(
         "--anchor_offset_hours",
         type=float,
         default=24.0,
-        help="Hours after a patient's first event to set as prediction_time.",
+        help="Hours after first event to set as prediction_time.",
+    )
+    parser.add_argument(
+        "--measurement_threshold",
+        type=float,
+        default=0.3,
+        help="Exclude codes where >X fraction of rows carry a numeric value. Default: 0.3.",
+    )
+    parser.add_argument(
+        "--min_patients",
+        type=int,
+        default=50,
+        help="Minimum distinct training patients a code must appear in.",
+    )
+    parser.add_argument(
+        "--min_positive_rate",
+        type=float,
+        default=0.05,
+        help="Minimum fraction of patients with code in horizon window. Default: 0.05.",
+    )
+    parser.add_argument(
+        "--max_positive_rate",
+        type=float,
+        default=0.90,
+        help="Maximum fraction of patients with code in horizon window. Default: 0.90.",
+    )
+    parser.add_argument(
+        "--num_candidates",
+        type=int,
+        default=500,
+        help="Candidate codes carried through to positive-rate filtering.",
     )
     parser.add_argument("--splits", nargs="+", default=list(SPLITS))
     args = parser.parse_args()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    codes = _select_top_codes(args.meds_cohort_dir, args.num_tasks)
+    # Pass 1: code statistics → candidates
+    stats = _compute_code_stats(args.meds_cohort_dir)
+    candidates = _select_candidates(
+        stats,
+        measurement_threshold=args.measurement_threshold,
+        min_patients=args.min_patients,
+        num_candidates=args.num_candidates,
+    )
+    if not candidates:
+        raise RuntimeError(
+            "No candidate codes survived measurement filtering. Try raising --measurement_threshold."
+        )
 
-    code_index = {str(i): code for i, code in enumerate(codes)}
-    (args.output_dir / "code_index.json").write_text(json.dumps(code_index, indent=2))
-    log.info("Saved code_index.json")
+    # Pass 2a: train labels for candidates → positive-rate filtering
+    log.info("Pass 2a: generating candidate labels for train split ...")
+    train_labels_raw = _generate_labels(
+        args.meds_cohort_dir, "train", candidates, args.horizon_days, args.anchor_offset_hours
+    )
+    if train_labels_raw.is_empty():
+        raise RuntimeError("No train labels generated. Check --meds_cohort_dir.")
 
+    final_codes = _filter_by_positive_rate(
+        train_labels_raw,
+        candidates,
+        stats,
+        min_rate=args.min_positive_rate,
+        max_rate=args.max_positive_rate,
+        num_tasks=args.num_tasks,
+    )
+    if not final_codes:
+        raise RuntimeError(
+            "No codes passed positive-rate filtering. Adjust --min_positive_rate / --max_positive_rate."
+        )
+
+    # Rename columns from candidate indices to final indices and save train split
+    old_to_new = {f"task_{candidates.index(c)}": f"task_{i}" for i, c in enumerate(final_codes)}
+    final_cols = [f"task_{i}" for i in range(len(final_codes))]
+    train_labels = (
+        train_labels_raw.select(
+            ["subject_id", "prediction_time"] + [f"task_{candidates.index(c)}" for c in final_codes]
+        )
+        .rename(old_to_new)
+        .select(["subject_id", "prediction_time", *final_cols])
+    )
+    if "train" in args.splits:
+        out = args.output_dir / "train.parquet"
+        train_labels.write_parquet(out)
+        log.info("Saved train.parquet (%d rows, %d tasks).", len(train_labels), len(final_codes))
+
+    # Pass 2b: remaining splits with final codes only
     for split in args.splits:
-        log.info("Processing split: %s", split)
-        df = _compute_labels_for_split(
-            args.meds_cohort_dir, split, codes, args.horizon_days, args.anchor_offset_hours
+        if split == "train":
+            continue
+        log.info("Pass 2b: generating labels for split %s ...", split)
+        df = _generate_labels(
+            args.meds_cohort_dir, split, final_codes, args.horizon_days, args.anchor_offset_hours
         )
         if df.is_empty():
+            log.warning("No labels for split %s — skipping.", split)
             continue
-        out_file = args.output_dir / f"{split}.parquet"
-        df.write_parquet(out_file)
-        log.info("Saved %s (%d rows, %d task columns)", out_file, len(df), args.num_tasks)
+        out = args.output_dir / f"{split}.parquet"
+        df.write_parquet(out)
+        log.info("Saved %s (%d rows, %d tasks).", out.name, len(df), len(final_codes))
+
+    # Metadata
+    positive_rates = {}
+    for i, code in enumerate(final_codes):
+        col = f"task_{i}"
+        positive_rates[code] = float(train_labels[col].mean()) if col in train_labels.columns else 0.0
+
+    code_index = {str(i): code for i, code in enumerate(final_codes)}
+    (args.output_dir / "code_index.json").write_text(json.dumps(code_index, indent=2))
 
     metadata = {
-        "num_tasks": args.num_tasks,
+        "num_tasks": len(final_codes),
         "horizon_days": args.horizon_days,
         "anchor_offset_hours": args.anchor_offset_hours,
-        "codes": codes,
+        "measurement_threshold": args.measurement_threshold,
+        "min_positive_rate": args.min_positive_rate,
+        "max_positive_rate": args.max_positive_rate,
+        "codes": final_codes,
+        "positive_rates": positive_rates,
     }
     (args.output_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
-    log.info("Done.")
+    log.info("Saved code_index.json and metadata.json. Done.")
 
 
 if __name__ == "__main__":

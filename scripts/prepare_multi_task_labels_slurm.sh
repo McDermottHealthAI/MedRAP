@@ -35,10 +35,10 @@ REPO_DIR="${SLURM_SUBMIT_DIR}"
 VENV="${REPO_DIR}/.venv/bin/activate"
 
 MEDS_COHORT_DIR="/groups/mm6677_gp/data/MIMIC_MEDS/MEDS_cohort"
-MT_LABELS_DIR="${REPO_DIR}/data/mt_labels/top25_30d"
+MT_LABELS_DIR="${REPO_DIR}/data/mt_labels/top25_7d"
 
 NUM_TASKS=25
-HORIZON_DAYS=30
+HORIZON_DAYS=7
 ANCHOR_OFFSET_HOURS=24
 
 echo "=== Job info ==="
