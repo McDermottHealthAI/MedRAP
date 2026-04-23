@@ -1,8 +1,6 @@
 """Tests for multi-task binary classification components."""
 
 import json
-import tempfile
-from pathlib import Path
 
 import polars as pl
 import pytest
@@ -13,10 +11,10 @@ from medrap.losses import MultiTaskBCELoss
 from medrap.task import MultiTaskBinaryClassificationTask
 from medrap.types import ModelOutput
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_batch(num_tasks: int, batch_size: int = 2) -> MEDSTorchBatch:
     batch = MEDSTorchBatch(
@@ -32,6 +30,7 @@ def _make_batch(num_tasks: int, batch_size: int = 2) -> MEDSTorchBatch:
 # ---------------------------------------------------------------------------
 # MultiTaskBinaryClassificationTask
 # ---------------------------------------------------------------------------
+
 
 class TestMultiTaskBinaryClassificationTask:
     def test_output_dim(self):
@@ -84,6 +83,7 @@ class TestMultiTaskBinaryClassificationTask:
 # MultiTaskBCELoss
 # ---------------------------------------------------------------------------
 
+
 class TestMultiTaskBCELoss:
     def test_output_is_scalar(self):
         loss_fn = MultiTaskBCELoss()
@@ -98,9 +98,7 @@ class TestMultiTaskBCELoss:
         logits = torch.zeros(1, 2)
         targets = torch.tensor([[1.0, float("nan")]])
         loss = loss_fn(ModelOutput(logits=logits), targets)
-        expected = torch.nn.functional.binary_cross_entropy_with_logits(
-            torch.zeros(1), torch.ones(1)
-        )
+        expected = torch.nn.functional.binary_cross_entropy_with_logits(torch.zeros(1), torch.ones(1))
         assert torch.isclose(loss, expected, atol=1e-5)
 
     def test_all_nan_returns_zero(self):
@@ -127,6 +125,7 @@ class TestMultiTaskBCELoss:
 # ---------------------------------------------------------------------------
 # MultiTaskMEDSDatamodule (integration, uses temp files)
 # ---------------------------------------------------------------------------
+
 
 class TestMultiTaskMEDSDataset:
     def test_load_code_index(self, tmp_path):
