@@ -11,7 +11,7 @@ from .configs import (
     prepare_retrieval_dataset_from_config,
 )
 from .encoders import MEDSCodeEncoder, PatientEncoder, TabularEncoder, TokenEmbeddingEncoder
-from .fusion import ConcatFusion, FusionModule, ReplaceFusion
+from .fusion import ConcatFusion, CrossAttentionFusion, FusionModule, ReplaceFusion
 from .heads import LinearHead, PredictionHead
 from .lightning_module import MedRAPSupervisedLightningModule
 from .model import RetrievalAugmentedModel
@@ -41,6 +41,7 @@ __all__ = [
     "BinaryClassificationLoss",
     "BinaryClassificationTask",
     "ConcatFusion",
+    "CrossAttentionFusion",
     "DemoInMemoryRetrieverConfig",
     "EncoderOutput",
     "FusionInput",

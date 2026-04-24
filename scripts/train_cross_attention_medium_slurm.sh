@@ -3,7 +3,7 @@
 # SLURM: CrossAttentionFusion (medium) on MIMIC MEDS data.
 # ------------------------------------------------------------
 # Patient sequence cross-attends to per-token retrieved doc
-# representations (TokenFeatureRetrievalEncoder, K=4 docs).
+# representations (TokenFeatureRetrievalEncoder, K=8 docs).
 #
 # Architecture:
 #   encoder         : token_embedding_128  (D_ehr=128)
