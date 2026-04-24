@@ -91,7 +91,7 @@ medrap train \
     training.datamodule.batch_size=32 \
     training.datamodule.config.seq_sampling_strategy=to_end \
     training/trainer=lightning_wandb \
-    training.trainer.max_epochs=10 \
+    training.trainer.max_epochs=1 \
     training.trainer.accelerator=gpu \
     training.trainer.devices=1 \
     training.trainer.gradient_clip_val=1.0 \

@@ -169,6 +169,43 @@ class ConcatFusion(FusionModule):
         return FusionOutput(fused_state=torch.cat((ps.float(), rm.float()), dim=-1))
 
 
+class PassthroughFusion(FusionModule):
+    """No-op fusion that ignores retrieval memory and returns patient state unchanged.
+
+    Use this as a retrieval-ablation baseline: the retriever still runs, but its
+    output is discarded before the prediction head, so the model predicts from
+    patient state alone.
+
+    Input shapes (via :class:`~medrap.types.FusionInput`):
+        - ``patient_state``: ``(B, S_ehr, D_ehr)``
+
+    Output shape:
+        ``fused_state``: ``(B, S_ehr, D_ehr)`` — identical to ``patient_state``.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+
+    def fuse(self, fusion_input: FusionInput) -> FusionOutput:
+        """Return patient state as-is, ignoring retrieval memory.
+
+        Examples:
+            >>> from medrap.types import FusionInput
+            >>> fusion = PassthroughFusion()
+            >>> ps = torch.randn(2, 5, 128)
+            >>> fi = FusionInput(
+            ...     patient_state=ps,
+            ...     retrieval_memory=torch.randn(2, 1, 8, 10, 64),
+            ... )
+            >>> out = fusion.fuse(fi)
+            >>> tuple(out.fused_state.shape)
+            (2, 5, 128)
+            >>> (out.fused_state == ps).all().item()
+            True
+        """
+        return FusionOutput(fused_state=fusion_input.patient_state)
+
+
 class _CrossAttentionLayer(nn.Module):
     """Single pre-norm cross-attention layer: LN → cross-attn → residual → LN → FFN → residual."""
 

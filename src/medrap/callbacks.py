@@ -411,6 +411,8 @@ class EndOfFitValAUROCCallback(Callback):
                 targets = task.extract_targets(batch)
                 if not isinstance(targets, Tensor):
                     continue
+                if out.logits.ndim != 2 or out.logits.shape[1] not in (1, 2):
+                    return
                 probs_chunks.append(_positive_class_probs(out.logits).detach().float().cpu())
                 target_chunks.append(targets.detach().float().cpu().view(-1))
 
@@ -449,6 +451,185 @@ class EndOfFitValAUROCCallback(Callback):
             pl_module.train()
         else:
             pl_module.eval()
+
+
+class EndOfFitMultiTaskAUROCCallback(Callback):
+    """Compute per-task and mean AUROC at the end of fit for multi-task binary models.
+
+    Runs one full pass over the validation set, computes AUROC per task (skipping
+    tasks with only one class present), and logs:
+
+    - ``final/val_auroc/mean`` — mean across valid tasks
+    - ``final/val_auroc/<slug>`` — per-task, using code names from
+      ``code_index.json`` in the datamodule's label directory when available,
+      otherwise ``task_0``, ``task_1``, …
+
+    Silently no-ops when the task is not ``MultiTaskBinaryClassificationTask``.
+    """
+
+    def _load_code_names(self, trainer: pl.Trainer, num_tasks: int) -> list[str]:
+        import json
+        import os
+
+        dm = getattr(trainer, "datamodule", None)
+        labels_dir = getattr(dm, "mt_labels_dir", None)
+        if labels_dir:
+            try:
+                with open(os.path.join(labels_dir, "code_index.json")) as f:
+                    index = json.load(f)
+                return [index[str(i)] for i in range(num_tasks)]
+            except Exception:
+                pass
+        return [f"task_{i}" for i in range(num_tasks)]
+
+    @staticmethod
+    def _slugify(code: str) -> str:
+        import re
+        return re.sub(r"[^a-zA-Z0-9]+", "_", code).strip("_").lower()[:60]
+
+    def on_fit_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        if getattr(trainer, "sanity_checking", False):
+            return
+
+        from .task import MultiTaskBinaryClassificationTask
+
+        task = getattr(pl_module, "task", None)
+        if not isinstance(task, MultiTaskBinaryClassificationTask):
+            return
+
+        val_loader = _resolve_val_dataloader(trainer)
+        if val_loader is None:
+            return
+
+        code_names = self._load_code_names(trainer, task.num_tasks)
+        device = pl_module.device
+        pl_module_was_training = pl_module.training
+        pl_module.eval()
+
+        logits_chunks: list[torch.Tensor] = []
+        target_chunks: list[torch.Tensor] = []
+        with torch.no_grad():
+            for batch in val_loader:
+                batch = pl_module.transfer_batch_to_device(batch, device, dataloader_idx=0)
+                out = pl_module(batch)
+                if not isinstance(out, ModelOutput):
+                    continue
+                targets = task.extract_targets(batch)
+                if not isinstance(targets, torch.Tensor):
+                    continue
+                logits_chunks.append(out.logits.detach().cpu())
+                target_chunks.append(targets.detach().cpu())
+
+        if pl_module_was_training:
+            pl_module.train()
+        else:
+            pl_module.eval()
+
+        if not logits_chunks:
+            return
+
+        import numpy as np
+        from sklearn.metrics import roc_auc_score
+
+        all_probs = torch.sigmoid(torch.cat(logits_chunks, dim=0)).numpy()   # (B, N)
+        all_targets = torch.cat(target_chunks, dim=0).numpy()                 # (B, N)
+
+        per_task: dict[str, float] = {}
+        for n in range(task.num_tasks):
+            t = all_targets[:, n]
+            valid = ~np.isnan(t)
+            t_v, p_v = t[valid], all_probs[valid, n]
+            if len(t_v) < 2 or len(np.unique(t_v)) < 2:
+                continue
+            try:
+                per_task[code_names[n]] = float(roc_auc_score(t_v, p_v))
+            except Exception:
+                continue
+
+        if not per_task:
+            return
+
+        mean_auroc = float(np.mean(list(per_task.values())))
+        step = int(getattr(trainer, "global_step", 0))
+        metrics: dict[str, float] = {"final/val_auroc/mean": mean_auroc}
+        for code, auroc in per_task.items():
+            metrics[f"final/val_auroc/{self._slugify(code)}"] = auroc
+
+        for lg in trainer.loggers:
+            log_fn = getattr(lg, "log_metrics", None)
+            if callable(log_fn):
+                log_fn(metrics, step=step)
+            if isinstance(lg, WandbLogger):
+                exp = getattr(lg, "experiment", None)
+                if exp is not None:
+                    exp.summary["final_val_auroc_mean"] = mean_auroc
+                    exp.log(metrics, step=step)
+
+
+class EpochEndSurvivalCStatCallback(Callback):
+    """Logs the time-dependent C-statistic at the end of each validation epoch.
+
+    Runs one additional inference pass over the validation set, computes
+    the Antolini (2005) C-statistic across all tasks, and logs it as
+    ``val/c_statistic``. Silently skips when the task is not a
+    ``MultiTaskSurvivalTask``.
+    """
+
+    def on_validation_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        if getattr(trainer, "sanity_checking", False):
+            return
+
+        from .survival import MultiTaskSurvivalTask, time_dependent_c_statistic
+
+        task = getattr(pl_module, "task", None)
+        if not isinstance(task, MultiTaskSurvivalTask):
+            return
+
+        val_loader = _resolve_val_dataloader(trainer)
+        if val_loader is None:
+            return
+
+        device = pl_module.device
+        pl_module_was_training = pl_module.training
+        pl_module.eval()
+
+        logits_chunks: list[torch.Tensor] = []
+        target_chunks: list[torch.Tensor] = []
+        with torch.no_grad():
+            for batch in val_loader:
+                batch = pl_module.transfer_batch_to_device(batch, device, dataloader_idx=0)
+                out = pl_module(batch)
+                if not isinstance(out, ModelOutput):
+                    continue
+                targets = task.extract_targets(batch)
+                if not isinstance(targets, torch.Tensor):
+                    continue
+                logits_chunks.append(out.logits.detach().cpu())
+                target_chunks.append(targets.detach().cpu())
+
+        if pl_module_was_training:
+            pl_module.train()
+
+        if not logits_chunks:
+            return
+
+        import math
+
+        all_logits = torch.cat(logits_chunks, dim=0)
+        all_targets = torch.cat(target_chunks, dim=0)
+        c_stat = time_dependent_c_statistic(all_logits, all_targets, task.num_tasks, task.num_bins)
+        if math.isnan(c_stat):
+            return
+
+        step = int(getattr(trainer, "global_step", 0))
+        for lg in trainer.loggers:
+            log_fn = getattr(lg, "log_metrics", None)
+            if callable(log_fn):
+                log_fn({"val/c_statistic": c_stat}, step=step)
+            if isinstance(lg, WandbLogger):
+                exp = getattr(lg, "experiment", None)
+                if exp is not None:
+                    exp.log({"val/c_statistic": c_stat}, step=step)
 
 
 class GradientNormCallback(Callback):
