@@ -234,6 +234,57 @@ def test_predict_step_skips_targets_when_extract_raises(
     assert "targets" not in result
 
 
+def test_configure_optimizers_with_warmup_returns_scheduler_dict(
+    supervised_batch: MEDSTorchBatch,
+    model_output_binary_model: nn.Module,
+) -> None:
+    module = MedRAPSupervisedLightningModule(
+        model=model_output_binary_model,
+        task=BinaryClassificationTask(),
+        warmup_steps=10,
+    )
+    trainer = lightning.Trainer(
+        max_epochs=1,
+        logger=False,
+        enable_checkpointing=False,
+        enable_model_summary=False,
+        enable_progress_bar=False,
+        limit_train_batches=2,
+    )
+    dataloader = DataLoader([supervised_batch, supervised_batch], batch_size=None)
+    trainer.fit(module, train_dataloaders=dataloader)
+
+    result = module.configure_optimizers()
+    assert isinstance(result, dict)
+    assert "optimizer" in result
+    assert "lr_scheduler" in result
+    assert result["lr_scheduler"]["interval"] == "step"
+
+
+def test_configure_optimizers_without_warmup_returns_optimizer(
+    supervised_batch: MEDSTorchBatch,
+    model_output_binary_model: nn.Module,
+) -> None:
+    module = MedRAPSupervisedLightningModule(
+        model=model_output_binary_model,
+        task=BinaryClassificationTask(),
+        warmup_steps=0,
+    )
+    trainer = lightning.Trainer(
+        max_epochs=1,
+        logger=False,
+        enable_checkpointing=False,
+        enable_model_summary=False,
+        enable_progress_bar=False,
+        limit_train_batches=1,
+    )
+    dataloader = DataLoader([supervised_batch], batch_size=None)
+    trainer.fit(module, train_dataloaders=dataloader)
+
+    result = module.configure_optimizers()
+    assert not isinstance(result, dict)
+
+
 def test_predict_step_captures_marginalized_tensors_from_metadata(
     supervised_batch: MEDSTorchBatch,
 ) -> None:
