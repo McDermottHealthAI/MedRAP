@@ -34,7 +34,9 @@ from .preparation import (
 from .query_projection import LinearQueryProjector, SequenceMeanQueryProjector
 from .retrieval_encoder import (
     KeyEmbeddingRetrievalEncoder,
+    LinearProjectionRetrievalEncoder,
     MeanPooledRetrievalEncoder,
+    PerDocMeanPooledRetrievalEncoder,
     TokenFeatureRetrievalEncoder,
 )
 from .retrievers import InMemoryRetriever, load_hf_dataset_retriever
@@ -146,6 +148,19 @@ MeanPooledRetrievalEncoderConfig = builds_any(
 KeyEmbeddingRetrievalEncoderConfig = builds_any(
     KeyEmbeddingRetrievalEncoder,
     zen_dataclass={"cls_name": "KeyEmbeddingRetrievalEncoderConfig"},
+)
+LinearProjectionRetrievalEncoderConfig = builds_any(
+    LinearProjectionRetrievalEncoder,
+    in_dim=1024,
+    out_dim=1024,
+    zen_dataclass={"cls_name": "LinearProjectionRetrievalEncoderConfig"},
+)
+PerDocMeanPooledRetrievalEncoderConfig = builds_any(
+    PerDocMeanPooledRetrievalEncoder,
+    vocab_size=1024,
+    embedding_dim=4,
+    pretrained_model_name_or_path=None,
+    zen_dataclass={"cls_name": "PerDocMeanPooledRetrievalEncoderConfig"},
 )
 ReplaceFusionConfig = builds_any(
     ReplaceFusion,
