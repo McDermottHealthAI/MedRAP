@@ -4,7 +4,7 @@
 #        TimeDeltaRoPE encoder + CrossAttentionFusion (medium).
 # ------------------------------------------------------------
 # Predicts N=25 binary code-occurrence tasks simultaneously
-# ("will code X appear within 30 days?") using the full RAP
+# ("will code X appear within 7 days?") using the full RAP
 # pipeline with retrieval active throughout.
 #
 # Architecture:

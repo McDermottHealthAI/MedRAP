@@ -1,11 +1,16 @@
 """Lightning callbacks for training diagnostics."""
 
+import json
+import os
+import re
 from collections import defaultdict
 
 import lightning.pytorch as pl
+import numpy as np
 import torch
 from lightning.pytorch.callbacks import Callback
 from lightning.pytorch.loggers import WandbLogger
+from sklearn.metrics import roc_auc_score
 from torch import Tensor
 from torchmetrics.functional.classification import binary_auroc
 
@@ -412,6 +417,8 @@ class EndOfFitValAUROCCallback(Callback):
                 if not isinstance(targets, Tensor):
                     continue
                 if out.logits.ndim != 2 or out.logits.shape[1] not in (1, 2):
+                    if pl_module_was_training:
+                        pl_module.train()
                     return
                 probs_chunks.append(_positive_class_probs(out.logits).detach().float().cpu())
                 target_chunks.append(targets.detach().float().cpu().view(-1))
@@ -468,9 +475,6 @@ class EndOfFitMultiTaskAUROCCallback(Callback):
     """
 
     def _load_code_names(self, trainer: pl.Trainer, num_tasks: int) -> list[str]:
-        import json
-        import os
-
         dm = getattr(trainer, "datamodule", None)
         labels_dir = getattr(dm, "mt_labels_dir", None)
         if labels_dir:
@@ -484,7 +488,6 @@ class EndOfFitMultiTaskAUROCCallback(Callback):
 
     @staticmethod
     def _slugify(code: str) -> str:
-        import re
         return re.sub(r"[^a-zA-Z0-9]+", "_", code).strip("_").lower()[:60]
 
     def on_fit_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
@@ -528,11 +531,8 @@ class EndOfFitMultiTaskAUROCCallback(Callback):
         if not logits_chunks:
             return
 
-        import numpy as np
-        from sklearn.metrics import roc_auc_score
-
-        all_probs = torch.sigmoid(torch.cat(logits_chunks, dim=0)).numpy()   # (B, N)
-        all_targets = torch.cat(target_chunks, dim=0).numpy()                 # (B, N)
+        all_probs = torch.sigmoid(torch.cat(logits_chunks, dim=0)).numpy()  # (B, N)
+        all_targets = torch.cat(target_chunks, dim=0).numpy()  # (B, N)
 
         per_task: dict[str, float] = {}
         for n in range(task.num_tasks):

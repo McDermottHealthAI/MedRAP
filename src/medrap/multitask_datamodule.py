@@ -20,7 +20,6 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _SPLIT_FILES = {"train": "train.parquet", "tuning": "tuning.parquet", "held_out": "held_out.parquet"}
-_MEDS_SPLIT_NAMES = {"train": "train", "tuning": "tuning", "test": "held_out"}
 
 MT_LABEL_KEY = "multi_task_labels"
 

@@ -292,6 +292,8 @@ class MultiTaskBinaryClassificationTask(SupervisedTask):
     """
 
     def __init__(self, *, num_tasks: int) -> None:
+        if num_tasks <= 0:
+            raise ValueError(f"num_tasks must be a positive integer, got {num_tasks}")
         super().__init__(output_dim=num_tasks)
         self.num_tasks = num_tasks
 
@@ -314,7 +316,7 @@ class MultiTaskBinaryClassificationTask(SupervisedTask):
             ...     numeric_value_mask=torch.zeros(2, 2, dtype=torch.bool),
             ...     time_delta_days=torch.zeros(2, 2),
             ... )
-            >>> batch.multi_task_labels = torch.tensor([[1.0, 0.0], [float('nan'), 1.0]])
+            >>> batch.multi_task_labels = torch.tensor([[1.0, 0.0], [float("nan"), 1.0]])
             >>> targets = task.extract_targets(batch)
             >>> tuple(targets.shape)
             (2, 2)
