@@ -11,13 +11,14 @@ from .configs import (
     prepare_retrieval_dataset_from_config,
 )
 from .encoders import MEDSCodeEncoder, PatientEncoder, TabularEncoder, TokenEmbeddingEncoder
-from .fusion import ConcatFusion, FusionModule, ReplaceFusion
+from .fusion import ConcatFusion, CrossAttentionFusion, FusionModule, ReplaceFusion
 from .heads import LinearHead, PredictionHead
 from .lightning_module import MedRAPSupervisedLightningModule
 from .model import RetrievalAugmentedModel
 from .pooling import IdentityPooling, MaskedMeanPooling, PoolingModule
 from .preparation import OrderedFieldDocumentRenderer, prepare_retrieval_dataset
 from .query_projection import LinearQueryProjector, QueryProjector, SequenceMeanQueryProjector
+from .retrieval_encoder import LinearProjectionRetrievalEncoder, PerDocMeanPooledRetrievalEncoder
 from .retrievers import (
     HFDatasetRetriever,
     InMemoryRetriever,
@@ -40,6 +41,7 @@ __all__ = [
     "BinaryClassificationLoss",
     "BinaryClassificationTask",
     "ConcatFusion",
+    "CrossAttentionFusion",
     "DemoInMemoryRetrieverConfig",
     "EncoderOutput",
     "FusionInput",
@@ -51,6 +53,7 @@ __all__ = [
     "InMemoryRetriever",
     "InMemoryRetrieverConfig",
     "LinearHead",
+    "LinearProjectionRetrievalEncoder",
     "LinearQueryProjector",
     "MEDSCodeEncoder",
     "MaskedMeanPooling",
@@ -58,6 +61,7 @@ __all__ = [
     "ModelOutput",
     "OrderedFieldDocumentRenderer",
     "PatientEncoder",
+    "PerDocMeanPooledRetrievalEncoder",
     "PipelineConfig",
     "PoolingModule",
     "PredictionHead",

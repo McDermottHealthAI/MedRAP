@@ -1,1 +1,3 @@
 _target_: medrap.retrieval_encoder.TokenFeatureRetrievalEncoder
+vocab_size: ???
+embedding_dim: 64

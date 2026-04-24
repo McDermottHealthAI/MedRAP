@@ -34,7 +34,9 @@ from .preparation import (
 from .query_projection import LinearQueryProjector, SequenceMeanQueryProjector
 from .retrieval_encoder import (
     KeyEmbeddingRetrievalEncoder,
+    LinearProjectionRetrievalEncoder,
     MeanPooledRetrievalEncoder,
+    PerDocMeanPooledRetrievalEncoder,
     TokenFeatureRetrievalEncoder,
 )
 from .retrievers import InMemoryRetriever, load_hf_dataset_retriever
@@ -146,6 +148,19 @@ MeanPooledRetrievalEncoderConfig = builds_any(
 KeyEmbeddingRetrievalEncoderConfig = builds_any(
     KeyEmbeddingRetrievalEncoder,
     zen_dataclass={"cls_name": "KeyEmbeddingRetrievalEncoderConfig"},
+)
+LinearProjectionRetrievalEncoderConfig = builds_any(
+    LinearProjectionRetrievalEncoder,
+    in_dim=1024,
+    out_dim=1024,
+    zen_dataclass={"cls_name": "LinearProjectionRetrievalEncoderConfig"},
+)
+PerDocMeanPooledRetrievalEncoderConfig = builds_any(
+    PerDocMeanPooledRetrievalEncoder,
+    vocab_size=1024,
+    embedding_dim=4,
+    pretrained_model_name_or_path=None,
+    zen_dataclass={"cls_name": "PerDocMeanPooledRetrievalEncoderConfig"},
 )
 ReplaceFusionConfig = builds_any(
     ReplaceFusion,
@@ -418,6 +433,8 @@ class PrepareRetrievalDatasetConfig:
     embedder: ComponentConfig = field(default_factory=SentenceTransformerEmbedderConfig)
     index: RetrievalDatasetIndexConfig = field(default_factory=RetrievalDatasetIndexConfig)
     output: RetrievalDatasetOutputConfig = field(default_factory=RetrievalDatasetOutputConfig)
+    num_docs: int | None = None
+    num_docs_seed: int = 42
 
 
 @dataclass
@@ -587,9 +604,50 @@ def prepare_retrieval_dataset_from_config(config: Any) -> str:
         ...     r = prepare_retrieval_dataset_from_config(cfg)
         >>> r == "/tmp/prepared_out" and captured.get("output_dir") == str(artifact)
         True
+
+    ``num_docs`` applies a deterministic shuffle then takes the first ``num_docs`` rows:
+
+        >>> class _RecordingDataset:
+        ...     def __init__(self) -> None:
+        ...         self.shuffle_seed: int | None = None
+        ...
+        ...     def shuffle(self, seed: int = 42):
+        ...         self.shuffle_seed = int(seed)
+        ...         return self
+        ...
+        ...     def select(self, indices):
+        ...         return ("subset", self.shuffle_seed, list(indices))
+        >>> captured_subset = {}
+        >>> def _fake_prep_subset(*_a, **kwargs):
+        ...     captured_subset.clear()
+        ...     captured_subset.update(kwargs)
+        ...     return "/tmp/prepared_subset"
+        >>> _stubs_subset = [_RecordingDataset(), object(), object(), object()]
+        >>> def _fake_inst_subset(_cfg):
+        ...     return _stubs_subset.pop(0)
+        >>> with (
+        ...     patch.object(_cfg_mod, "prepare_retrieval_dataset", _fake_prep_subset),
+        ...     patch.object(_cfg_mod, "instantiate_any", _fake_inst_subset),
+        ... ):
+        ...     cfg_subset = PrepareRetrievalDatasetAppConfig(
+        ...         prep=PrepareRetrievalDatasetConfig(
+        ...             output=RetrievalDatasetOutputConfig(output_dir="/tmp/artifact_subset"),
+        ...             num_docs=3,
+        ...             num_docs_seed=9,
+        ...         )
+        ...     )
+        ...     _r_subset = prepare_retrieval_dataset_from_config(cfg_subset)
+        >>> _r_subset == "/tmp/prepared_subset"
+        True
+        >>> captured_subset["dataset"]
+        ('subset', 9, [0, 1, 2])
     """
     prep_cfg = config.prep
     dataset = instantiate_any(prep_cfg.source)
+    num_docs = getattr(prep_cfg, "num_docs", None)
+    if num_docs is not None:
+        num_docs_seed = int(getattr(prep_cfg, "num_docs_seed", 42))
+        dataset = dataset.shuffle(seed=num_docs_seed).select(range(int(num_docs)))
     renderer = instantiate_any(prep_cfg.document)
     tokenizer = instantiate_any(prep_cfg.tokenizer)
     embedder = instantiate_any(prep_cfg.embedder)

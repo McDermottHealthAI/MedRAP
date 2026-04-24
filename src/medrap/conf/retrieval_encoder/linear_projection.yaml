@@ -1,0 +1,3 @@
+_target_: medrap.retrieval_encoder.LinearProjectionRetrievalEncoder
+in_dim: 1024
+out_dim: 1024
