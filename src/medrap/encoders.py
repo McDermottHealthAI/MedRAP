@@ -104,27 +104,26 @@ class _TimeDeltaRoPEAttention(nn.Module):
         rope_sin: Tensor,
         key_padding_mask: Tensor | None = None,
     ) -> Tensor:
-        B, S, _ = x.shape
-        H, D_h = self.num_heads, self.head_dim
+        batch_size, seq_len, _ = x.shape
+        n_heads, head_dim = self.num_heads, self.head_dim
 
-        Q = self.q_proj(x).reshape(B, S, H, D_h)
-        K = self.k_proj(x).reshape(B, S, H, D_h)
-        V = self.v_proj(x).reshape(B, S, H, D_h)
+        q = self.q_proj(x).reshape(batch_size, seq_len, n_heads, head_dim)
+        k = self.k_proj(x).reshape(batch_size, seq_len, n_heads, head_dim)
+        v = self.v_proj(x).reshape(batch_size, seq_len, n_heads, head_dim)
 
-        Q = _apply_rope(Q, rope_cos, rope_sin)
-        K = _apply_rope(K, rope_cos, rope_sin)
+        q = _apply_rope(q, rope_cos, rope_sin)
+        k = _apply_rope(k, rope_cos, rope_sin)
 
-        Q = Q.transpose(1, 2)  # (B, H, S, D_h)
-        K = K.transpose(1, 2)
-        V = V.transpose(1, 2)
+        q = q.transpose(1, 2)  # (B, H, S, D_h)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
 
-        attn = (Q @ K.transpose(-2, -1)) * self.scale  # (B, H, S, S)
+        attn = (q @ k.transpose(-2, -1)) * self.scale  # (B, H, S, S)
         if key_padding_mask is not None:
-            # True = padding → mask out from attending
             attn = attn.masked_fill(key_padding_mask.unsqueeze(1).unsqueeze(2), float("-inf"))
         attn = self.drop(attn.softmax(dim=-1))
 
-        out = (attn @ V).transpose(1, 2).reshape(B, S, H * D_h)  # (B, S, d_model)
+        out = (attn @ v).transpose(1, 2).reshape(batch_size, seq_len, n_heads * head_dim)
         return self.out_proj(out)
 
 
@@ -348,6 +347,8 @@ class TimeDeltaRoPEPatientEncoder(PatientEncoder):
         super().__init__()
         d = int(embedding_dim)
         h = int(num_heads)
+        if d % h != 0:
+            raise ValueError(f"embedding_dim={d} must be divisible by num_heads={h}")
         self._head_dim = d // h
         self.embedding = nn.Embedding(int(vocab_size), d, padding_idx=0)
         self.layers = nn.ModuleList(
