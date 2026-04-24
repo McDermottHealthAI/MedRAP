@@ -118,6 +118,10 @@ class LinearProjectionRetrievalEncoder(nn.Module):
     This keeps the full contextual meaning of ``doc_key_embeddings`` while
     decoupling the value representation from the key representation.
 
+    The input ``doc_key_embeddings`` shape follows the ``(B, R, K, D)`` convention
+    used throughout this module, where R is the number of retrieval rounds (typically
+    1) and K is the number of retrieved documents.
+
     Args:
         in_dim: Input dimension of ``doc_key_embeddings`` (e.g. 1024 for
             Qwen3-Embedding-0.6B).
@@ -175,7 +179,7 @@ class LinearProjectionRetrievalEncoder(nn.Module):
             raise ValueError(
                 "LinearProjectionRetrievalEncoder requires doc_key_embeddings on RetrieverOutput"
             )
-        projected = self.linear(keys.float())  # (B, R, K, D_out)
+        projected = self.linear(keys)  # (B, R, K, D_out) — preserves input dtype
         return RetrievalEncoderOutput(retrieval_memory=projected.unsqueeze(3))  # (B, R, K, 1, D_out)
 
     def forward(self, retrieval: RetrieverOutput) -> RetrievalEncoderOutput:
@@ -277,7 +281,14 @@ class PerDocMeanPooledRetrievalEncoder(nn.Module):
                 pretrained_model_name_or_path,
                 trust_remote_code=True,
             )
-            embed_tokens = getattr(pretrained, "embed_tokens", None) or pretrained.model.embed_tokens
+            embed_tokens = getattr(pretrained, "embed_tokens", None) or getattr(
+                getattr(pretrained, "model", None), "embed_tokens", None
+            )
+            if embed_tokens is None:
+                raise ValueError(
+                    f"Cannot find embed_tokens on {type(pretrained).__name__}. "
+                    "Expected pretrained.embed_tokens or pretrained.model.embed_tokens."
+                )
             pretrained_weight = embed_tokens.weight.detach().float()
             pre_v, pre_d = pretrained_weight.shape
             if pre_v != self.vocab_size or pre_d != self.embedding_dim:
