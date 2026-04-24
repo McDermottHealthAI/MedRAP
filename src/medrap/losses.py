@@ -19,7 +19,7 @@ class MultiTaskBCELoss(SupervisedLoss):
         >>> from medrap.types import ModelOutput
         >>> loss_fn = MultiTaskBCELoss()
         >>> preds = ModelOutput(logits=torch.zeros(2, 3))
-        >>> targets = torch.tensor([[1.0, 0.0, float('nan')], [0.0, 1.0, 1.0]])
+        >>> targets = torch.tensor([[1.0, 0.0, float("nan")], [0.0, 1.0, 1.0]])
         >>> loss = loss_fn(preds, targets)
         >>> loss.shape
         torch.Size([])
@@ -28,7 +28,7 @@ class MultiTaskBCELoss(SupervisedLoss):
 
         All-NaN batch raises no error but returns zero loss:
 
-        >>> all_nan = torch.full((2, 3), float('nan'))
+        >>> all_nan = torch.full((2, 3), float("nan"))
         >>> loss_fn(ModelOutput(logits=torch.zeros(2, 3)), all_nan).item()
         0.0
     """
@@ -49,6 +49,128 @@ class MultiTaskBCELoss(SupervisedLoss):
         valid = ~targets.isnan()  # (B, N)
         labels = targets.nan_to_num(0.0)
         per_element = functional.binary_cross_entropy_with_logits(logits, labels, reduction="none")
+        denom = valid.float().sum()
+        if denom == 0:
+            return per_element.sum() * 0.0
+        return (per_element * valid.float()).sum() / denom
+
+
+class MultiTaskBCEMarginalizedLoss(SupervisedLoss):
+    """REALM-style marginalized binary BCE for N simultaneous binary tasks.
+
+    For each (patient, task) pair the binary prediction probability is
+    marginalized over K retrieved documents weighted by retriever scores::
+
+        P(y_n = 1 | x) = sum_k  P_ret(doc_k | x) * sigmoid(logit_{k,n})
+
+    where ``P_ret = softmax(doc_scores)``.  The per-pair loss is then the
+    standard binary cross-entropy against this marginal probability, averaged
+    over all valid pairs (``NaN`` targets are excluded).
+
+    Because document scores receive gradients through the marginalization,
+    the retriever is trained end-to-end.
+
+    Requires ``marginalized_retrieval=True`` on :class:`~medrap.model.RetrievalAugmentedModel`
+    so that ``predictions.metadata`` contains:
+
+    * ``per_doc_logits``: ``(B, K, N)``
+    * ``differentiable_doc_scores``: ``(B, K)``
+
+    Args:
+        num_tasks: Number of binary prediction tasks N.
+
+    Examples:
+        >>> import torch
+        >>> from medrap.types import ModelOutput
+        >>> loss_fn = MultiTaskBCEMarginalizedLoss(num_tasks=2)
+        >>> B, K, N = 2, 4, 2
+        >>> per_doc = torch.randn(B, K, N)
+        >>> scores = torch.randn(B, K)
+        >>> targets = torch.tensor([[1.0, 0.0], [float("nan"), 1.0]])
+        >>> pred = ModelOutput(
+        ...     logits=torch.zeros(B, N),
+        ...     metadata={"per_doc_logits": per_doc, "differentiable_doc_scores": scores},
+        ... )
+        >>> loss = loss_fn(pred, targets)
+        >>> loss.shape
+        torch.Size([])
+        >>> float(loss) > 0
+        True
+
+        With K=1 the marginalization reduces to standard masked BCE:
+
+        >>> loss_fn1 = MultiTaskBCEMarginalizedLoss(num_tasks=2)
+        >>> per_doc1 = torch.zeros(2, 1, 2)
+        >>> pred1 = ModelOutput(
+        ...     logits=torch.zeros(2, 2),
+        ...     metadata={"per_doc_logits": per_doc1, "differentiable_doc_scores": torch.zeros(2, 1)},
+        ... )
+        >>> targets1 = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+        >>> marginal = loss_fn1(pred1, targets1)
+        >>> plain = MultiTaskBCELoss()(pred1, targets1)
+        >>> torch.isclose(marginal, plain, atol=1e-5)
+        tensor(True)
+
+        All-NaN batch returns zero:
+
+        >>> loss_fn2 = MultiTaskBCEMarginalizedLoss(num_tasks=2)
+        >>> miss = torch.full((2, 2), float("nan"))
+        >>> pred2 = ModelOutput(
+        ...     logits=torch.zeros(2, 2),
+        ...     metadata={
+        ...         "per_doc_logits": torch.randn(2, 4, 2),
+        ...         "differentiable_doc_scores": torch.randn(2, 4),
+        ...     },
+        ... )
+        >>> abs(loss_fn2(pred2, miss).item())
+        0.0
+    """
+
+    def __init__(self, *, num_tasks: int) -> None:
+        super().__init__()
+        self.num_tasks = num_tasks
+
+    def forward(self, predictions: ModelOutput, targets: TaskTargets) -> Tensor:
+        """Compute REALM-style marginalized BCE across all valid (patient, task) pairs.
+
+        Args:
+            predictions: ``ModelOutput`` with metadata containing
+                ``per_doc_logits (B, K, N)`` and
+                ``differentiable_doc_scores (B, K)``.
+            targets: Float tensor ``(B, N)``, NaN entries masked out.
+
+        Returns:
+            Scalar loss.
+        """
+        if not isinstance(targets, Tensor):
+            raise ValueError("MultiTaskBCEMarginalizedLoss expects tensor targets.")
+
+        meta = predictions.metadata
+        per_doc_logits = meta.get("per_doc_logits")
+        doc_scores = meta.get("differentiable_doc_scores")
+        if not isinstance(per_doc_logits, Tensor):
+            raise ValueError(
+                "MultiTaskBCEMarginalizedLoss requires marginalized_retrieval=True; "
+                "metadata missing 'per_doc_logits'."
+            )
+        if not isinstance(doc_scores, Tensor):
+            raise ValueError(
+                "MultiTaskBCEMarginalizedLoss requires marginalized_retrieval=True; "
+                "metadata missing 'differentiable_doc_scores'."
+            )
+
+        # log P_ret: (B, K, 1) — will broadcast over N tasks
+        log_p_ret = functional.log_softmax(doc_scores, dim=-1).unsqueeze(-1)
+
+        # log marginal P(y=1|x): logsumexp_k(log P_ret_k + log_sigmoid(logit_k))
+        log_p_pos = torch.logsumexp(log_p_ret + functional.logsigmoid(per_doc_logits), dim=1)
+        # log marginal P(y=0|x): logsumexp_k(log P_ret_k + log_sigmoid(-logit_k))
+        log_p_neg = torch.logsumexp(log_p_ret + functional.logsigmoid(-per_doc_logits), dim=1)
+
+        valid = ~targets.isnan()
+        safe_targets = targets.nan_to_num(0.0)
+
+        per_element = -(safe_targets * log_p_pos + (1.0 - safe_targets) * log_p_neg)
         denom = valid.float().sum()
         if denom == 0:
             return per_element.sum() * 0.0

@@ -20,7 +20,7 @@ from .encoders import (
 from .fusion import ConcatFusion, CrossAttentionFusion, FusionModule, PassthroughFusion, ReplaceFusion
 from .heads import LinearHead, PredictionHead
 from .lightning_module import MedRAPSupervisedLightningModule
-from .losses import MultiTaskBCELoss
+from .losses import MultiTaskBCELoss, MultiTaskBCEMarginalizedLoss
 from .model import RetrievalAugmentedModel
 from .multitask_datamodule import MultiTaskMEDSDatamodule, MultiTaskMEDSDataset, load_code_index
 from .pooling import IdentityPooling, MaskedMeanPooling, PoolingModule
@@ -68,6 +68,7 @@ __all__ = [
     "MedRAPSupervisedLightningModule",
     "ModelOutput",
     "MultiTaskBCELoss",
+    "MultiTaskBCEMarginalizedLoss",
     "MultiTaskBinaryClassificationTask",
     "MultiTaskMEDSDatamodule",
     "MultiTaskMEDSDataset",

@@ -7,7 +7,7 @@ import pytest
 import torch
 from meds_torchdata import MEDSTorchBatch
 
-from medrap.losses import MultiTaskBCELoss
+from medrap.losses import MultiTaskBCELoss, MultiTaskBCEMarginalizedLoss
 from medrap.task import MultiTaskBinaryClassificationTask
 from medrap.types import ModelOutput
 
@@ -120,6 +120,87 @@ class TestMultiTaskBCELoss:
         loss_fn = MultiTaskBCELoss()
         with pytest.raises(ValueError):
             loss_fn(ModelOutput(logits=torch.zeros(2, 3)), {"x": torch.zeros(2, 3)})
+
+
+# ---------------------------------------------------------------------------
+# MultiTaskBCEMarginalizedLoss
+# ---------------------------------------------------------------------------
+
+
+def _marginal_pred(b: int, k: int, n: int) -> ModelOutput:
+    return ModelOutput(
+        logits=torch.zeros(b, n),
+        metadata={
+            "per_doc_logits": torch.randn(b, k, n),
+            "differentiable_doc_scores": torch.randn(b, k),
+        },
+    )
+
+
+class TestMultiTaskBCEMarginalizedLoss:
+    def test_output_is_scalar(self):
+        loss_fn = MultiTaskBCEMarginalizedLoss(num_tasks=3)
+        targets = torch.randint(0, 2, (2, 3)).float()
+        assert _marginal_pred(2, 4, 3)
+        loss = loss_fn(_marginal_pred(2, 4, 3), targets)
+        assert loss.shape == ()
+
+    def test_loss_positive(self):
+        loss_fn = MultiTaskBCEMarginalizedLoss(num_tasks=3)
+        targets = torch.randint(0, 2, (2, 3)).float()
+        assert float(loss_fn(_marginal_pred(2, 4, 3), targets)) > 0
+
+    def test_all_nan_returns_zero(self):
+        loss_fn = MultiTaskBCEMarginalizedLoss(num_tasks=2)
+        targets = torch.full((2, 2), float("nan"))
+        assert float(loss_fn(_marginal_pred(2, 4, 2), targets)) == pytest.approx(0.0)
+
+    def test_partial_nan_excluded(self):
+        loss_fn = MultiTaskBCEMarginalizedLoss(num_tasks=2)
+        targets = torch.tensor([[1.0, float("nan")], [0.0, 1.0]])
+        loss = loss_fn(_marginal_pred(2, 4, 2), targets)
+        assert loss.shape == ()
+        assert float(loss) > 0
+
+    def test_k1_reduces_to_plain_bce(self):
+        """With K=1 document, marginalized loss equals plain MultiTaskBCELoss."""
+        loss_fn_m = MultiTaskBCEMarginalizedLoss(num_tasks=2)
+        loss_fn_p = MultiTaskBCELoss()
+        logits = torch.randn(3, 2)
+        targets = torch.randint(0, 2, (3, 2)).float()
+        pred_m = ModelOutput(
+            logits=logits,
+            metadata={
+                "per_doc_logits": logits.unsqueeze(1),  # (3, 1, 2)
+                "differentiable_doc_scores": torch.zeros(3, 1),
+            },
+        )
+        pred_p = ModelOutput(logits=logits)
+        assert torch.isclose(loss_fn_m(pred_m, targets), loss_fn_p(pred_p, targets), atol=1e-5)
+
+    def test_gradients_flow_through_doc_scores(self):
+        loss_fn = MultiTaskBCEMarginalizedLoss(num_tasks=2)
+        per_doc = torch.randn(2, 4, 2, requires_grad=True)
+        scores = torch.randn(2, 4, requires_grad=True)
+        pred = ModelOutput(
+            logits=torch.zeros(2, 2),
+            metadata={"per_doc_logits": per_doc, "differentiable_doc_scores": scores},
+        )
+        targets = torch.randint(0, 2, (2, 2)).float()
+        loss_fn(pred, targets).backward()
+        assert scores.grad is not None
+        assert per_doc.grad is not None
+
+    def test_missing_metadata_raises(self):
+        loss_fn = MultiTaskBCEMarginalizedLoss(num_tasks=2)
+        pred = ModelOutput(logits=torch.zeros(2, 2))
+        with pytest.raises(ValueError, match="per_doc_logits"):
+            loss_fn(pred, torch.zeros(2, 2))
+
+    def test_wrong_target_type_raises(self):
+        loss_fn = MultiTaskBCEMarginalizedLoss(num_tasks=2)
+        with pytest.raises(ValueError):
+            loss_fn(_marginal_pred(2, 4, 2), {"x": torch.zeros(2, 2)})
 
 
 # ---------------------------------------------------------------------------
