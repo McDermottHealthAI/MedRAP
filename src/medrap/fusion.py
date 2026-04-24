@@ -237,7 +237,9 @@ class _CrossAttentionLayer(nn.Module):
     ) -> torch.Tensor:
         kvn = self.norm_kv(kv)
         attn_out, _ = self.attn(
-            self.norm_q(query), kvn, kvn,
+            self.norm_q(query),
+            kvn,
+            kvn,
             key_padding_mask=key_padding_mask,
             need_weights=False,
         )
@@ -312,11 +314,15 @@ class CrossAttentionFusion(FusionModule):
             >>> import torch
             >>> from medrap.types import FusionInput
             >>> fusion = CrossAttentionFusion(
-            ...     d_model=8, num_heads=2, ff_dim=16, num_layers=2,
-            ...     d_in_patient=4, d_in_doc=6,
+            ...     d_model=8,
+            ...     num_heads=2,
+            ...     ff_dim=16,
+            ...     num_layers=2,
+            ...     d_in_patient=4,
+            ...     d_in_doc=6,
             ... )
             >>> fi = FusionInput(
-            ...     patient_state=torch.randn(2, 3, 4),      # (B=2, S_ehr=3, D_ehr=4)
+            ...     patient_state=torch.randn(2, 3, 4),  # (B=2, S_ehr=3, D_ehr=4)
             ...     retrieval_memory=torch.randn(2, 1, 4, 5, 6),  # (B, R=1, K=4, S_doc=5, D_mem=6)
             ... )
             >>> out = fusion.fuse(fi)
@@ -331,7 +337,7 @@ class CrossAttentionFusion(FusionModule):
             Padding tokens in retrieved docs are masked out via ``doc_attention_mask``:
 
             >>> mask = torch.ones(2, 1, 4, 5, dtype=torch.bool)
-            >>> mask[:, :, :, -1] = False   # last token of each doc is padding
+            >>> mask[:, :, :, -1] = False  # last token of each doc is padding
             >>> fi_masked = FusionInput(
             ...     patient_state=torch.randn(2, 3, 4),
             ...     retrieval_memory=torch.randn(2, 1, 4, 5, 6),
@@ -351,12 +357,10 @@ class CrossAttentionFusion(FusionModule):
             ...
             ValueError: CrossAttentionFusion expects 5D retrieval_memory...
         """
-        ps = fusion_input.patient_state.float()
-        rm = fusion_input.retrieval_memory.float()
+        ps = fusion_input.patient_state
+        rm = fusion_input.retrieval_memory
         if rm.ndim != 5:
-            raise ValueError(
-                f"CrossAttentionFusion expects 5D retrieval_memory, got shape {tuple(rm.shape)}"
-            )
+            raise ValueError(f"CrossAttentionFusion expects 5D retrieval_memory, got shape {tuple(rm.shape)}")
         b, r, k, s_doc, d_mem = rm.shape
 
         query = self.patient_proj(ps)  # (B, S_ehr, d_model)

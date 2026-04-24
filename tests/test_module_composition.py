@@ -7,7 +7,12 @@ from medrap.fusion import ReplaceFusion
 from medrap.model import RetrievalAugmentedModel
 from medrap.pooling import IdentityPooling
 from medrap.query_projection import SequenceMeanQueryProjector
-from medrap.retrieval_encoder import MeanPooledRetrievalEncoder, TokenFeatureRetrievalEncoder
+from medrap.retrieval_encoder import (
+    LinearProjectionRetrievalEncoder,
+    MeanPooledRetrievalEncoder,
+    PerDocMeanPooledRetrievalEncoder,
+    TokenFeatureRetrievalEncoder,
+)
 from medrap.retrievers import InMemoryRetriever
 from medrap.types import FusionInput, RetrieverOutput
 
@@ -105,6 +110,81 @@ def test_stage_forward_aliases_named_methods() -> None:
     p_via_method = pooling.pool(f_via_method.fused_state)
     p_via_forward = pooling(f_via_method.fused_state)
     assert torch.equal(p_via_method, p_via_forward)
+
+
+def test_linear_projection_retrieval_encoder() -> None:
+    enc = LinearProjectionRetrievalEncoder(in_dim=4, out_dim=2)
+    ro = RetrieverOutput(
+        doc_tokens=torch.zeros(2, 1, 3, 1, dtype=torch.long),
+        doc_attention_mask=torch.ones(2, 1, 3, 1, dtype=torch.bool),
+        doc_key_embeddings=torch.randn(2, 1, 3, 4),
+    )
+    out_method = enc.encode(ro)
+    out_forward = enc(ro)
+    assert torch.equal(out_method.retrieval_memory, out_forward.retrieval_memory)
+    assert out_method.retrieval_memory.shape == (2, 1, 3, 1, 2)
+    assert out_method.retrieval_memory.dtype == torch.float32
+
+
+def test_linear_projection_retrieval_encoder_no_keys_raises() -> None:
+    enc = LinearProjectionRetrievalEncoder(in_dim=4, out_dim=2)
+    ro = RetrieverOutput(
+        doc_tokens=torch.zeros(1, 1, 1, 1, dtype=torch.long),
+        doc_attention_mask=torch.ones(1, 1, 1, 1, dtype=torch.bool),
+    )
+    try:
+        enc(ro)
+        raise AssertionError("expected ValueError")
+    except ValueError as e:
+        assert "doc_key_embeddings" in str(e)
+
+
+def test_linear_projection_preserves_dtype() -> None:
+    enc = LinearProjectionRetrievalEncoder(in_dim=4, out_dim=2)
+    enc = enc.to(torch.float64)
+    ro = RetrieverOutput(
+        doc_tokens=torch.zeros(1, 1, 1, 1, dtype=torch.long),
+        doc_attention_mask=torch.ones(1, 1, 1, 1, dtype=torch.bool),
+        doc_key_embeddings=torch.randn(1, 1, 1, 4, dtype=torch.float64),
+    )
+    out = enc(ro)
+    assert out.retrieval_memory.dtype == torch.float64
+
+
+def test_per_doc_mean_pooled_retrieval_encoder_shape() -> None:
+    enc = PerDocMeanPooledRetrievalEncoder(vocab_size=8, embedding_dim=4)
+    ro = RetrieverOutput(
+        doc_tokens=torch.LongTensor([[[[1, 2, 0], [3, 0, 0]]]]),
+        doc_attention_mask=torch.BoolTensor([[[[True, True, False], [True, False, False]]]]),
+    )
+    out_method = enc.encode(ro)
+    out_forward = enc(ro)
+    assert torch.equal(out_method.retrieval_memory, out_forward.retrieval_memory)
+    assert out_method.retrieval_memory.shape == (1, 1, 2, 1, 4)
+    assert out_method.retrieval_memory.dtype == torch.float32
+
+
+def test_per_doc_mean_pooled_masking() -> None:
+    enc = PerDocMeanPooledRetrievalEncoder(vocab_size=8, embedding_dim=4)
+    # Padding token (different id, same mask) should not affect result
+    ro_a = RetrieverOutput(
+        doc_tokens=torch.LongTensor([[[[1, 0]]]]),
+        doc_attention_mask=torch.BoolTensor([[[[True, False]]]]),
+    )
+    ro_b = RetrieverOutput(
+        doc_tokens=torch.LongTensor([[[[1, 7]]]]),
+        doc_attention_mask=torch.BoolTensor([[[[True, False]]]]),
+    )
+    assert torch.equal(enc(ro_a).retrieval_memory, enc(ro_b).retrieval_memory)
+
+
+def test_per_doc_mean_pooled_all_masked_gives_zero() -> None:
+    enc = PerDocMeanPooledRetrievalEncoder(vocab_size=8, embedding_dim=4)
+    ro = RetrieverOutput(
+        doc_tokens=torch.LongTensor([[[[1, 2]]]]),
+        doc_attention_mask=torch.BoolTensor([[[[False, False]]]]),
+    )
+    assert enc(ro).retrieval_memory.sum().item() == 0.0
 
 
 def test_in_memory_retriever_returns_query_dependent_payloads() -> None:

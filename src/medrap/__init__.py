@@ -10,8 +10,14 @@ from .configs import (
     instantiate_model,
     prepare_retrieval_dataset_from_config,
 )
-from .encoders import MEDSCodeEncoder, PatientEncoder, TabularEncoder, TokenEmbeddingEncoder
-from .fusion import ConcatFusion, FusionModule, ReplaceFusion
+from .encoders import (
+    MEDSCodeEncoder,
+    PatientEncoder,
+    TabularEncoder,
+    TimeDeltaRoPEPatientEncoder,
+    TokenEmbeddingEncoder,
+)
+from .fusion import ConcatFusion, CrossAttentionFusion, FusionModule, ReplaceFusion
 from .heads import LinearHead, PredictionHead
 from .lightning_module import MedRAPSupervisedLightningModule
 from .losses import MultiTaskBCELoss
@@ -20,6 +26,7 @@ from .multitask_datamodule import MultiTaskMEDSDatamodule, MultiTaskMEDSDataset,
 from .pooling import IdentityPooling, MaskedMeanPooling, PoolingModule
 from .preparation import OrderedFieldDocumentRenderer, prepare_retrieval_dataset
 from .query_projection import LinearQueryProjector, QueryProjector, SequenceMeanQueryProjector
+from .retrieval_encoder import LinearProjectionRetrievalEncoder, PerDocMeanPooledRetrievalEncoder
 from .retrievers import (
     HFDatasetRetriever,
     InMemoryRetriever,
@@ -42,6 +49,7 @@ __all__ = [
     "BinaryClassificationLoss",
     "BinaryClassificationTask",
     "ConcatFusion",
+    "CrossAttentionFusion",
     "DemoInMemoryRetrieverConfig",
     "EncoderOutput",
     "FusionInput",
@@ -53,6 +61,7 @@ __all__ = [
     "InMemoryRetriever",
     "InMemoryRetrieverConfig",
     "LinearHead",
+    "LinearProjectionRetrievalEncoder",
     "LinearQueryProjector",
     "MEDSCodeEncoder",
     "MaskedMeanPooling",
@@ -64,6 +73,7 @@ __all__ = [
     "MultiTaskMEDSDataset",
     "OrderedFieldDocumentRenderer",
     "PatientEncoder",
+    "PerDocMeanPooledRetrievalEncoder",
     "PipelineConfig",
     "PoolingModule",
     "PredictionHead",
@@ -79,6 +89,7 @@ __all__ = [
     "RetrieverOutput",
     "SequenceMeanQueryProjector",
     "TabularEncoder",
+    "TimeDeltaRoPEPatientEncoder",
     "TokenEmbeddingEncoder",
     "float_tensor_config",
     "instantiate_model",

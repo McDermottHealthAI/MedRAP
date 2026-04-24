@@ -29,7 +29,6 @@ dependencies = [
   "torchmetrics>=1.4.0",
   "wandb>=0.16.0",
   "scikit-learn>=1.5.0",
-  "matplotlib>=3.10.8",
 ]
 
 [project.optional-dependencies]

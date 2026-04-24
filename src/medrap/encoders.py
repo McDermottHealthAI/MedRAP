@@ -104,27 +104,27 @@ class _TimeDeltaRoPEAttention(nn.Module):
         rope_sin: Tensor,
         key_padding_mask: Tensor | None = None,
     ) -> Tensor:
-        b, s, _ = x.shape
-        h, d_h = self.num_heads, self.head_dim
+        batch_size, seq_len, _ = x.shape
+        n_heads, head_dim = self.num_heads, self.head_dim
 
-        q = self.q_proj(x).reshape(b, s, h, d_h)
-        k = self.k_proj(x).reshape(b, s, h, d_h)
-        v = self.v_proj(x).reshape(b, s, h, d_h)
+        q = self.q_proj(x).reshape(batch_size, seq_len, n_heads, head_dim)
+        k = self.k_proj(x).reshape(batch_size, seq_len, n_heads, head_dim)
+        v = self.v_proj(x).reshape(batch_size, seq_len, n_heads, head_dim)
 
         q = _apply_rope(q, rope_cos, rope_sin)
         k = _apply_rope(k, rope_cos, rope_sin)
 
-        q = q.transpose(1, 2)  # (b, h, s, d_h)
+        q = q.transpose(1, 2)  # (B, H, S, D_h)
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
 
-        attn = (q @ k.transpose(-2, -1)) * self.scale  # (b, h, s, s)
+        attn = (q @ k.transpose(-2, -1)) * self.scale  # (B, H, S, S)
         if key_padding_mask is not None:
-            # True = padding -> mask out from attending
+            # True = padding → mask out from attending
             attn = attn.masked_fill(key_padding_mask.unsqueeze(1).unsqueeze(2), float("-inf"))
         attn = self.drop(attn.softmax(dim=-1))
 
-        out = (attn @ v).transpose(1, 2).reshape(b, s, h * d_h)  # (b, s, d_model)
+        out = (attn @ v).transpose(1, 2).reshape(batch_size, seq_len, n_heads * head_dim)
         return self.out_proj(out)
 
 
@@ -348,6 +348,8 @@ class TimeDeltaRoPEPatientEncoder(PatientEncoder):
         super().__init__()
         d = int(embedding_dim)
         h = int(num_heads)
+        if d % h != 0:
+            raise ValueError(f"embedding_dim={d} must be divisible by num_heads={h}")
         self._head_dim = d // h
         self.embedding = nn.Embedding(int(vocab_size), d, padding_idx=0)
         self.layers = nn.ModuleList(
