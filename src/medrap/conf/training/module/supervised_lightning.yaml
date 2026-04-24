@@ -1,3 +1,4 @@
 _target_: medrap.lightning_module.MedRAPSupervisedLightningModule
 lr: 1e-3
 weight_decay: 0.01
+warmup_steps: 0
