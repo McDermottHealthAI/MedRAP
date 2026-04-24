@@ -10,7 +10,13 @@ from .configs import (
     instantiate_model,
     prepare_retrieval_dataset_from_config,
 )
-from .encoders import MEDSCodeEncoder, PatientEncoder, TabularEncoder, TokenEmbeddingEncoder
+from .encoders import (
+    MEDSCodeEncoder,
+    PatientEncoder,
+    TabularEncoder,
+    TimeDeltaRoPEPatientEncoder,
+    TokenEmbeddingEncoder,
+)
 from .fusion import ConcatFusion, CrossAttentionFusion, FusionModule, ReplaceFusion
 from .heads import LinearHead, PredictionHead
 from .lightning_module import MedRAPSupervisedLightningModule
@@ -77,6 +83,7 @@ __all__ = [
     "RetrieverOutput",
     "SequenceMeanQueryProjector",
     "TabularEncoder",
+    "TimeDeltaRoPEPatientEncoder",
     "TokenEmbeddingEncoder",
     "float_tensor_config",
     "instantiate_model",
