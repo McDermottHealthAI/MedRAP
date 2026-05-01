@@ -128,7 +128,7 @@ class _TimeDeltaRoPEAttention(nn.Module):
 
 
 class _TimeDeltaRoPELayer(nn.Module):
-    """Single pre-norm transformer layer with time-delta RoPE attention."""
+    """Single transformer layer: LN → RoPE attention → residual → LN → GELU FFN → residual."""
 
     def __init__(self, d_model: int, num_heads: int, ff_dim: int, dropout: float) -> None:
         super().__init__()
