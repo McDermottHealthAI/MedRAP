@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 
 from medrap.lightning_module import MedRAPSupervisedLightningModule
 from medrap.task import BinaryClassificationTask, SupervisedLoss, SupervisedTask
-from medrap.types import ModelOutput
+from medrap.types import ModelOutput, QueryOutput, RetrieverOutput
 
 
 @pytest.fixture
@@ -136,6 +136,160 @@ def test_training_step_uses_batch_size_fallback_without_batch_size() -> None:
     loss = module._run_supervised_step(SimpleBatch(), stage="train")
 
     assert loss.ndim == 0
+
+
+def test_lightning_module_logs_curated_diagnostics(
+    supervised_batch: MEDSTorchBatch,
+) -> None:
+    class DiagnosticModel(nn.Module):
+        def forward(self, batch: MEDSTorchBatch) -> ModelOutput:
+            return ModelOutput(
+                logits=torch.FloatTensor([[0.0], [1.0]]),
+                metadata={
+                    "query_output": QueryOutput(torch.FloatTensor([[[1.0, 0.0]], [[0.0, 1.0]]])),
+                    "retriever_output": RetrieverOutput(
+                        doc_tokens=torch.ones(2, 1, 2, 3, dtype=torch.long),
+                        doc_attention_mask=torch.ones(2, 1, 2, 3, dtype=torch.bool),
+                        doc_ids=torch.LongTensor([[[1, 2]], [[2, 3]]]),
+                        doc_scores=torch.FloatTensor([[[2.0, 1.0]], [[0.5, 0.25]]]),
+                    ),
+                },
+            )
+
+    module = MedRAPSupervisedLightningModule(
+        model=DiagnosticModel(),
+        task=BinaryClassificationTask(),
+        diagnostics_every_n_steps=1,
+    )
+    logged: list[str] = []
+    module.log_dict = lambda metrics, *a, **k: logged.extend(metrics)
+
+    loss = module._run_supervised_step(supervised_batch, stage="train")
+
+    assert loss.ndim == 0
+    assert "prediction/train/logits_mean" in logged
+    assert "query/train/norm_mean" in logged
+    assert "retrieval/train/unique_doc_ratio" in logged
+    assert "mask/train/pad_fraction" in logged
+    assert not any(name.startswith("train/") for name in logged)
+
+
+def test_lightning_module_can_disable_diagnostics(
+    supervised_batch: MEDSTorchBatch,
+    model_output_binary_model: nn.Module,
+) -> None:
+    module = MedRAPSupervisedLightningModule(
+        model=model_output_binary_model,
+        task=BinaryClassificationTask(),
+        diagnostics_every_n_steps=0,
+    )
+    logged: list[str] = []
+    module.log_dict = lambda metrics, *a, **k: logged.extend(metrics)
+
+    loss = module._run_supervised_step(supervised_batch, stage="train")
+
+    assert loss.ndim == 0
+    assert logged == []
+
+
+def test_validation_loop_logs_binary_auroc() -> None:
+    class CodeLogitModel(nn.Module):
+        def forward(self, batch: MEDSTorchBatch) -> ModelOutput:
+            return ModelOutput(logits=batch.code[:, :1].float())
+
+    low_risk = MEDSTorchBatch(
+        code=torch.LongTensor([[-2, 0, 0]]),
+        numeric_value=torch.zeros((1, 3), dtype=torch.float32),
+        numeric_value_mask=torch.zeros((1, 3), dtype=torch.bool),
+        time_delta_days=torch.zeros((1, 3), dtype=torch.float32),
+    )
+    low_risk.boolean_value = torch.BoolTensor([False])
+    high_risk = MEDSTorchBatch(
+        code=torch.LongTensor([[2, 0, 0]]),
+        numeric_value=torch.zeros((1, 3), dtype=torch.float32),
+        numeric_value_mask=torch.zeros((1, 3), dtype=torch.bool),
+        time_delta_days=torch.zeros((1, 3), dtype=torch.float32),
+    )
+    high_risk.boolean_value = torch.BoolTensor([True])
+    module = MedRAPSupervisedLightningModule(
+        model=CodeLogitModel(),
+        task=BinaryClassificationTask(),
+        validation_auroc=True,
+    )
+    trainer = lightning.Trainer(
+        logger=False,
+        enable_checkpointing=False,
+        enable_model_summary=False,
+        enable_progress_bar=False,
+    )
+
+    trainer.validate(module, dataloaders=DataLoader([low_risk, high_risk], batch_size=None))
+
+    assert trainer.callback_metrics["val/auroc"].item() == pytest.approx(1.0)
+    assert module._validation_auroc_logits == []
+    assert module._validation_auroc_targets == []
+
+
+def test_validation_loop_logs_multitask_mean_auroc() -> None:
+    class MultitaskTask(SupervisedTask):
+        def __init__(self) -> None:
+            super().__init__(output_dim=2)
+
+        def extract_targets(self, batch: MEDSTorchBatch) -> torch.Tensor:
+            return batch.boolean_value.float()
+
+        def metrics(self, predictions: ModelOutput, targets: torch.Tensor | dict[str, torch.Tensor]) -> dict:
+            return {}
+
+    class MultitaskLoss(SupervisedLoss):
+        def forward(
+            self, predictions: ModelOutput, targets: torch.Tensor | dict[str, torch.Tensor]
+        ) -> torch.Tensor:
+            assert isinstance(targets, torch.Tensor)
+            return torch.nn.functional.binary_cross_entropy_with_logits(predictions.logits, targets.float())
+
+    class CodeMultitaskModel(nn.Module):
+        def forward(self, batch: MEDSTorchBatch) -> ModelOutput:
+            return ModelOutput(logits=batch.code[:, :2].float())
+
+    def _batch(logits: list[int], labels: list[bool]) -> MEDSTorchBatch:
+        batch = MEDSTorchBatch(
+            code=torch.LongTensor([[*logits, 0]]),
+            numeric_value=torch.zeros((1, 3), dtype=torch.float32),
+            numeric_value_mask=torch.zeros((1, 3), dtype=torch.bool),
+            time_delta_days=torch.zeros((1, 3), dtype=torch.float32),
+        )
+        batch.boolean_value = torch.BoolTensor([labels])
+        return batch
+
+    module = MedRAPSupervisedLightningModule(
+        model=CodeMultitaskModel(),
+        task=MultitaskTask(),
+        loss_fn=MultitaskLoss(),
+        validation_auroc=True,
+        validation_auroc_log_per_task=True,
+    )
+    trainer = lightning.Trainer(
+        logger=False,
+        enable_checkpointing=False,
+        enable_model_summary=False,
+        enable_progress_bar=False,
+    )
+    dataloader = DataLoader(
+        [
+            _batch([-2, 2], [False, True]),
+            _batch([2, -2], [True, False]),
+            _batch([-1, -1], [False, False]),
+            _batch([1, 1], [True, True]),
+        ],
+        batch_size=None,
+    )
+
+    trainer.validate(module, dataloaders=dataloader)
+
+    assert trainer.callback_metrics["val/auroc/mean"].item() == pytest.approx(1.0)
+    assert trainer.callback_metrics["val/auroc/task_0"].item() == pytest.approx(1.0)
+    assert trainer.callback_metrics["val/auroc/task_1"].item() == pytest.approx(1.0)
 
 
 def test_lightning_module_supports_custom_loss_over_model_output_metadata(
@@ -283,6 +437,31 @@ def test_configure_optimizers_without_warmup_returns_optimizer(
 
     result = module.configure_optimizers()
     assert not isinstance(result, dict)
+
+
+def test_grouped_parameters_excludes_vector_parameters_from_weight_decay() -> None:
+    class AttentionModel(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.attn = nn.MultiheadAttention(embed_dim=4, num_heads=2, batch_first=True)
+            self.linear = nn.Linear(4, 1)
+
+        def forward(self, batch: MEDSTorchBatch) -> ModelOutput:
+            features = batch.code.float().unsqueeze(-1).expand(-1, -1, 4)
+            attended, _ = self.attn(features, features, features, need_weights=False)
+            return ModelOutput(logits=self.linear(attended.mean(dim=1)))
+
+    model = AttentionModel()
+    module = MedRAPSupervisedLightningModule(model=model)
+
+    decay_group, no_decay_group = module._grouped_parameters()
+    decay_params = set(decay_group["params"])
+    no_decay_params = set(no_decay_group["params"])
+
+    assert model.attn.in_proj_weight in decay_params
+    assert model.attn.in_proj_bias in no_decay_params
+    assert model.linear.weight in decay_params
+    assert model.linear.bias in no_decay_params
 
 
 def test_predict_step_captures_marginalized_tensors_from_metadata(

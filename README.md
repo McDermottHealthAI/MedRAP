@@ -97,6 +97,29 @@ Use `prep.embedder.device=cpu` when no GPU is available. For a dataset already o
 entrypoints (`@hydra.main`) internally, and `prepare-retrieval-dataset` is the
 offline artifact-preparation entrypoint.
 
+### HF Retrieval Performance
+
+The default locked dependency is `faiss-cpu`, so HF dataset retrieval runs on CPU unless configured
+otherwise. If your environment provides a CUDA-enabled FAISS build, you can request GPU FAISS search:
+
+```bash
+retriever=hf_dataset \
+	retriever.dataset_path=/path/to/retrieval_db \
+	retriever.device=0
+```
+
+GPU FAISS is optional and not installed by default because available wheels depend on CUDA, Python, and GPU
+architecture. If GPU loading fails, leave `retriever.device=null` for CPU retrieval.
+
+To reduce per-batch Hugging Face row materialization overhead, cache retrieval payload columns as tensors:
+
+```bash
+retriever.cache_payloads=true \
+	retriever.payload_cache_device=cpu
+```
+
+Use `retriever.payload_cache_device=cuda` only when the retrieval payloads fit in GPU memory.
+
 ## Docker
 
 Build a local image with BuildKit enabled so `uv` downloads are cached across rebuilds:
