@@ -34,11 +34,12 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
             diagnostics. ``0`` disables diagnostics during training.
             Validation/test diagnostics are logged as epoch aggregates when
             this is non-zero.
-        validation_auroc: Whether to accumulate logits and tensor targets from
-            the normal validation loop and log AUROC at validation epoch end.
-        validation_auroc_log_per_task: Whether to log per-task AUROC for
-            multitask logits shaped ``(B, T)``. The mean is always logged when
-            any task has both classes present.
+        validation_auroc: Whether to accumulate detached logits and tensor
+            targets during each validation pass and log AUROC when that
+            validation loop finishes.
+        validation_auroc_log_per_task: Whether to also log per-task AUROC for
+            multitask logits shaped ``(B, T)``. The mean over tasks with both
+            classes present is always logged for multitask outputs.
     """
 
     def __init__(
