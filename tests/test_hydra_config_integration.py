@@ -41,6 +41,8 @@ def test_train_config_composes_training_layer() -> None:
     assert datamodule.__class__.__name__ == "SyntheticSupervisedDatamodule"
     assert cfg.training.task.output_dim == 1
     assert cfg.head.out_dim == cfg.training.task.output_dim
+    assert cfg.training.trainer.gradient_clip_val == 1.0
+    assert cfg.training.trainer.gradient_clip_algorithm == "norm"
 
 
 def test_eval_config_composes_training_layer() -> None:
