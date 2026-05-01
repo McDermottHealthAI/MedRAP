@@ -19,18 +19,18 @@ def count_unique_retrieved_documents(
 ) -> int | None:
     """Approximate number of distinct retrieved documents in this batch.
 
-    Uses ``doc_ids`` when present; otherwise fingerprints by the first
-    ``fingerprint_tokens`` token ids per document.
+    Uses ``doc_ids`` when present; otherwise fingerprints by the first ``fingerprint_tokens``
+    token ids per document (handles ``doc_ids_column=null`` corpora).
 
     Args:
         retrieval: Output of the retriever for one batch.
-        fingerprint_tokens: Leading token ids used for uniqueness without
-            document ids.
+        fingerprint_tokens: Truncate token sequences to this many leading ids for uniqueness.
 
     Returns:
-        Integer count, or ``None`` if neither ids nor usable tokens are present.
+        An integer count, or ``None`` if neither ids nor tokens are available.
 
     Examples:
+        >>> import torch
         >>> ro = RetrieverOutput(
         ...     doc_tokens=torch.zeros(2, 1, 2, 3, dtype=torch.long),
         ...     doc_attention_mask=torch.ones(2, 1, 2, 3, dtype=torch.bool),
@@ -41,27 +41,44 @@ def count_unique_retrieved_documents(
         >>> ro2 = RetrieverOutput(
         ...     doc_tokens=torch.tensor([[[[1, 2, 3], [1, 2, 3]]], [[[4, 5, 6], [1, 2, 0]]]]),
         ...     doc_attention_mask=torch.ones(2, 1, 2, 3, dtype=torch.bool),
+        ...     doc_ids=None,
         ... )
         >>> count_unique_retrieved_documents(ro2, fingerprint_tokens=3)
         3
         >>> empty = RetrieverOutput(
         ...     doc_tokens=torch.empty(0, 1, 2, 3, dtype=torch.long),
         ...     doc_attention_mask=torch.empty(0, 1, 2, 3, dtype=torch.bool),
+        ...     doc_ids=None,
         ... )
         >>> count_unique_retrieved_documents(empty) is None
+        True
+        >>> ro3 = RetrieverOutput(
+        ...     doc_tokens=torch.ones(2, 1, 2, 3, dtype=torch.long),
+        ...     doc_attention_mask=torch.ones(2, 1, 2, 3, dtype=torch.bool),
+        ...     doc_ids=None,
+        ... )
+        >>> count_unique_retrieved_documents(ro3, fingerprint_tokens=0) is None
+        True
+        >>> ro4 = RetrieverOutput(
+        ...     doc_tokens=torch.zeros(2, 1, 2, 0, dtype=torch.long),
+        ...     doc_attention_mask=torch.ones(2, 1, 2, 0, dtype=torch.bool),
+        ...     doc_ids=None,
+        ... )
+        >>> count_unique_retrieved_documents(ro4, fingerprint_tokens=1) is None
         True
     """
     if retrieval.doc_ids is not None:
         return int(torch.unique(retrieval.doc_ids.detach().long().flatten()).numel())
 
-    doc_tokens = retrieval.doc_tokens
-    if doc_tokens.numel() == 0:
+    dt = retrieval.doc_tokens
+    if dt is None or dt.numel() == 0:
         return None
-    take = min(int(fingerprint_tokens), int(doc_tokens.shape[-1]))
+    take = min(int(fingerprint_tokens), int(dt.shape[-1]))
     if take < 1:
         return None
-    signatures = doc_tokens[..., :take].reshape(-1, take).detach().cpu()
-    return int(torch.unique(signatures, dim=0).shape[0])
+    # (B, R, K, S) -> (B*R*K, take)
+    sig = dt[..., :take].reshape(-1, take).detach().cpu()
+    return int(torch.unique(sig, dim=0).shape[0])
 
 
 def _finite_tensor(x: Tensor) -> Tensor:
