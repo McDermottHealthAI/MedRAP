@@ -41,6 +41,7 @@ wandb = [
 ]
 viz = [
   "matplotlib>=3.8",
+  "umap-learn>=0.5",
 ]
 llm_judge = [
   "openai>=1.0.0",
