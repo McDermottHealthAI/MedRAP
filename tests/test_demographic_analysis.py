@@ -710,3 +710,216 @@ def test_render_demographic_heatmaps_displays_placeholder_when_tables_are_empty(
     assert output_path.is_file()
     for axis in ("age", "race", "gender"):
         assert result[axis]["table"].size == 0
+
+
+# ---------------------------------------------------------------------------
+# Mass-conservation invariants
+#
+# The keyword-demographic pipeline composes two independently-normalized steps:
+# per-patient softmax over retrieved docs, and per-doc provider keyword weights.
+# Total keyword mass per patient must equal 1.0, and per-bin table rows must
+# equal 1.0 when the keyword axis is not truncated. These tests lock that
+# invariant across both shipped providers.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(params=["title", "lda"])
+def provider_inputs(
+    request: pytest.FixtureRequest, tmp_path: Path
+) -> tuple[np.ndarray, np.ndarray, list[str], object]:
+    """Return (doc_ids, diff_scores, labels, provider) for each shipped provider."""
+    doc_ids = np.array(
+        [
+            [0, 1, 2],
+            [2, 3, 4],
+            [0, 2, 4],
+            [1, 3, 0],
+        ],
+        dtype=np.int64,
+    )
+    diff_scores = np.array(
+        [
+            [1.0, 0.5, -0.5],
+            [2.0, 1.0, 0.0],
+            [0.3, 0.7, 0.1],
+            [-1.0, 0.5, 2.0],
+        ],
+        dtype=np.float64,
+    )
+    labels = ["A", "B", "A", "B"]
+
+    if request.param == "title":
+        dataset_path = tmp_path / "title_db"
+        Dataset.from_dict(
+            {"title": ["Cardiology", "Obstetrics", "Neurology", "Hematology", "Oncology"]}
+        ).save_to_disk(str(dataset_path))
+        provider = TitleKeywordProvider(dataset_path)
+    else:
+        dataset_path = tmp_path / "lda_db"
+        _build_lda_corpus(dataset_path)
+        provider = LDATopicProvider(
+            dataset_path, n_topics=2, n_top_words=3, min_topic_weight=0.01
+        )
+        # LDA corpus has 12 docs; remap to the first 5 rows.
+        doc_ids = np.array(
+            [
+                [0, 1, 2],
+                [2, 6, 7],
+                [0, 2, 8],
+                [1, 6, 0],
+            ],
+            dtype=np.int64,
+        )
+
+    return doc_ids, diff_scores, labels, provider
+
+
+def test_total_keyword_mass_per_patient_equals_one(
+    provider_inputs: tuple[np.ndarray, np.ndarray, list[str], object],
+) -> None:
+    """Σ_k Σ_kw softmax_weight × keyword_weight = 1 for every patient."""
+    doc_ids, diff_scores, _, provider = provider_inputs
+
+    weights = _softmax(diff_scores, axis=-1)
+    n_patients, k_docs = doc_ids.shape
+
+    totals = np.zeros(n_patients)
+    for i in range(n_patients):
+        for k in range(k_docs):
+            for _, kw_weight in provider.keywords_for(int(doc_ids[i, k])):
+                totals[i] += weights[i, k] * kw_weight
+
+    np.testing.assert_allclose(totals, 1.0, atol=1e-9)
+
+
+def test_demographic_table_row_sums_equal_one_when_not_truncated(
+    provider_inputs: tuple[np.ndarray, np.ndarray, list[str], object],
+) -> None:
+    """Per-bin rows sum to 1 when top_n_keywords covers the full active vocab."""
+    doc_ids, diff_scores, labels, provider = provider_inputs
+
+    table, _, _ = build_keyword_demographic_table(
+        doc_ids,
+        diff_scores,
+        labels,
+        provider,
+        top_n_keywords=max(1000, len(provider.vocab)),
+    )
+
+    np.testing.assert_allclose(table.sum(axis=1), 1.0, atol=1e-9)
+
+
+def test_demographic_table_row_sums_leq_one_when_truncated(
+    provider_inputs: tuple[np.ndarray, np.ndarray, list[str], object],
+) -> None:
+    """top_n_keywords=1 removes mass; every row sum ≤ 1, and at least one is strictly <1."""
+    doc_ids, diff_scores, labels, provider = provider_inputs
+
+    table, _, _ = build_keyword_demographic_table(
+        doc_ids,
+        diff_scores,
+        labels,
+        provider,
+        top_n_keywords=1,
+    )
+
+    row_sums = table.sum(axis=1)
+    assert (row_sums <= 1.0 + 1e-9).all()
+    assert (row_sums < 1.0 - 1e-9).any(), (
+        "Expected truncation to remove mass from at least one bin; "
+        f"got row sums {row_sums}"
+    )
+
+
+def test_demographic_table_is_nonnegative_and_finite() -> None:
+    """Uneven bin sizes must not produce NaN, Inf, or negative entries."""
+    doc_ids = np.array(
+        [[0, 1], [0, 2], [1, 2], [0, 1], [2, 0], [1, 0]],
+        dtype=np.int64,
+    )
+    diff_scores = np.array(
+        [
+            [2.0, 0.0],
+            [1.0, 1.0],
+            [0.0, 5.0],
+            [3.0, 3.0],
+            [-2.0, 4.0],
+            [0.5, 0.5],
+        ],
+        dtype=np.float64,
+    )
+    # 5 patients in "A", 1 in "B" — exercises the denom=max(count,1) path.
+    labels = ["A", "A", "A", "A", "A", "B"]
+    provider = StaticMappingProvider(
+        [
+            [("cardio", 1.0)],
+            [("neuro", 0.6), ("onco", 0.4)],
+            [("onco", 1.0)],
+        ]
+    )
+
+    table, _, _ = build_keyword_demographic_table(doc_ids, diff_scores, labels, provider)
+
+    assert np.isfinite(table).all()
+    assert (table >= 0.0).all()
+
+
+def test_mass_conservation_with_extreme_diff_scores() -> None:
+    """Extreme diff_scores must not break softmax numerical stability."""
+    doc_ids = np.array([[0, 1, 2], [2, 1, 0]], dtype=np.int64)
+    diff_scores = np.array(
+        [
+            [1e6, -1e6, 0.0],
+            [-1e6, 1e6, 1e6],
+        ],
+        dtype=np.float64,
+    )
+    labels = ["A", "A"]
+    provider = StaticMappingProvider(
+        [
+            [("cardio", 0.7), ("neuro", 0.3)],
+            [("onco", 1.0)],
+            [("cardio", 0.5), ("onco", 0.5)],
+        ]
+    )
+
+    table, _, _ = build_keyword_demographic_table(
+        doc_ids,
+        diff_scores,
+        labels,
+        provider,
+        top_n_keywords=1000,
+    )
+
+    np.testing.assert_allclose(table.sum(axis=1), 1.0, atol=1e-9)
+
+
+def test_duplicate_doc_ids_preserve_mass() -> None:
+    """Retrieving the same doc K times must still conserve mass."""
+    doc_ids = np.array([[3, 3, 3], [2, 2, 2]], dtype=np.int64)
+    diff_scores = np.array(
+        [
+            [1.0, 2.0, 0.5],
+            [-1.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    labels = ["A", "B"]
+    provider = StaticMappingProvider(
+        [
+            [("a", 1.0)],
+            [("b", 1.0)],
+            [("c", 0.4), ("d", 0.6)],
+            [("e", 0.2), ("f", 0.8)],
+        ]
+    )
+
+    table, _, _ = build_keyword_demographic_table(
+        doc_ids,
+        diff_scores,
+        labels,
+        provider,
+        top_n_keywords=1000,
+    )
+
+    np.testing.assert_allclose(table.sum(axis=1), 1.0, atol=1e-9)

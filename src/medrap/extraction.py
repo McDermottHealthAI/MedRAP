@@ -21,8 +21,12 @@ doc_key_embeddings                          Retriever provides them
            ``(N, R, K, D_ret)``   float32
 per_doc_logits                              marginalized_retrieval=True
            ``(N, K, C)``          float32
-differentiable_doc_scores                   marginalized_retrieval=True
-           ``(N, K)``             float32
+differentiable_doc_scores                   Either produced natively by
+           ``(N, K)``             float32   marginalized_retrieval=True,
+                                            or filled post-hoc from
+                                            query_embeddings and
+                                            doc_key_embeddings when both
+                                            are present.
 =========  =====================  ========  ==============================
 
 ``N`` is the total number of samples. Tensor position maps 1:1 to dataset
@@ -75,6 +79,34 @@ import lightning
 import torch
 from torch import Tensor
 from torch.utils.data import DataLoader, RandomSampler
+
+
+def _fill_differentiable_doc_scores(artifacts: dict[str, Tensor], *, similarity: str = "dot") -> None:
+    """Compute ``differentiable_doc_scores`` post-hoc from saved query/key embeddings.
+
+    Non-marginalized runs (e.g. cross-attention + ``BinaryClassificationLoss``)
+    do not produce ``differentiable_doc_scores`` natively, but downstream
+    diagnostics (`run_demographic_heatmap.py`, score-weighted plots) expect
+    them. Since both ``query_embeddings`` and ``doc_key_embeddings`` are saved
+    for every run that uses a retriever exposing keys, we can recover the
+    score as their dot/cosine similarity.
+
+    The artifacts dict is mutated in-place. If the key is already present, or
+    either source tensor is missing, the dict is left unchanged.
+    """
+    from medrap.retrieval_scoring import differentiable_retrieval_scores
+
+    if "differentiable_doc_scores" in artifacts:
+        return
+    if "query_embeddings" not in artifacts or "doc_key_embeddings" not in artifacts:
+        return
+    with torch.no_grad():
+        scores = differentiable_retrieval_scores(
+            artifacts["query_embeddings"],
+            artifacts["doc_key_embeddings"],
+            similarity=similarity,
+        )
+    artifacts["differentiable_doc_scores"] = scores.float().cpu()
 
 
 def collate_prediction_batches(predictions: list[dict[str, Tensor]]) -> dict[str, Tensor]:
@@ -177,7 +209,7 @@ def extract_artifacts(
         ...     path = extract_artifacts(module, dl, trainer, output_dir=tmpdir)
         ...     artifacts = torch.load(path, weights_only=True)
         ...     sorted(artifacts.keys())
-        ['doc_ids', 'doc_key_embeddings', 'doc_scores', 'logits', 'query_embeddings', 'targets']
+        ['differentiable_doc_scores', 'doc_ids', 'doc_key_embeddings', 'doc_scores', 'logits', 'query_embeddings', 'targets']
     """
     if isinstance(dataloader.sampler, RandomSampler):
         raise ValueError(
@@ -196,6 +228,7 @@ def extract_artifacts(
 
     batch_predictions = trainer.predict(module, dataloaders=dataloader)
     collated = collate_prediction_batches(batch_predictions)
+    _fill_differentiable_doc_scores(collated)
 
     artifact_path = out / "extraction_artifacts.pt"
     torch.save(collated, artifact_path)

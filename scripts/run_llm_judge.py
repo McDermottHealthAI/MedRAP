@@ -96,7 +96,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max_workers", type=int, default=8)
     parser.add_argument("--out_dir", type=Path, default=None)
     parser.add_argument("--human_validation_n", type=int, default=50)
-    parser.add_argument("--max_total_calls_cap", type=int, default=10001)
+    parser.add_argument("--max_total_calls_cap", type=int, default=100)
     parser.add_argument("--timeline_max_events", type=int, default=20)
     parser.add_argument("--doc_max_chars", type=int, default=4000)
     parser.add_argument("--dry_run", action="store_true")

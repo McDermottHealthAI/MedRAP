@@ -238,6 +238,66 @@ def test_predict_step_values_match_pipeline_stages_marginalized() -> None:
     )
 
 
+def test_extract_artifacts_fills_differentiable_doc_scores_for_non_marginalized(tmp_path) -> None:
+    """Non-marginalized runs must get differentiable_doc_scores computed post-hoc.
+
+    Cross-attention / replace-fusion runs without marginalized retrieval don't
+    produce differentiable_doc_scores natively, but downstream diagnostics
+    (keyword_demographic_heatmap, doc-score plots) need them. Since both
+    query_embeddings and doc_key_embeddings are saved, we can compute it.
+    """
+    module = _make_module()  # non-marginalized
+    batch = make_supervised_batch()
+    dl = DataLoader([batch], batch_size=None)
+    trainer = lightning.Trainer(accelerator="cpu", logger=False, enable_progress_bar=False)
+
+    path = extract_artifacts(module, dl, trainer, output_dir=tmp_path / "artifacts")
+    artifacts = torch.load(path, weights_only=True)
+
+    assert "differentiable_doc_scores" in artifacts
+
+    expected = differentiable_retrieval_scores(
+        artifacts["query_embeddings"],
+        artifacts["doc_key_embeddings"],
+        similarity="dot",
+    )
+    torch.testing.assert_close(artifacts["differentiable_doc_scores"], expected)
+
+
+def test_extract_artifacts_preserves_native_differentiable_doc_scores(tmp_path) -> None:
+    """Marginalized runs produce differentiable_doc_scores natively; must not be overwritten."""
+    module = _make_marginalized_module()
+    batch = make_supervised_batch()
+    dl = DataLoader([batch], batch_size=None)
+    trainer = lightning.Trainer(accelerator="cpu", logger=False, enable_progress_bar=False)
+
+    path = extract_artifacts(module, dl, trainer, output_dir=tmp_path / "artifacts")
+    artifacts = torch.load(path, weights_only=True)
+
+    module.eval()
+    native = module.predict_step(batch, batch_idx=0)["differentiable_doc_scores"]
+    torch.testing.assert_close(artifacts["differentiable_doc_scores"], native)
+
+
+def test_fill_differentiable_doc_scores_is_noop_when_source_tensors_missing() -> None:
+    """Helper must not add the key if query_embeddings or doc_key_embeddings is absent."""
+    from medrap.extraction import _fill_differentiable_doc_scores
+
+    artifacts = {
+        "query_embeddings": torch.randn(2, 1, 4),
+        "logits": torch.zeros(2, 1),
+    }
+    _fill_differentiable_doc_scores(artifacts)
+    assert "differentiable_doc_scores" not in artifacts
+
+    artifacts = {
+        "doc_key_embeddings": torch.randn(2, 1, 3, 4),
+        "logits": torch.zeros(2, 1),
+    }
+    _fill_differentiable_doc_scores(artifacts)
+    assert "differentiable_doc_scores" not in artifacts
+
+
 def test_extract_artifacts_checkpoint_round_trip_preserves_values(tmp_path) -> None:
     """Saving state_dict, re-creating the module, and re-extracting must give identical tensors."""
     torch.manual_seed(42)
