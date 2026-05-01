@@ -118,7 +118,7 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
         for name, parameter in self.named_parameters():
             if not parameter.requires_grad:
                 continue
-            if name in no_decay_names:
+            if name in no_decay_names or parameter.ndim <= 1:
                 no_decay_params.append(parameter)
             else:
                 decay_params.append(parameter)

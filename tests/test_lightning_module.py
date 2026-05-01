@@ -439,6 +439,31 @@ def test_configure_optimizers_without_warmup_returns_optimizer(
     assert not isinstance(result, dict)
 
 
+def test_grouped_parameters_excludes_vector_parameters_from_weight_decay() -> None:
+    class AttentionModel(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.attn = nn.MultiheadAttention(embed_dim=4, num_heads=2, batch_first=True)
+            self.linear = nn.Linear(4, 1)
+
+        def forward(self, batch: MEDSTorchBatch) -> ModelOutput:
+            features = batch.code.float().unsqueeze(-1).expand(-1, -1, 4)
+            attended, _ = self.attn(features, features, features, need_weights=False)
+            return ModelOutput(logits=self.linear(attended.mean(dim=1)))
+
+    model = AttentionModel()
+    module = MedRAPSupervisedLightningModule(model=model)
+
+    decay_group, no_decay_group = module._grouped_parameters()
+    decay_params = set(decay_group["params"])
+    no_decay_params = set(no_decay_group["params"])
+
+    assert model.attn.in_proj_weight in decay_params
+    assert model.attn.in_proj_bias in no_decay_params
+    assert model.linear.weight in decay_params
+    assert model.linear.bias in no_decay_params
+
+
 def test_predict_step_captures_marginalized_tensors_from_metadata(
     supervised_batch: MEDSTorchBatch,
 ) -> None:
