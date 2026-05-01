@@ -23,6 +23,10 @@ def positive_class_probs(logits: Tensor) -> Tensor:
         Traceback (most recent call last):
             ...
         ValueError: Expected logits shaped (N, C), got (2,)
+        >>> positive_class_probs(torch.zeros(2, 3))  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        ValueError: Expected 1 or 2 output dims...
     """
     if logits.ndim != 2:
         raise ValueError(f"Expected logits shaped (N, C), got {tuple(logits.shape)}")
@@ -50,6 +54,8 @@ def binary_auroc_torch(targets: Tensor, scores: Tensor) -> Tensor | None:
         >>> float(binary_auroc_torch(y, s))
         1.0
         >>> binary_auroc_torch(torch.FloatTensor([1, 1]), torch.FloatTensor([0.2, 0.8])) is None
+        True
+        >>> binary_auroc_torch(torch.FloatTensor([float("nan"), 1]), torch.FloatTensor([0.2, 0.8])) is None
         True
         >>> float(binary_auroc_torch(torch.FloatTensor([0, 1]), torch.FloatTensor([0.5, 0.5])))
         0.5
@@ -107,6 +113,10 @@ def multitask_auroc_torch(targets: Tensor, logits: Tensor) -> dict[int, float]:
         >>> logits = torch.FloatTensor([[-2, 2], [2, -2], [-1, -1], [1, 1]])
         >>> multitask_auroc_torch(y, logits)
         {0: 1.0, 1: 1.0}
+        >>> multitask_auroc_torch(y[:, :1], logits)  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        ValueError: Expected multitask targets and logits...
     """
     if targets.ndim != 2 or logits.ndim != 2 or targets.shape != logits.shape:
         raise ValueError(

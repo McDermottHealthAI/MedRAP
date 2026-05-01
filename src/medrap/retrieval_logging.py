@@ -296,6 +296,36 @@ def model_diagnostic_scalars(
         True
         >>> "val_diagnostics/retrieval/differentiable/effective_k_mean" in diff_logs
         False
+        >>> _probability_scalars(torch.empty(0, 1), prefix="prediction/train")
+        {}
+        >>> float(
+        ...     _logit_scalars(torch.tensor([float("nan")]), prefix="prediction/train")[
+        ...         "prediction/train/finite_frac"
+        ...     ]
+        ... )
+        0.0
+        >>> _query_scalars(QueryOutput(torch.empty(0, 1, 2)), prefix="query/train")
+        {}
+        >>> empty_ret = RetrieverOutput(
+        ...     doc_tokens=torch.empty(0, 1, 1, 2, dtype=torch.long),
+        ...     doc_attention_mask=torch.empty(0, 1, 1, 2, dtype=torch.bool),
+        ... )
+        >>> _retrieval_id_scalars(empty_ret, prefix="retrieval/train")
+        {}
+        >>> empty_ids_ret = RetrieverOutput(
+        ...     doc_tokens=torch.ones(1, 1, 1, 2, dtype=torch.long),
+        ...     doc_attention_mask=torch.ones(1, 1, 1, 2, dtype=torch.bool),
+        ...     doc_ids=torch.empty(0, dtype=torch.long),
+        ... )
+        >>> _retrieval_id_scalars(empty_ids_ret, prefix="retrieval/train")
+        {'retrieval/train/unique_doc_ratio': tensor(0.)}
+        >>> _retrieval_score_scalars(torch.empty(0, 2), prefix="retrieval/train")
+        {}
+        >>> _differentiable_score_scalars(torch.empty(0, 2), prefix="retrieval/train/differentiable")
+        {}
+        >>> from types import SimpleNamespace
+        >>> _mask_scalars(SimpleNamespace(), prefix="mask/train")
+        {}
     """
     logs: dict[str, Tensor] = {}
     prediction_prefix = _diagnostic_prefix("prediction", stage=stage)

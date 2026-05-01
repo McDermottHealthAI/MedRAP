@@ -292,6 +292,17 @@ class EndOfFitValAUROCCallback(Callback):
         >>> log_one.log_metrics.called
         False
         >>> log_bad = SimpleNamespace(log_metrics=MagicMock())
+        >>> plm_bad = MagicMock(spec=pl.LightningModule)
+        >>> plm_bad.training = True
+        >>> plm_bad.device = torch.device("cpu")
+        >>> plm_bad.eval = MagicMock()
+        >>> plm_bad.train = MagicMock()
+        >>> plm_bad.transfer_batch_to_device = lambda batch, device, dataloader_idx=0: batch
+        >>> plm_bad.task = BinaryClassificationTask()
+        >>> plm_bad.side_effect = [
+        ...     ModelOutput(logits=torch.tensor([[0.0]])),
+        ...     ModelOutput(logits=torch.tensor([[1.0]])),
+        ... ]
         >>> with patch("medrap.callbacks.binary_auroc", side_effect=RuntimeError("fail")):
         ...     EndOfFitValAUROCCallback().on_fit_end(
         ...         SimpleNamespace(
@@ -303,11 +314,22 @@ class EndOfFitValAUROCCallback(Callback):
         ...                 [_auroc_batch2(False), _auroc_batch2(True)], batch_size=None
         ...             ),
         ...         ),
-        ...         ev,
+        ...         plm_bad,
         ...     )
         >>> log_bad.log_metrics.called
         False
         >>> log_nan = SimpleNamespace(log_metrics=MagicMock())
+        >>> plm_nan = MagicMock(spec=pl.LightningModule)
+        >>> plm_nan.training = True
+        >>> plm_nan.device = torch.device("cpu")
+        >>> plm_nan.eval = MagicMock()
+        >>> plm_nan.train = MagicMock()
+        >>> plm_nan.transfer_batch_to_device = lambda batch, device, dataloader_idx=0: batch
+        >>> plm_nan.task = BinaryClassificationTask()
+        >>> plm_nan.side_effect = [
+        ...     ModelOutput(logits=torch.tensor([[0.0]])),
+        ...     ModelOutput(logits=torch.tensor([[1.0]])),
+        ... ]
         >>> with patch("medrap.callbacks.binary_auroc", return_value=torch.tensor(float("nan"))):
         ...     EndOfFitValAUROCCallback().on_fit_end(
         ...         SimpleNamespace(
@@ -319,7 +341,7 @@ class EndOfFitValAUROCCallback(Callback):
         ...                 [_auroc_batch2(False), _auroc_batch2(True)], batch_size=None
         ...             ),
         ...         ),
-        ...         ev,
+        ...         plm_nan,
         ...     )
         >>> log_nan.log_metrics.called
         False

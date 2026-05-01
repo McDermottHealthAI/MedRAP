@@ -203,6 +203,17 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
         self._validation_auroc_targets.append(targets.detach().to(device=logits.device).float())
 
     def _validation_auroc_metrics(self, targets: Tensor, logits: Tensor) -> dict[str, float]:
+        """Compute validation-loop AUROC metrics from accumulated tensors.
+
+        Examples:
+            >>> module = MedRAPSupervisedLightningModule(model=ModelOutputBinaryModel())
+            >>> module._validation_auroc_metrics(torch.ones(2, 1), torch.zeros(2, 1))
+            {}
+            >>> module._validation_auroc_metrics(torch.FloatTensor([0, 1]), torch.zeros(2, 3))
+            {}
+            >>> module._validation_auroc_metrics(torch.FloatTensor([1, 1]), torch.zeros(2, 1))
+            {}
+        """
         if targets.ndim == 2 and logits.ndim == 2 and targets.shape == logits.shape:
             per_task = multitask_auroc_torch(targets, logits)
             if not per_task:
