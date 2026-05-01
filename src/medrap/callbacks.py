@@ -292,6 +292,17 @@ class EndOfFitValAUROCCallback(Callback):
         >>> log_one.log_metrics.called
         False
         >>> log_bad = SimpleNamespace(log_metrics=MagicMock())
+        >>> plm_bad = MagicMock(spec=pl.LightningModule)
+        >>> plm_bad.training = True
+        >>> plm_bad.device = torch.device("cpu")
+        >>> plm_bad.eval = MagicMock()
+        >>> plm_bad.train = MagicMock()
+        >>> plm_bad.transfer_batch_to_device = lambda batch, device, dataloader_idx=0: batch
+        >>> plm_bad.task = BinaryClassificationTask()
+        >>> plm_bad.side_effect = [
+        ...     ModelOutput(logits=torch.tensor([[0.0]])),
+        ...     ModelOutput(logits=torch.tensor([[1.0]])),
+        ... ]
         >>> with patch("medrap.callbacks.binary_auroc", side_effect=RuntimeError("fail")):
         ...     EndOfFitValAUROCCallback().on_fit_end(
         ...         SimpleNamespace(
@@ -303,11 +314,22 @@ class EndOfFitValAUROCCallback(Callback):
         ...                 [_auroc_batch2(False), _auroc_batch2(True)], batch_size=None
         ...             ),
         ...         ),
-        ...         ev,
+        ...         plm_bad,
         ...     )
         >>> log_bad.log_metrics.called
         False
         >>> log_nan = SimpleNamespace(log_metrics=MagicMock())
+        >>> plm_nan = MagicMock(spec=pl.LightningModule)
+        >>> plm_nan.training = True
+        >>> plm_nan.device = torch.device("cpu")
+        >>> plm_nan.eval = MagicMock()
+        >>> plm_nan.train = MagicMock()
+        >>> plm_nan.transfer_batch_to_device = lambda batch, device, dataloader_idx=0: batch
+        >>> plm_nan.task = BinaryClassificationTask()
+        >>> plm_nan.side_effect = [
+        ...     ModelOutput(logits=torch.tensor([[0.0]])),
+        ...     ModelOutput(logits=torch.tensor([[1.0]])),
+        ... ]
         >>> with patch("medrap.callbacks.binary_auroc", return_value=torch.tensor(float("nan"))):
         ...     EndOfFitValAUROCCallback().on_fit_end(
         ...         SimpleNamespace(
@@ -319,7 +341,7 @@ class EndOfFitValAUROCCallback(Callback):
         ...                 [_auroc_batch2(False), _auroc_batch2(True)], batch_size=None
         ...             ),
         ...         ),
-        ...         ev,
+        ...         plm_nan,
         ...     )
         >>> log_nan.log_metrics.called
         False
@@ -452,11 +474,14 @@ class EndOfFitValAUROCCallback(Callback):
 
 
 class GradientNormCallback(Callback):
-    """Log L2 gradient norms per top-level parameter group (e.g. ``model``).
+    """Log L2 gradient norms per MedRAP pipeline module.
 
-    Also logs ``train/grad_norm/query_projector`` and an alias
-    ``train/grad_norm/query_projection`` over all parameters whose name contains
-    ``query_projector`` (query encoder signal).
+    Metrics are named ``grad_norm/train/{module}`` so W&B groups them under a
+    dedicated ``grad_norm`` section rather than the headline ``train`` section.
+    Parameters under the wrapped ``model`` are grouped by the next path
+    component, e.g. ``model.encoder`` logs as ``grad_norm/train/encoder``.
+    Groups with trainable parameters but no gradient are logged as ``0.0`` so
+    dead paths are visible in W&B instead of missing.
 
     Uses :meth:`lightning.pytorch.core.module.LightningModule.log` so values
     reach WandB when a ``WandbLogger`` is configured.
@@ -490,7 +515,7 @@ class GradientNormCallback(Callback):
         ...     _DummyGrad(),
         ...     train_dataloaders=DataLoader(torch.randn(4, 2), batch_size=2),
         ... )
-        >>> any(str(k).startswith("train/grad_norm") for k in tr.callback_metrics)
+        >>> any(str(k).startswith("grad_norm/train") for k in tr.callback_metrics)
         True
         >>> from types import SimpleNamespace
         >>> class _QPG(pl.LightningModule):
@@ -515,7 +540,9 @@ class GradientNormCallback(Callback):
         []
         >>> gmod.training_step(gb, 0).backward()
         >>> gcb.on_after_backward(SimpleNamespace(global_step=50), gmod)
-        >>> any(str(x).startswith("train/grad_norm") for x in gcalls)
+        >>> any(str(x).startswith("grad_norm/train") for x in gcalls)
+        True
+        >>> "grad_norm/train/query_projector" in gcalls
         True
         >>> class _Mix(pl.LightningModule):
         ...     def __init__(self) -> None:
@@ -538,6 +565,25 @@ class GradientNormCallback(Callback):
         >>> gcb2.on_after_backward(SimpleNamespace(global_step=1), mx)
         >>> any("query_projector" in str(x) for x in mxcalls)
         True
+        >>> class _DetachedQP(pl.LightningModule):
+        ...     def __init__(self) -> None:
+        ...         super().__init__()
+        ...         self.model = torch.nn.Module()
+        ...         self.model.query_projector = torch.nn.Linear(2, 2)
+        ...         self.model.head = torch.nn.Linear(2, 1)
+        ...
+        ...     def training_step(self, batch, _i):
+        ...         _ = self.model.query_projector(batch.detach())
+        ...         return self.model.head(batch).sum()
+        >>> dq = _DetachedQP()
+        >>> dq_calls: dict[str, float] = {}
+        >>> dq.log = lambda name, value, **_: dq_calls.update({name: float(value)})
+        >>> dq.training_step(torch.randn(2, 2), 0).backward()
+        >>> GradientNormCallback(every_n_steps=1).on_after_backward(SimpleNamespace(global_step=1), dq)
+        >>> dq_calls["grad_norm/train/query_projector"]
+        0.0
+        >>> dq_calls["grad_norm/train/head"] > 0.0
+        True
         >>> GradientNormCallback(every_n_steps=0).every_n_steps
         1
     """
@@ -546,47 +592,70 @@ class GradientNormCallback(Callback):
         super().__init__()
         self.every_n_steps = max(1, int(every_n_steps))
 
+    @staticmethod
+    def _group_name(parameter_name: str) -> str:
+        """Return the diagnostic gradient group for a parameter name.
+
+        Examples:
+            >>> GradientNormCallback._group_name("model.encoder.embedding.weight")
+            'encoder'
+            >>> GradientNormCallback._group_name("model.query_projector.linear.weight")
+            'query_projector'
+            >>> GradientNormCallback._group_name("loss_fn.weight")
+            'loss_fn'
+            >>> GradientNormCallback._group_name("model.weight")
+            'model'
+        """
+        parts = parameter_name.split(".")
+        if parts[0] == "model" and len(parts) > 2:
+            return parts[1]
+        return parts[0]
+
+    @classmethod
+    def _trainable_groups(cls, pl_module: pl.LightningModule) -> set[str]:
+        """Return gradient groups that contain at least one trainable parameter.
+
+        Examples:
+            >>> import lightning.pytorch as pl
+            >>> import torch
+            >>> class _Grouped(pl.LightningModule):
+            ...     def __init__(self) -> None:
+            ...         super().__init__()
+            ...         self.model = torch.nn.Module()
+            ...         self.model.query_projector = torch.nn.Linear(2, 2)
+            ...         self.model.head = torch.nn.Linear(2, 1)
+            >>> GradientNormCallback._trainable_groups(_Grouped()) == {"query_projector", "head"}
+            True
+        """
+        return {
+            cls._group_name(name)
+            for name, parameter in pl_module.named_parameters()
+            if parameter.requires_grad
+        }
+
     def on_after_backward(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         if trainer.global_step % self.every_n_steps != 0:
             return
         sq_by_group: dict[str, float] = defaultdict(float)
-        query_projector_sq = 0.0
+        trainable_groups = self._trainable_groups(pl_module)
         for name, parameter in pl_module.named_parameters():
             grad = parameter.grad
             if grad is None:
                 continue
             n = float(grad.detach().norm(2).item())
-            group = name.split(".", 1)[0]
-            sq_by_group[group] += n * n
-            if "query_projector" in name:
-                query_projector_sq += n * n
-        for group, sq in sorted(sq_by_group.items()):
+            sq_by_group[self._group_name(name)] += n * n
+        for group in sorted(trainable_groups | set(sq_by_group)):
+            sq = sq_by_group.get(group, 0.0)
             pl_module.log(
-                f"train/grad_norm/{group}",
+                f"grad_norm/train/{group}",
                 sq**0.5,
-                on_step=True,
-                on_epoch=False,
-                prog_bar=False,
-            )
-        if query_projector_sq > 0.0:
-            qp_norm = query_projector_sq**0.5
-            pl_module.log(
-                "train/grad_norm/query_projector",
-                qp_norm,
-                on_step=True,
-                on_epoch=False,
-                prog_bar=False,
-            )
-            pl_module.log(
-                "train/grad_norm/query_projection",
-                qp_norm,
                 on_step=True,
                 on_epoch=False,
                 prog_bar=False,
             )
         total_sq = sum(sq_by_group.values(), 0.0)
         pl_module.log(
-            "train/grad_norm/total",
+            "grad_norm/train/total",
             total_sq**0.5,
             on_step=True,
             on_epoch=False,

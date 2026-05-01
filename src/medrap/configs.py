@@ -205,6 +205,9 @@ MarginalizedRetrievalSupervisedLossConfig = builds_any(
 )
 MedRAPSupervisedLightningModuleConfig = builds_any(
     MedRAPSupervisedLightningModule,
+    diagnostics_every_n_steps=50,
+    validation_auroc=True,
+    validation_auroc_log_per_task=False,
     zen_dataclass={"cls_name": "MedRAPSupervisedLightningModuleConfig"},
 )
 LoadHFSourceConfig = builds_any(
