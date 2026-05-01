@@ -118,6 +118,9 @@ HFDatasetRetrieverConfig = builds_any(
     doc_ids_column="doc_ids",
     doc_key_embeddings_column="doc_key_embeddings",
     k=1,
+    device=None,
+    cache_payloads=False,
+    payload_cache_device=None,
     zen_dataclass={"cls_name": "HFDatasetRetrieverConfig"},
 )
 DemoInMemoryRetrieverConfig = builds_any(

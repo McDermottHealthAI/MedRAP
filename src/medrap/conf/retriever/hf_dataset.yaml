@@ -7,3 +7,6 @@ doc_attention_mask_column: doc_attention_mask
 doc_ids_column: doc_ids
 doc_key_embeddings_column: doc_key_embeddings
 k: 1
+device: null
+cache_payloads: false
+payload_cache_device: null
