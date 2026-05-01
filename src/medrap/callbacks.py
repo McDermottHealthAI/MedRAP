@@ -486,6 +486,17 @@ class ProgressCheckpointCallback(Callback):
         ['progress=0.25-step=1.ckpt', 'progress=0.50-step=2.ckpt', 'progress=1.00-step=4.ckpt']
         >>> ProgressCheckpointCallback(dirpath=".", fractions=[0, 1.2, 0.5]).fractions
         (0.5,)
+        >>> cb = ProgressCheckpointCallback(dirpath=".", fractions=[0.5])
+        >>> skipped: list[str] = []
+        >>> trainer = SimpleNamespace(
+        ...     estimated_stepping_batches=float("inf"),
+        ...     global_step=10,
+        ...     save_checkpoint=lambda path: skipped.append(path),
+        ... )
+        >>> cb.on_train_start(trainer, SimpleNamespace())
+        >>> cb.on_train_batch_end(trainer, SimpleNamespace(), None, None, 0)
+        >>> skipped
+        []
     """
 
     def __init__(
