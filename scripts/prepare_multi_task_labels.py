@@ -147,7 +147,10 @@ def _process_shard(
     offset_us: int,
     horizon_days: float,
 ) -> pl.DataFrame | None:
-    """Build binary label rows for one shard. Returns None if no usable events."""
+    """Build binary label rows for one shard.
+
+    Returns None if no usable events.
+    """
     df = pl.read_parquet(f, columns=["subject_id", "time", "code"]).filter(pl.col("time").is_not_null())
     if df.is_empty():
         return None
