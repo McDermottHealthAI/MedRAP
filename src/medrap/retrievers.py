@@ -247,6 +247,10 @@ class HFDatasetRetriever(Retriever):
             device(type='cpu')
             >>> HFDatasetRetriever._resolve_cache_device("cpu")
             device(type='cpu')
+            >>> HFDatasetRetriever._resolve_cache_device(torch.device("cpu"))
+            device(type='cpu')
+            >>> HFDatasetRetriever._resolve_cache_device(2)
+            device(type='cuda', index=2)
         """
         if device is None:
             return torch.device("cpu")
@@ -273,6 +277,20 @@ class HFDatasetRetriever(Retriever):
         Returns:
             Tensor containing all rows from ``column`` on ``device``. The first
             dimension is always ``N_docs``.
+
+        Examples:
+            >>> class IterableColumn:
+            ...     def __iter__(self):
+            ...         return iter([[1, 2], [3, 4]])
+            >>> retriever = object.__new__(HFDatasetRetriever)
+            >>> retriever._dataset = {"doc_tokens": IterableColumn()}
+            >>> cached = retriever._cache_dataset_column(
+            ...     "doc_tokens",
+            ...     dtype=torch.long,
+            ...     device=torch.device("cpu"),
+            ... )
+            >>> cached.tolist()
+            [[1, 2], [3, 4]]
         """
         values = self._dataset[column]
         try:
@@ -569,6 +587,19 @@ class HFDatasetRetriever(Retriever):
                 - ``doc_scores`` shaped ``(B, R, K)``
                 - ``doc_ids`` shaped ``(B, R, K)``
                 - optional ``doc_key_embeddings`` shaped ``(B, R, K, D_ret)``
+
+        Examples:
+            >>> retriever = object.__new__(HFDatasetRetriever)
+            >>> retriever._cached_doc_tokens = None
+            >>> retriever._cached_doc_attention_mask = None
+            >>> retriever._materialize_cached_output(
+            ...     row_indices=torch.LongTensor([[[0]]]),
+            ...     scores=torch.FloatTensor([[[1.0]]]),
+            ...     output_device=torch.device("cpu"),
+            ... )  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            RuntimeError: Cached payloads are not initialized.
         """
         if self._cached_doc_tokens is None or self._cached_doc_attention_mask is None:
             raise RuntimeError("Cached payloads are not initialized.")
@@ -691,8 +722,28 @@ class HFDatasetRetriever(Retriever):
             >>> cached_out = cached(torch.FloatTensor([[[1.0, 0.0]], [[0.0, 1.0]]]))
             >>> torch.equal(cached_out.doc_tokens, out.doc_tokens)
             True
+            >>> torch.equal(cached_out.doc_attention_mask, out.doc_attention_mask)
+            True
+            >>> torch.equal(cached_out.doc_ids, out.doc_ids)
+            True
+            >>> torch.equal(cached_out.doc_key_embeddings, out.doc_key_embeddings)
+            True
             >>> cached._cached_doc_tokens.device.type
             'cpu'
+
+            >>> cached_no_ids = HFDatasetRetriever(
+            ...     dataset=dataset,
+            ...     index_name="retrieval",
+            ...     doc_tokens_column="doc_tokens",
+            ...     doc_attention_mask_column="doc_attention_mask",
+            ...     k=1,
+            ...     cache_payloads=True,
+            ... )
+            >>> out_cached_no_ids = cached_no_ids(torch.FloatTensor([[[0.0, 1.0]]]))
+            >>> out_cached_no_ids.doc_ids.tolist()
+            [[[1]]]
+            >>> out_cached_no_ids.doc_key_embeddings is None
+            True
         """
         if query_embeddings.ndim != 3:
             raise ValueError("query_embeddings must have shape (B, R, D_ret)")
