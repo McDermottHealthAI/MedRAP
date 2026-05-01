@@ -1,4 +1,5 @@
 import torch
+from datasets import Dataset
 from meds_torchdata import MEDSTorchBatch
 from torch import nn
 
@@ -13,7 +14,7 @@ from medrap.retrieval_encoder import (
     PerDocMeanPooledRetrievalEncoder,
     TokenFeatureRetrievalEncoder,
 )
-from medrap.retrievers import InMemoryRetriever
+from medrap.retrievers import HFDatasetRetriever, InMemoryRetriever
 from medrap.types import FusionInput, RetrieverOutput
 
 
@@ -204,3 +205,43 @@ def test_in_memory_retriever_returns_query_dependent_payloads() -> None:
     assert out.doc_key_embeddings is not None
     assert out.doc_tokens.shape == (2, 1, 2, 2)
     assert out.doc_attention_mask.dtype == torch.bool
+
+
+def test_hf_dataset_retriever_cached_payloads_match_uncached() -> None:
+    dataset = Dataset.from_dict(
+        {
+            "doc_tokens": [[10, 11, 0], [20, 21, 0], [30, 31, 32]],
+            "doc_attention_mask": [[1, 1, 0], [1, 1, 0], [1, 1, 1]],
+            "doc_ids": [100, 200, 300],
+            "index_embeddings": [[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]],
+            "doc_key_embeddings": [[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]],
+        }
+    )
+    dataset.add_faiss_index(column="index_embeddings", index_name="retrieval")
+
+    common_kwargs = {
+        "dataset": dataset,
+        "index_name": "retrieval",
+        "doc_tokens_column": "doc_tokens",
+        "doc_attention_mask_column": "doc_attention_mask",
+        "doc_ids_column": "doc_ids",
+        "doc_key_embeddings_column": "doc_key_embeddings",
+        "k": 2,
+    }
+    uncached = HFDatasetRetriever(**common_kwargs)
+    cached = HFDatasetRetriever(**common_kwargs, cache_payloads=True)
+
+    query = torch.FloatTensor([[[1.0, 0.1]], [[-0.1, 1.0]]])
+    uncached_out = uncached(query)
+    cached_out = cached(query)
+
+    assert cached._cached_doc_tokens is not None
+    assert cached._cached_doc_tokens.device.type == "cpu"
+    assert torch.equal(cached_out.doc_tokens, uncached_out.doc_tokens)
+    assert torch.equal(cached_out.doc_attention_mask, uncached_out.doc_attention_mask)
+    assert cached_out.doc_ids is not None and uncached_out.doc_ids is not None
+    assert torch.equal(cached_out.doc_ids, uncached_out.doc_ids)
+    assert cached_out.doc_scores is not None and uncached_out.doc_scores is not None
+    assert torch.allclose(cached_out.doc_scores, uncached_out.doc_scores)
+    assert cached_out.doc_key_embeddings is not None and uncached_out.doc_key_embeddings is not None
+    assert torch.equal(cached_out.doc_key_embeddings, uncached_out.doc_key_embeddings)

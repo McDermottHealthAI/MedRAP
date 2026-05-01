@@ -195,6 +195,17 @@ class HFDatasetRetriever(Retriever):
         doc_ids_column: Optional column containing document ids.
         doc_key_embeddings_column: Optional column containing document key
             embeddings.
+        cache_payloads: Whether to cache retrieval payload columns as tensors at
+            construction time. This avoids Hugging Face Dataset row
+            materialization in the per-batch retrieval hot path.
+        payload_cache_device: Device for cached payload tensors. ``None`` means
+            CPU. Use ``"cuda:0"`` only when the payload corpus fits in GPU
+            memory.
+
+    Cached payloads preserve the same output shapes as uncached retrieval:
+    ``doc_tokens`` and ``doc_attention_mask`` are ``(B, R, K, S_doc)``,
+    ``doc_ids`` is ``(B, R, K)``, and ``doc_key_embeddings`` is
+    ``(B, R, K, D_ret)`` when configured.
     """
 
     def __init__(
@@ -207,6 +218,8 @@ class HFDatasetRetriever(Retriever):
         k: int = 1,
         doc_ids_column: str | None = None,
         doc_key_embeddings_column: str | None = None,
+        cache_payloads: bool = False,
+        payload_cache_device: str | int | torch.device | None = None,
     ) -> None:
         super().__init__()
 
@@ -217,7 +230,86 @@ class HFDatasetRetriever(Retriever):
         self._doc_key_embeddings_column = doc_key_embeddings_column
         self._dataset = dataset
         self._index_name = index_name
+        self._cached_doc_tokens: Tensor | None = None
+        self._cached_doc_attention_mask: Tensor | None = None
+        self._cached_doc_ids: Tensor | None = None
+        self._cached_doc_key_embeddings: Tensor | None = None
         self._validate_dataset()
+        if cache_payloads:
+            self._cache_payloads(payload_cache_device)
+
+    @staticmethod
+    def _resolve_cache_device(device: str | int | torch.device | None) -> torch.device:
+        """Resolve payload cache device names.
+
+        Examples:
+            >>> HFDatasetRetriever._resolve_cache_device(None)
+            device(type='cpu')
+            >>> HFDatasetRetriever._resolve_cache_device("cpu")
+            device(type='cpu')
+        """
+        if device is None:
+            return torch.device("cpu")
+        if isinstance(device, torch.device):
+            return device
+        if isinstance(device, int):
+            return torch.device("cuda", device)
+        return torch.device(device)
+
+    def _cache_dataset_column(
+        self,
+        column: str,
+        *,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> Tensor:
+        """Convert one fixed-shape dataset column to a tensor cache.
+
+        Args:
+            column: Dataset column to cache.
+            dtype: Tensor dtype for the cached column.
+            device: Device that stores the cache.
+
+        Returns:
+            Tensor containing all rows from ``column`` on ``device``. The first
+            dimension is always ``N_docs``.
+        """
+        values = self._dataset[column]
+        try:
+            tensor = torch.as_tensor(values, dtype=dtype)
+        except (TypeError, ValueError):
+            tensor = torch.as_tensor(list(values), dtype=dtype)
+        return tensor.to(device)
+
+    def _cache_payloads(self, device: str | int | torch.device | None = None) -> None:
+        """Cache configured retrieval payload columns as indexable tensors.
+
+        Args:
+            device: Target cache device. ``None`` stores payloads on CPU.
+        """
+        cache_device = self._resolve_cache_device(device)
+        self._cached_doc_tokens = self._cache_dataset_column(
+            self._doc_tokens_column,
+            dtype=torch.long,
+            device=cache_device,
+        )
+        self._cached_doc_attention_mask = self._cache_dataset_column(
+            self._doc_attention_mask_column,
+            dtype=torch.bool,
+            device=cache_device,
+        )
+        if self._doc_ids_column is not None:
+            self._cached_doc_ids = self._cache_dataset_column(
+                self._doc_ids_column,
+                dtype=torch.long,
+                device=cache_device,
+            )
+        if self._doc_key_embeddings_column is not None:
+            self._cached_doc_key_embeddings = self._cache_dataset_column(
+                self._doc_key_embeddings_column,
+                dtype=torch.float32,
+                device=cache_device,
+            )
 
     def _validate_dataset(self) -> None:
         """Validate dataset columns and attached index.
@@ -391,6 +483,13 @@ class HFDatasetRetriever(Retriever):
                   configured, otherwise the FAISS dataset row indices)
                 - optional ``doc_key_embeddings`` shaped ``(B, R, K, D_ret)``
         """
+        if self._cached_doc_tokens is not None:
+            return self._materialize_cached_output(
+                row_indices=row_indices,
+                scores=scores,
+                output_device=output_device,
+            )
+
         batch_size, n_retrieval_steps, k = row_indices.shape
         flat_row_indices = row_indices.reshape(-1).tolist()
         rows = self._dataset[flat_row_indices]
@@ -423,6 +522,85 @@ class HFDatasetRetriever(Retriever):
                 rows[self._doc_key_embeddings_column],
                 dtype=torch.float32,
                 device=output_device,
+            ).reshape(batch_size, n_retrieval_steps, k, -1)
+
+        return RetrieverOutput(
+            doc_tokens=doc_tokens,
+            doc_attention_mask=doc_attention_mask,
+            doc_scores=scores.to(output_device),
+            doc_ids=doc_ids,
+            doc_key_embeddings=doc_key_embeddings,
+        )
+
+    def _take_cached_rows(self, cache: Tensor, row_indices: Tensor, output_device: torch.device) -> Tensor:
+        """Gather cached payload rows and return them on ``output_device``.
+
+        Args:
+            cache: Cached tensor with first dimension ``N_docs``.
+            row_indices: Retrieved row ids with shape ``(B, R, K)``.
+            output_device: Device for the returned tensor.
+
+        Returns:
+            Gathered rows with flattened leading dimension ``B * R * K`` and
+            remaining dimensions inherited from ``cache``.
+        """
+        flat_row_indices = row_indices.reshape(-1).to(cache.device)
+        values = cache.index_select(0, flat_row_indices)
+        return values.to(output_device)
+
+    def _materialize_cached_output(
+        self,
+        *,
+        row_indices: Tensor,
+        scores: Tensor,
+        output_device: torch.device,
+    ) -> RetrieverOutput:
+        """Materialize retrieved rows from cached tensor payloads.
+
+        Args:
+            row_indices: Retrieved dataset row indices with shape ``(B, R, K)``.
+            scores: Retrieval scores with shape ``(B, R, K)``.
+            output_device: Device to place the materialized tensors on.
+
+        Returns:
+            ``RetrieverOutput`` with:
+                - ``doc_tokens`` shaped ``(B, R, K, S_doc)``
+                - ``doc_attention_mask`` shaped ``(B, R, K, S_doc)``
+                - ``doc_scores`` shaped ``(B, R, K)``
+                - ``doc_ids`` shaped ``(B, R, K)``
+                - optional ``doc_key_embeddings`` shaped ``(B, R, K, D_ret)``
+        """
+        if self._cached_doc_tokens is None or self._cached_doc_attention_mask is None:
+            raise RuntimeError("Cached payloads are not initialized.")
+
+        batch_size, n_retrieval_steps, k = row_indices.shape
+
+        doc_tokens = self._take_cached_rows(
+            self._cached_doc_tokens,
+            row_indices,
+            output_device,
+        ).reshape(batch_size, n_retrieval_steps, k, -1)
+        doc_attention_mask = self._take_cached_rows(
+            self._cached_doc_attention_mask,
+            row_indices,
+            output_device,
+        ).reshape(batch_size, n_retrieval_steps, k, -1)
+
+        if self._cached_doc_ids is not None:
+            doc_ids = self._take_cached_rows(
+                self._cached_doc_ids,
+                row_indices,
+                output_device,
+            ).reshape(batch_size, n_retrieval_steps, k)
+        else:
+            doc_ids = row_indices.to(output_device)
+
+        doc_key_embeddings = None
+        if self._cached_doc_key_embeddings is not None:
+            doc_key_embeddings = self._take_cached_rows(
+                self._cached_doc_key_embeddings,
+                row_indices,
+                output_device,
             ).reshape(batch_size, n_retrieval_steps, k, -1)
 
         return RetrieverOutput(
@@ -499,6 +677,22 @@ class HFDatasetRetriever(Retriever):
             >>> out_no_ids = retriever_no_ids(torch.FloatTensor([[[1.0, 0.0]], [[0.0, 1.0]]]))
             >>> out_no_ids.doc_ids.tolist()
             [[[0]], [[1]]]
+
+            >>> cached = HFDatasetRetriever(
+            ...     dataset=dataset,
+            ...     index_name="retrieval",
+            ...     doc_tokens_column="doc_tokens",
+            ...     doc_attention_mask_column="doc_attention_mask",
+            ...     doc_ids_column="doc_ids",
+            ...     doc_key_embeddings_column="doc_key_embeddings",
+            ...     k=1,
+            ...     cache_payloads=True,
+            ... )
+            >>> cached_out = cached(torch.FloatTensor([[[1.0, 0.0]], [[0.0, 1.0]]]))
+            >>> torch.equal(cached_out.doc_tokens, out.doc_tokens)
+            True
+            >>> cached._cached_doc_tokens.device.type
+            'cpu'
         """
         if query_embeddings.ndim != 3:
             raise ValueError("query_embeddings must have shape (B, R, D_ret)")
@@ -521,6 +715,9 @@ def load_hf_dataset_retriever(
     doc_ids_column: str | None = None,
     doc_key_embeddings_column: str | None = None,
     index_path: str | None = None,
+    device: int | list[int] | None = None,
+    cache_payloads: bool = False,
+    payload_cache_device: str | int | torch.device | None = None,
 ) -> HFDatasetRetriever:
     """Load a static dataset-backed retriever from a saved artifact.
 
@@ -536,6 +733,13 @@ def load_hf_dataset_retriever(
             embeddings.
         index_path: Optional explicit path to the saved FAISS index file. When
             omitted, defaults to ``{dataset_path}/{index_name}.faiss``.
+        device: Optional FAISS device passed to
+            :meth:`datasets.Dataset.load_faiss_index`. ``None`` keeps the index
+            on CPU; ``0`` uses GPU 0; ``-1`` uses all GPUs.
+        cache_payloads: Whether to cache retrieval payload columns as tensors at
+            load time.
+        payload_cache_device: Device for cached payload tensors. ``None`` means
+            CPU.
 
     Returns:
         Configured :class:`HFDatasetRetriever`.
@@ -572,7 +776,17 @@ def load_hf_dataset_retriever(
     resolved_index_path = (
         index_path if index_path is not None else str(Path(dataset_path) / f"{index_name}.faiss")
     )
-    dataset.load_faiss_index(index_name, resolved_index_path)
+    try:
+        dataset.load_faiss_index(index_name, resolved_index_path, device=device)
+    except Exception as exc:
+        if device is not None:
+            raise RuntimeError(
+                "FAISS GPU retrieval was requested with device="
+                f"{device!r}, but the installed FAISS/datasets stack could not load the index on GPU. "
+                "Install a CUDA-enabled FAISS build compatible with this environment, or set "
+                "retriever.device=null to use CPU retrieval."
+            ) from exc
+        raise
     return HFDatasetRetriever(
         dataset=dataset,
         index_name=index_name,
@@ -581,6 +795,8 @@ def load_hf_dataset_retriever(
         k=k,
         doc_ids_column=doc_ids_column,
         doc_key_embeddings_column=doc_key_embeddings_column,
+        cache_payloads=cache_payloads,
+        payload_cache_device=payload_cache_device,
     )
 
 
