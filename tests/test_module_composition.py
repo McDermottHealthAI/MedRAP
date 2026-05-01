@@ -268,3 +268,20 @@ def test_load_hf_dataset_retriever_explains_gpu_faiss_failure(monkeypatch) -> No
             doc_attention_mask_column="doc_attention_mask",
             device=0,
         )
+
+
+def test_load_hf_dataset_retriever_reraises_cpu_faiss_failure(monkeypatch) -> None:
+    class FakeDataset:
+        def load_faiss_index(self, index_name, index_path, *, device=None):
+            assert device is None
+            raise FileNotFoundError("missing index")
+
+    monkeypatch.setattr(retrievers_module, "load_from_disk", lambda path: FakeDataset())
+
+    with pytest.raises(FileNotFoundError, match="missing index"):
+        load_hf_dataset_retriever(
+            dataset_path="/tmp/retrieval_db",
+            index_name="retrieval",
+            doc_tokens_column="doc_tokens",
+            doc_attention_mask_column="doc_attention_mask",
+        )
