@@ -22,6 +22,8 @@ callbacks:
     auto_insert_metric_name: false
   - _target_: medrap.callbacks.GradientNormCallback
     every_n_steps: 50
+  - _target_: lightning.pytorch.callbacks.LearningRateMonitor
+    logging_interval: step
 gradient_clip_val: null
 enable_checkpointing: true
 enable_model_summary: false

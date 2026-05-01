@@ -452,12 +452,12 @@ class EndOfFitValAUROCCallback(Callback):
 
 
 class GradientNormCallback(Callback):
-    """Log L2 gradient norms per top-level parameter group (e.g. ``model``).
+    """Log L2 gradient norms per MedRAP pipeline module.
 
     Metrics are named ``grad_norm/train/{module}`` so W&B groups them under a
     dedicated ``grad_norm`` section rather than the headline ``train`` section.
-    Also logs ``grad_norm/train/query_projector`` over all parameters whose
-    name contains ``query_projector``.
+    Parameters under the wrapped ``model`` are grouped by the next path
+    component, e.g. ``model.encoder`` logs as ``grad_norm/train/encoder``.
 
     Uses :meth:`lightning.pytorch.core.module.LightningModule.log` so values
     reach WandB when a ``WandbLogger`` is configured.
@@ -518,6 +518,8 @@ class GradientNormCallback(Callback):
         >>> gcb.on_after_backward(SimpleNamespace(global_step=50), gmod)
         >>> any(str(x).startswith("grad_norm/train") for x in gcalls)
         True
+        >>> "grad_norm/train/query_projector" in gcalls
+        True
         >>> class _Mix(pl.LightningModule):
         ...     def __init__(self) -> None:
         ...         super().__init__()
@@ -547,40 +549,39 @@ class GradientNormCallback(Callback):
         super().__init__()
         self.every_n_steps = max(1, int(every_n_steps))
 
+    @staticmethod
+    def _group_name(parameter_name: str) -> str:
+        """Return the diagnostic gradient group for a parameter name.
+
+        Examples:
+            >>> GradientNormCallback._group_name("model.encoder.embedding.weight")
+            'encoder'
+            >>> GradientNormCallback._group_name("model.query_projector.linear.weight")
+            'query_projector'
+            >>> GradientNormCallback._group_name("loss_fn.weight")
+            'loss_fn'
+            >>> GradientNormCallback._group_name("model.weight")
+            'model'
+        """
+        parts = parameter_name.split(".")
+        if parts[0] == "model" and len(parts) > 2:
+            return parts[1]
+        return parts[0]
+
     def on_after_backward(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         if trainer.global_step % self.every_n_steps != 0:
             return
         sq_by_group: dict[str, float] = defaultdict(float)
-        query_projector_sq = 0.0
         for name, parameter in pl_module.named_parameters():
             grad = parameter.grad
             if grad is None:
                 continue
             n = float(grad.detach().norm(2).item())
-            group = name.split(".", 1)[0]
-            sq_by_group[group] += n * n
-            if "query_projector" in name:
-                query_projector_sq += n * n
+            sq_by_group[self._group_name(name)] += n * n
         for group, sq in sorted(sq_by_group.items()):
             pl_module.log(
                 f"grad_norm/train/{group}",
                 sq**0.5,
-                on_step=True,
-                on_epoch=False,
-                prog_bar=False,
-            )
-        if query_projector_sq > 0.0:
-            qp_norm = query_projector_sq**0.5
-            pl_module.log(
-                "grad_norm/train/query_projector",
-                qp_norm,
-                on_step=True,
-                on_epoch=False,
-                prog_bar=False,
-            )
-            pl_module.log(
-                "grad_norm/train/query_projection",
-                qp_norm,
                 on_step=True,
                 on_epoch=False,
                 prog_bar=False,

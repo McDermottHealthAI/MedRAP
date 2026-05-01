@@ -118,11 +118,6 @@ def _query_scalars(query: QueryOutput, *, prefix: str) -> dict[str, Tensor]:
         cosine = normalized @ normalized.T
         offdiag = cosine[~torch.eye(cosine.shape[0], dtype=torch.bool, device=cosine.device)]
         out[f"{prefix}/offdiag_cos_mean"] = offdiag.mean()
-        singular_values = torch.linalg.svdvals(flat - flat.mean(dim=0, keepdim=True))
-        if singular_values.numel() > 0 and singular_values.sum() > 0:
-            probs = singular_values / singular_values.sum()
-            effective_rank = torch.exp(-(probs * torch.log(probs.clamp_min(1e-8))).sum())
-            out[f"{prefix}/effective_rank_frac"] = effective_rank / min(flat.shape)
     return out
 
 
@@ -178,6 +173,36 @@ def _differentiable_score_scalars(scores: Tensor, *, prefix: str) -> dict[str, T
     return out
 
 
+def _validation_diagnostic_logs(logs: dict[str, Tensor]) -> dict[str, Tensor]:
+    """Keep validation diagnostics compact enough for routine W&B runs."""
+    keep_suffixes = (
+        "/finite_frac",
+        "/logits_std",
+        "/logits_max_abs",
+        "/prob_mean",
+        "/prob_std",
+        "/entropy_mean",
+        "/pad_fraction",
+        "/valid_tokens_mean",
+        "/norm_mean",
+        "/dim_std_mean",
+        "/offdiag_cos_mean",
+        "/unique_doc_ratio",
+        "/top1_unique_ratio",
+        "/top1_mode_frac",
+        "/differentiable/score_entropy_mean",
+        "/differentiable/effective_k_mean",
+        "/differentiable/top1_top2_margin_mean",
+    )
+    return {name: value for name, value in logs.items() if name.endswith(keep_suffixes)}
+
+
+def _diagnostic_prefix(component: str, *, stage: str) -> str:
+    if stage == "val":
+        return f"val_diagnostics/{component}"
+    return f"{component}/{stage}"
+
+
 def _mask_scalars(batch: MEDSTorchBatch, *, prefix: str) -> dict[str, Tensor]:
     code = getattr(batch, "code", None)
     if not isinstance(code, Tensor) or code.numel() == 0:
@@ -197,10 +222,10 @@ def model_diagnostic_scalars(
 ) -> dict[str, Tensor]:
     """Return a small, curated set of scalar diagnostics.
 
-    Metrics are grouped by W&B top-level section:
-    ``prediction/{stage}``, ``query/{stage}``, ``retrieval/{stage}``, and
-    ``mask/{stage}``. This keeps headline ``train/*`` and ``val/*`` metrics
-    uncluttered while still allowing targeted drill-down.
+    Training metrics are grouped by W&B top-level section:
+    ``prediction/train``, ``query/train``, ``retrieval/train``, and
+    ``mask/train``. Validation diagnostics are grouped separately under
+    ``val_diagnostics/*`` so they do not pollute the train diagnostic panels.
 
     Args:
         predictions: Model output from a supervised step.
@@ -233,29 +258,38 @@ def model_diagnostic_scalars(
         ['retrieval/train/score_mean', 'retrieval/train/score_std']
         >>> "mask/train/pad_fraction" in logs and "query/train/norm_mean" in logs
         True
+        >>> val_logs = model_diagnostic_scalars(out, batch, stage="val")
+        >>> "val_diagnostics/retrieval/unique_doc_ratio" in val_logs
+        True
+        >>> "val_diagnostics/retrieval/score_mean" in val_logs
+        False
     """
     logs: dict[str, Tensor] = {}
-    logs.update(_logit_scalars(predictions.logits, prefix=f"prediction/{stage}"))
-    logs.update(_probability_scalars(predictions.logits, prefix=f"prediction/{stage}"))
-    logs.update(_mask_scalars(batch, prefix=f"mask/{stage}"))
+    prediction_prefix = _diagnostic_prefix("prediction", stage=stage)
+    retrieval_prefix = _diagnostic_prefix("retrieval", stage=stage)
+    logs.update(_logit_scalars(predictions.logits, prefix=prediction_prefix))
+    logs.update(_probability_scalars(predictions.logits, prefix=prediction_prefix))
+    logs.update(_mask_scalars(batch, prefix=_diagnostic_prefix("mask", stage=stage)))
 
     query = predictions.metadata.get("query_output")
     if isinstance(query, QueryOutput):
-        logs.update(_query_scalars(query, prefix=f"query/{stage}"))
+        logs.update(_query_scalars(query, prefix=_diagnostic_prefix("query", stage=stage)))
 
     retrieval = predictions.metadata.get("retriever_output")
     if isinstance(retrieval, RetrieverOutput):
-        logs.update(_retrieval_id_scalars(retrieval, prefix=f"retrieval/{stage}"))
+        logs.update(_retrieval_id_scalars(retrieval, prefix=retrieval_prefix))
         if retrieval.doc_scores is not None:
-            logs.update(_retrieval_score_scalars(retrieval.doc_scores, prefix=f"retrieval/{stage}"))
+            logs.update(_retrieval_score_scalars(retrieval.doc_scores, prefix=retrieval_prefix))
 
     differentiable_scores = predictions.metadata.get("differentiable_doc_scores")
     if isinstance(differentiable_scores, Tensor):
         logs.update(
             _differentiable_score_scalars(
                 differentiable_scores,
-                prefix=f"retrieval/{stage}/differentiable",
+                prefix=f"{retrieval_prefix}/differentiable",
             )
         )
 
+    if stage == "val":
+        logs = _validation_diagnostic_logs(logs)
     return {name: value.detach() for name, value in logs.items()}

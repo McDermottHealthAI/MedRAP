@@ -50,10 +50,36 @@ def test_model_diagnostic_scalars_include_differentiable_retrieval_scores() -> N
 
     logs = model_diagnostic_scalars(predictions, _batch(), stage="val")
 
-    assert "retrieval/val/differentiable/score_mean" in logs
-    assert "retrieval/val/differentiable/score_entropy_mean" in logs
-    assert "retrieval/val/differentiable/top1_top2_margin_mean" in logs
-    assert "prediction/val/entropy_mean" in logs
+    assert "val_diagnostics/retrieval/differentiable/score_mean" not in logs
+    assert "val_diagnostics/retrieval/differentiable/score_entropy_mean" in logs
+    assert "val_diagnostics/retrieval/differentiable/top1_top2_margin_mean" in logs
+    assert "val_diagnostics/prediction/entropy_mean" in logs
+
+
+def test_validation_diagnostics_use_separate_group_and_prune_score_summaries() -> None:
+    predictions = ModelOutput(
+        logits=torch.FloatTensor([[0.0], [1.0]]),
+        metadata={
+            "query_output": QueryOutput(torch.FloatTensor([[[1.0, 0.0]], [[0.0, 1.0]]])),
+            "retriever_output": RetrieverOutput(
+                doc_tokens=torch.ones(2, 1, 2, 3, dtype=torch.long),
+                doc_attention_mask=torch.ones(2, 1, 2, 3, dtype=torch.bool),
+                doc_ids=torch.LongTensor([[[1, 2]], [[2, 3]]]),
+                doc_scores=torch.FloatTensor([[[2.0, 1.0]], [[0.5, 0.25]]]),
+            ),
+        },
+    )
+
+    logs = model_diagnostic_scalars(predictions, _batch(), stage="val")
+
+    assert "val_diagnostics/prediction/logits_std" in logs
+    assert "val_diagnostics/query/offdiag_cos_mean" in logs
+    assert "val_diagnostics/retrieval/unique_doc_ratio" in logs
+    assert "val_diagnostics/retrieval/top1_mode_frac" in logs
+    assert "val_diagnostics/retrieval/score_mean" not in logs
+    assert "val_diagnostics/retrieval/top1_score_mean" not in logs
+    assert "val_diagnostics/mask/pad_fraction" in logs
+    assert not any("/val/" in name for name in logs)
 
 
 def test_count_unique_retrieved_documents_handles_missing_identifiers() -> None:
