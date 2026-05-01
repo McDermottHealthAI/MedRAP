@@ -5,7 +5,6 @@ from meds_torchdata import MEDSTorchBatch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from medrap.callbacks import GradientNormCallback
 from medrap.lightning_module import MedRAPSupervisedLightningModule
 from medrap.task import BinaryClassificationTask, SupervisedLoss, SupervisedTask
 from medrap.types import ModelOutput, QueryOutput, RetrieverOutput
@@ -191,99 +190,6 @@ def test_lightning_module_can_disable_diagnostics(
 
     assert loss.ndim == 0
     assert logged == []
-
-
-def test_gradient_norm_callback_logs_wrapped_model_modules() -> None:
-    class PipelineModel(nn.Module):
-        def __init__(self) -> None:
-            super().__init__()
-            self.encoder = nn.Linear(3, 3)
-            self.query_projector = nn.Linear(3, 3)
-            self.retrieval_encoder = nn.Linear(3, 3)
-            self.fusion = nn.Linear(3, 3)
-            self.head = nn.Linear(3, 1)
-
-        def forward(self, batch: MEDSTorchBatch) -> ModelOutput:
-            x = batch.code.float()
-            x = self.encoder(x)
-            x = self.query_projector(x)
-            x = self.retrieval_encoder(x)
-            x = self.fusion(x)
-            return ModelOutput(logits=self.head(x))
-
-    module = MedRAPSupervisedLightningModule(
-        model=PipelineModel(),
-        task=BinaryClassificationTask(),
-    )
-    callbacks = [GradientNormCallback(every_n_steps=1)]
-    trainer = lightning.Trainer(
-        max_epochs=1,
-        logger=False,
-        enable_checkpointing=False,
-        enable_model_summary=False,
-        enable_progress_bar=False,
-        callbacks=callbacks,
-        limit_train_batches=1,
-    )
-    batch = MEDSTorchBatch(
-        code=torch.LongTensor([[1, 2, 3], [3, 2, 1]]),
-        numeric_value=torch.zeros((2, 3), dtype=torch.float32),
-        numeric_value_mask=torch.zeros((2, 3), dtype=torch.bool),
-        time_delta_days=torch.zeros((2, 3), dtype=torch.float32),
-    )
-    batch.boolean_value = torch.BoolTensor([True, False])
-
-    trainer.fit(module, train_dataloaders=DataLoader([batch], batch_size=None))
-
-    metric_names = {str(name) for name in trainer.callback_metrics}
-    assert "grad_norm/train/encoder" in metric_names
-    assert "grad_norm/train/query_projector" in metric_names
-    assert "grad_norm/train/retrieval_encoder" in metric_names
-    assert "grad_norm/train/fusion" in metric_names
-    assert "grad_norm/train/head" in metric_names
-    assert "grad_norm/train/total" in metric_names
-    assert "grad_norm/train/model" not in metric_names
-
-
-def test_gradient_norm_callback_logs_zero_for_missing_module_gradients() -> None:
-    class DetachedQueryModel(nn.Module):
-        def __init__(self) -> None:
-            super().__init__()
-            self.encoder = nn.Linear(3, 3)
-            self.query_projector = nn.Linear(3, 3)
-            self.head = nn.Linear(3, 1)
-
-        def forward(self, batch: MEDSTorchBatch) -> ModelOutput:
-            x = self.encoder(batch.code.float())
-            _unused_query = self.query_projector(x.detach())
-            return ModelOutput(logits=self.head(x))
-
-    module = MedRAPSupervisedLightningModule(
-        model=DetachedQueryModel(),
-        task=BinaryClassificationTask(),
-    )
-    trainer = lightning.Trainer(
-        max_epochs=1,
-        logger=False,
-        enable_checkpointing=False,
-        enable_model_summary=False,
-        enable_progress_bar=False,
-        callbacks=[GradientNormCallback(every_n_steps=1)],
-        limit_train_batches=1,
-    )
-    batch = MEDSTorchBatch(
-        code=torch.LongTensor([[1, 2, 3], [3, 2, 1]]),
-        numeric_value=torch.zeros((2, 3), dtype=torch.float32),
-        numeric_value_mask=torch.zeros((2, 3), dtype=torch.bool),
-        time_delta_days=torch.zeros((2, 3), dtype=torch.float32),
-    )
-    batch.boolean_value = torch.BoolTensor([True, False])
-
-    trainer.fit(module, train_dataloaders=DataLoader([batch], batch_size=None))
-
-    assert trainer.callback_metrics["grad_norm/train/query_projector"].item() == 0.0
-    assert trainer.callback_metrics["grad_norm/train/encoder"].item() > 0.0
-    assert trainer.callback_metrics["grad_norm/train/head"].item() > 0.0
 
 
 def test_validation_loop_logs_binary_auroc() -> None:

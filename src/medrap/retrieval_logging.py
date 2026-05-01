@@ -270,10 +270,31 @@ def model_diagnostic_scalars(
         ['retrieval/train/score_mean', 'retrieval/train/score_std']
         >>> "mask/train/pad_fraction" in logs and "query/train/norm_mean" in logs
         True
+        >>> "prediction/train/prob_mean" in logs
+        True
+        >>> "retrieval/train/score_entropy_mean" in logs
+        False
         >>> val_logs = model_diagnostic_scalars(out, batch, stage="val")
         >>> "val_diagnostics/retrieval/unique_doc_ratio" in val_logs
         True
         >>> "val_diagnostics/retrieval/score_mean" in val_logs
+        False
+        >>> "val_diagnostics/prediction/logits_std" in val_logs
+        True
+        >>> "val_diagnostics/prediction/prob_mean" in val_logs
+        False
+        >>> mt = ModelOutput(logits=torch.tensor([[-2.0, 0.0, 2.0], [-1.0, 1.0, 3.0]]))
+        >>> mt_logs = model_diagnostic_scalars(mt, batch, stage="train")
+        >>> torch.allclose(mt_logs["prediction/train/prob_mean"], torch.sigmoid(mt.logits).mean())
+        True
+        >>> diff = ModelOutput(
+        ...     logits=torch.tensor([[0.0, 1.0], [1.0, 0.0]]),
+        ...     metadata={"differentiable_doc_scores": torch.tensor([[1.0, 2.0], [3.0, 4.0]])},
+        ... )
+        >>> diff_logs = model_diagnostic_scalars(diff, batch, stage="val")
+        >>> "val_diagnostics/retrieval/differentiable/score_entropy_mean" in diff_logs
+        True
+        >>> "val_diagnostics/retrieval/differentiable/effective_k_mean" in diff_logs
         False
     """
     logs: dict[str, Tensor] = {}

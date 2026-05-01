@@ -543,6 +543,25 @@ class GradientNormCallback(Callback):
         >>> gcb2.on_after_backward(SimpleNamespace(global_step=1), mx)
         >>> any("query_projector" in str(x) for x in mxcalls)
         True
+        >>> class _DetachedQP(pl.LightningModule):
+        ...     def __init__(self) -> None:
+        ...         super().__init__()
+        ...         self.model = torch.nn.Module()
+        ...         self.model.query_projector = torch.nn.Linear(2, 2)
+        ...         self.model.head = torch.nn.Linear(2, 1)
+        ...
+        ...     def training_step(self, batch, _i):
+        ...         _ = self.model.query_projector(batch.detach())
+        ...         return self.model.head(batch).sum()
+        >>> dq = _DetachedQP()
+        >>> dq_calls: dict[str, float] = {}
+        >>> dq.log = lambda name, value, **_: dq_calls.update({name: float(value)})
+        >>> dq.training_step(torch.randn(2, 2), 0).backward()
+        >>> GradientNormCallback(every_n_steps=1).on_after_backward(SimpleNamespace(global_step=1), dq)
+        >>> dq_calls["grad_norm/train/query_projector"]
+        0.0
+        >>> dq_calls["grad_norm/train/head"] > 0.0
+        True
         >>> GradientNormCallback(every_n_steps=0).every_n_steps
         1
     """
