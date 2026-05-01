@@ -285,6 +285,8 @@ LightningDefaultTrainerConfig = builds_any(
     enable_checkpointing=True,
     enable_model_summary=False,
     enable_progress_bar=False,
+    gradient_clip_val=1.0,
+    gradient_clip_algorithm="norm",
     log_every_n_steps=10,
     zen_dataclass={"cls_name": "LightningDefaultTrainerConfig"},
 )
