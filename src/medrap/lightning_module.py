@@ -9,7 +9,8 @@ from torch import Tensor, nn
 from torch.optim import Optimizer
 from transformers import get_cosine_schedule_with_warmup
 
-from .retrieval_logging import retrieval_diagnostic_scalars
+from .metrics import binary_auroc_torch, multitask_auroc_torch, positive_class_probs
+from .retrieval_logging import model_diagnostic_scalars
 from .task import (
     BinaryClassificationLoss,
     BinaryClassificationTask,
@@ -29,6 +30,16 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
         optimizer: Optimizer factory taking grouped parameter configs.
         lr: Learning rate for the default AdamW optimizer.
         weight_decay: Weight decay for the default AdamW optimizer.
+        diagnostics_every_n_steps: Train-step interval for lightweight
+            diagnostics. ``0`` disables diagnostics during training.
+            Validation/test diagnostics are logged as epoch aggregates when
+            this is non-zero.
+        validation_auroc: Whether to accumulate detached logits and tensor
+            targets during each validation pass and log AUROC when that
+            validation loop finishes.
+        validation_auroc_log_per_task: Whether to also log per-task AUROC for
+            multitask logits shaped ``(B, T)``. The mean over tasks with both
+            classes present is always logged for multitask outputs.
     """
 
     def __init__(
@@ -41,6 +52,9 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
         lr: float = 1e-3,
         weight_decay: float = 0.01,
         warmup_steps: int = 0,
+        diagnostics_every_n_steps: int = 50,
+        validation_auroc: bool = True,
+        validation_auroc_log_per_task: bool = False,
     ) -> None:
         super().__init__()
         self.model = model
@@ -50,6 +64,11 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
             lambda params: torch.optim.AdamW(params, lr=lr, weight_decay=weight_decay)
         )
         self.warmup_steps = warmup_steps
+        self.diagnostics_every_n_steps = max(0, int(diagnostics_every_n_steps))
+        self.validation_auroc = validation_auroc
+        self.validation_auroc_log_per_task = validation_auroc_log_per_task
+        self._validation_auroc_logits: list[Tensor] = []
+        self._validation_auroc_targets: list[Tensor] = []
 
     def forward(self, batch: MEDSTorchBatch) -> ModelOutput:
         """Run the wrapped plain model on a MEDS batch.
@@ -99,7 +118,7 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
         for name, parameter in self.named_parameters():
             if not parameter.requires_grad:
                 continue
-            if name in no_decay_names:
+            if name in no_decay_names or parameter.ndim <= 1:
                 no_decay_params.append(parameter)
             else:
                 decay_params.append(parameter)
@@ -140,17 +159,80 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
                 prog_bar=not is_train,
                 batch_size=batch_size,
             )
-        if isinstance(targets, Tensor):
-            for name, value in retrieval_diagnostic_scalars(predictions, targets).items():
-                self.log(
-                    f"{stage}/{name}",
-                    value,
-                    on_step=is_train,
-                    on_epoch=True,
-                    prog_bar=False,
-                    batch_size=batch_size,
-                )
+        diagnostics_enabled = self.diagnostics_every_n_steps > 0
+        should_log_train_diagnostics = (
+            diagnostics_enabled and is_train and (self.global_step % self.diagnostics_every_n_steps == 0)
+        )
+        if diagnostics_enabled and (should_log_train_diagnostics or not is_train):
+            self.log_dict(
+                model_diagnostic_scalars(predictions, raw_batch, stage=stage),
+                on_step=is_train,
+                on_epoch=not is_train,
+                prog_bar=False,
+                batch_size=batch_size,
+            )
+        if stage == "val" and isinstance(targets, Tensor):
+            self._collect_validation_auroc_batch(predictions.logits, targets)
         return loss
+
+    def on_validation_epoch_start(self) -> None:
+        """Clear validation-loop AUROC buffers before each validation pass."""
+        self._validation_auroc_logits.clear()
+        self._validation_auroc_targets.clear()
+
+    def on_validation_epoch_end(self) -> None:
+        """Log AUROC from logits already produced by the validation loop."""
+        if not self.validation_auroc or self.trainer.sanity_checking:
+            self._validation_auroc_logits.clear()
+            self._validation_auroc_targets.clear()
+            return
+        if not self._validation_auroc_logits:
+            return
+
+        logits = torch.cat(self._validation_auroc_logits, dim=0)
+        targets = torch.cat(self._validation_auroc_targets, dim=0)
+        self._validation_auroc_logits.clear()
+        self._validation_auroc_targets.clear()
+
+        metrics = self._validation_auroc_metrics(targets, logits)
+        if metrics:
+            self.log_dict(metrics, prog_bar=False, logger=True, sync_dist=False)
+
+    def _collect_validation_auroc_batch(self, logits: Tensor, targets: Tensor) -> None:
+        if not self.validation_auroc or self.trainer.sanity_checking:
+            return
+        self._validation_auroc_logits.append(logits.detach().float())
+        self._validation_auroc_targets.append(targets.detach().to(device=logits.device).float())
+
+    def _validation_auroc_metrics(self, targets: Tensor, logits: Tensor) -> dict[str, float]:
+        """Compute validation-loop AUROC metrics from accumulated tensors.
+
+        Examples:
+            >>> module = MedRAPSupervisedLightningModule(model=ModelOutputBinaryModel())
+            >>> module._validation_auroc_metrics(torch.ones(2, 1), torch.zeros(2, 1))
+            {}
+            >>> module._validation_auroc_metrics(torch.FloatTensor([0, 1]), torch.zeros(2, 3))
+            {}
+            >>> module._validation_auroc_metrics(torch.FloatTensor([1, 1]), torch.zeros(2, 1))
+            {}
+        """
+        if targets.ndim == 2 and logits.ndim == 2 and targets.shape == logits.shape:
+            per_task = multitask_auroc_torch(targets, logits)
+            if not per_task:
+                return {}
+            metrics = {"val/auroc/mean": sum(per_task.values()) / len(per_task)}
+            if self.validation_auroc_log_per_task:
+                metrics.update({f"val/auroc/task_{task_idx}": value for task_idx, value in per_task.items()})
+            return metrics
+
+        try:
+            probs = positive_class_probs(logits)
+        except ValueError:
+            return {}
+        score = binary_auroc_torch(targets, probs)
+        if score is None or not torch.isfinite(score):
+            return {}
+        return {"val/auroc": float(score.detach().cpu().item())}
 
     def training_step(self, batch: MEDSTorchBatch, _batch_idx: int) -> Tensor:
         """Compute the supervised training loss for one batch.
@@ -371,8 +453,9 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
             ... )
             >>> log_names: list = []
             >>> mm.log = lambda *a, **k: log_names.append(a[0])
+            >>> mm.log_dict = lambda d, *a, **k: log_names.extend(d)
             >>> _ = mm._run_supervised_step(make_supervised_batch(), stage="train")
-            >>> any(str(n).startswith("train/retrieval/") for n in log_names)
+            >>> any(str(n).startswith("retrieval/train/") for n in log_names)
             True
         """
         optimizer = self.optimizer_factory(self._grouped_parameters())

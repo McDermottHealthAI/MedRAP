@@ -16,7 +16,11 @@ callbacks:
     mode: min
     save_last: true
     auto_insert_metric_name: false
-gradient_clip_val: null
+  - _target_: medrap.callbacks.ProgressCheckpointCallback
+    dirpath: ${default_root_dir}/checkpoints
+    fractions: [0.1, 0.5, 0.9]
+gradient_clip_val: 1.0
+gradient_clip_algorithm: norm
 enable_checkpointing: true
 enable_model_summary: false
 enable_progress_bar: false

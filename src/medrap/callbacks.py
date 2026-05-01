@@ -1,9 +1,12 @@
 """Lightning callbacks for training diagnostics."""
 
 import json
+import math
 import os
 import re
 from collections import defaultdict
+from collections.abc import Sequence
+from pathlib import Path
 
 import lightning.pytorch as pl
 import numpy as np
@@ -297,6 +300,17 @@ class EndOfFitValAUROCCallback(Callback):
         >>> log_one.log_metrics.called
         False
         >>> log_bad = SimpleNamespace(log_metrics=MagicMock())
+        >>> plm_bad = MagicMock(spec=pl.LightningModule)
+        >>> plm_bad.training = True
+        >>> plm_bad.device = torch.device("cpu")
+        >>> plm_bad.eval = MagicMock()
+        >>> plm_bad.train = MagicMock()
+        >>> plm_bad.transfer_batch_to_device = lambda batch, device, dataloader_idx=0: batch
+        >>> plm_bad.task = BinaryClassificationTask()
+        >>> plm_bad.side_effect = [
+        ...     ModelOutput(logits=torch.tensor([[0.0]])),
+        ...     ModelOutput(logits=torch.tensor([[1.0]])),
+        ... ]
         >>> with patch("medrap.callbacks.binary_auroc", side_effect=RuntimeError("fail")):
         ...     EndOfFitValAUROCCallback().on_fit_end(
         ...         SimpleNamespace(
@@ -308,11 +322,22 @@ class EndOfFitValAUROCCallback(Callback):
         ...                 [_auroc_batch2(False), _auroc_batch2(True)], batch_size=None
         ...             ),
         ...         ),
-        ...         ev,
+        ...         plm_bad,
         ...     )
         >>> log_bad.log_metrics.called
         False
         >>> log_nan = SimpleNamespace(log_metrics=MagicMock())
+        >>> plm_nan = MagicMock(spec=pl.LightningModule)
+        >>> plm_nan.training = True
+        >>> plm_nan.device = torch.device("cpu")
+        >>> plm_nan.eval = MagicMock()
+        >>> plm_nan.train = MagicMock()
+        >>> plm_nan.transfer_batch_to_device = lambda batch, device, dataloader_idx=0: batch
+        >>> plm_nan.task = BinaryClassificationTask()
+        >>> plm_nan.side_effect = [
+        ...     ModelOutput(logits=torch.tensor([[0.0]])),
+        ...     ModelOutput(logits=torch.tensor([[1.0]])),
+        ... ]
         >>> with patch("medrap.callbacks.binary_auroc", return_value=torch.tensor(float("nan"))):
         ...     EndOfFitValAUROCCallback().on_fit_end(
         ...         SimpleNamespace(
@@ -324,7 +349,7 @@ class EndOfFitValAUROCCallback(Callback):
         ...                 [_auroc_batch2(False), _auroc_batch2(True)], batch_size=None
         ...             ),
         ...         ),
-        ...         ev,
+        ...         plm_nan,
         ...     )
         >>> log_nan.log_metrics.called
         False
@@ -416,10 +441,6 @@ class EndOfFitValAUROCCallback(Callback):
                 targets = task.extract_targets(batch)
                 if not isinstance(targets, Tensor):
                     continue
-                if out.logits.ndim != 2 or out.logits.shape[1] not in (1, 2):
-                    if pl_module_was_training:
-                        pl_module.train()
-                    return
                 probs_chunks.append(_positive_class_probs(out.logits).detach().float().cpu())
                 target_chunks.append(targets.detach().float().cpu().view(-1))
 
@@ -461,18 +482,7 @@ class EndOfFitValAUROCCallback(Callback):
 
 
 class EndOfFitMultiTaskAUROCCallback(Callback):
-    """Compute per-task and mean AUROC at the end of fit for multi-task binary models.
-
-    Runs one full pass over the validation set, computes AUROC per task (skipping
-    tasks with only one class present), and logs:
-
-    - ``final/val_auroc/mean`` — mean across valid tasks
-    - ``final/val_auroc/<slug>`` — per-task, using code names from
-      ``code_index.json`` in the datamodule's label directory when available,
-      otherwise ``task_0``, ``task_1``, …
-
-    Silently no-ops when the task is not ``MultiTaskBinaryClassificationTask``.
-    """
+    """Compute per-task and mean AUROC at the end of fit for multi-task binary models."""
 
     def _load_code_names(self, trainer: pl.Trainer, num_tasks: int) -> list[str]:
         dm = getattr(trainer, "datamodule", None)
@@ -509,8 +519,8 @@ class EndOfFitMultiTaskAUROCCallback(Callback):
         pl_module_was_training = pl_module.training
         pl_module.eval()
 
-        logits_chunks: list[torch.Tensor] = []
-        target_chunks: list[torch.Tensor] = []
+        logits_chunks: list[Tensor] = []
+        target_chunks: list[Tensor] = []
         with torch.no_grad():
             for batch in val_loader:
                 batch = pl_module.transfer_batch_to_device(batch, device, dataloader_idx=0)
@@ -518,7 +528,7 @@ class EndOfFitMultiTaskAUROCCallback(Callback):
                 if not isinstance(out, ModelOutput):
                     continue
                 targets = task.extract_targets(batch)
-                if not isinstance(targets, torch.Tensor):
+                if not isinstance(targets, Tensor):
                     continue
                 logits_chunks.append(out.logits.detach().cpu())
                 target_chunks.append(targets.detach().cpu())
@@ -531,18 +541,19 @@ class EndOfFitMultiTaskAUROCCallback(Callback):
         if not logits_chunks:
             return
 
-        all_probs = torch.sigmoid(torch.cat(logits_chunks, dim=0)).numpy()  # (B, N)
-        all_targets = torch.cat(target_chunks, dim=0).numpy()  # (B, N)
+        all_probs = torch.sigmoid(torch.cat(logits_chunks, dim=0)).numpy()
+        all_targets = torch.cat(target_chunks, dim=0).numpy()
 
         per_task: dict[str, float] = {}
-        for n in range(task.num_tasks):
-            t = all_targets[:, n]
-            valid = ~np.isnan(t)
-            t_v, p_v = t[valid], all_probs[valid, n]
-            if len(t_v) < 2 or len(np.unique(t_v)) < 2:
+        for task_idx in range(task.num_tasks):
+            targets = all_targets[:, task_idx]
+            valid = ~np.isnan(targets)
+            valid_targets = targets[valid]
+            valid_probs = all_probs[valid, task_idx]
+            if len(valid_targets) < 2 or len(np.unique(valid_targets)) < 2:
                 continue
             try:
-                per_task[code_names[n]] = float(roc_auc_score(t_v, p_v))
+                per_task[code_names[task_idx]] = float(roc_auc_score(valid_targets, valid_probs))
             except Exception:
                 continue
 
@@ -555,89 +566,123 @@ class EndOfFitMultiTaskAUROCCallback(Callback):
         for code, auroc in per_task.items():
             metrics[f"final/val_auroc/{self._slugify(code)}"] = auroc
 
-        for lg in trainer.loggers:
-            log_fn = getattr(lg, "log_metrics", None)
-            if callable(log_fn):
-                log_fn(metrics, step=step)
-            if isinstance(lg, WandbLogger):
-                exp = getattr(lg, "experiment", None)
+        for logger in trainer.loggers:
+            log_metrics = getattr(logger, "log_metrics", None)
+            if callable(log_metrics):
+                log_metrics(metrics, step=step)
+            if isinstance(logger, WandbLogger):
+                exp = getattr(logger, "experiment", None)
                 if exp is not None:
                     exp.summary["final_val_auroc_mean"] = mean_auroc
                     exp.log(metrics, step=step)
 
 
-class EpochEndSurvivalCStatCallback(Callback):
-    """Logs the time-dependent C-statistic at the end of each validation epoch.
+class ProgressCheckpointCallback(Callback):
+    """Save checkpoints at fixed training progress milestones.
 
-    Runs one additional inference pass over the validation set, computes
-    the Antolini (2005) C-statistic across all tasks, and logs it as
-    ``val/c_statistic``. Silently skips when the task is not a
-    ``MultiTaskSurvivalTask``.
+    This complements Lightning's ``ModelCheckpoint`` callback: keep using that
+    for best/last checkpoints, and use this callback for lightweight early,
+    middle, and late snapshots from long runs.
+
+    Args:
+        dirpath: Directory where progress checkpoints are written.
+        fractions: Training-progress fractions to checkpoint, in ``(0, 1]``.
+        filename: Checkpoint filename format. Supports ``fraction``, ``percent``,
+            and ``step`` format fields.
+
+    Examples:
+        >>> from types import SimpleNamespace
+        >>> import tempfile
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     cb = ProgressCheckpointCallback(dirpath=tmpdir, fractions=[0.25, 0.5, 1.0])
+        ...     saved: list[str] = []
+        ...     trainer = SimpleNamespace(
+        ...         estimated_stepping_batches=4,
+        ...         global_step=0,
+        ...         save_checkpoint=lambda path: saved.append(Path(path).name),
+        ...     )
+        ...     cb.on_train_start(trainer, SimpleNamespace())
+        ...     for step in range(1, 5):
+        ...         trainer.global_step = step
+        ...         cb.on_train_batch_end(trainer, SimpleNamespace(), None, None, 0)
+        ...     saved
+        ['progress=0.25-step=1.ckpt', 'progress=0.50-step=2.ckpt', 'progress=1.00-step=4.ckpt']
+        >>> ProgressCheckpointCallback(dirpath=".", fractions=[0, 1.2, 0.5]).fractions
+        (0.5,)
+        >>> cb = ProgressCheckpointCallback(dirpath=".", fractions=[0.5])
+        >>> skipped: list[str] = []
+        >>> trainer = SimpleNamespace(
+        ...     estimated_stepping_batches=float("inf"),
+        ...     global_step=10,
+        ...     save_checkpoint=lambda path: skipped.append(path),
+        ... )
+        >>> cb.on_train_start(trainer, SimpleNamespace())
+        >>> cb.on_train_batch_end(trainer, SimpleNamespace(), None, None, 0)
+        >>> skipped
+        []
     """
 
-    def on_validation_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        if getattr(trainer, "sanity_checking", False):
+    def __init__(
+        self,
+        *,
+        dirpath: str | Path,
+        fractions: Sequence[float] = (0.1, 0.5, 0.9),
+        filename: str = "progress={fraction:.2f}-step={step}",
+    ) -> None:
+        super().__init__()
+        self.dirpath = Path(dirpath)
+        self.fractions = tuple(sorted({float(f) for f in fractions if 0.0 < float(f) <= 1.0}))
+        self.filename = filename
+        self._milestones: dict[int, float] = {}
+        self._saved_steps: set[int] = set()
+
+    def on_train_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        total = float(getattr(trainer, "estimated_stepping_batches", 0))
+        if not self.fractions or not math.isfinite(total) or total <= 0:
+            self._milestones = {}
             return
 
-        from .survival import MultiTaskSurvivalTask, time_dependent_c_statistic
+        total_steps = int(total)
+        self._milestones = {
+            min(total_steps, max(1, math.ceil(fraction * total_steps))): fraction
+            for fraction in self.fractions
+        }
+        self._saved_steps.clear()
+        self.dirpath.mkdir(parents=True, exist_ok=True)
 
-        task = getattr(pl_module, "task", None)
-        if not isinstance(task, MultiTaskSurvivalTask):
-            return
-
-        val_loader = _resolve_val_dataloader(trainer)
-        if val_loader is None:
-            return
-
-        device = pl_module.device
-        pl_module_was_training = pl_module.training
-        pl_module.eval()
-
-        logits_chunks: list[torch.Tensor] = []
-        target_chunks: list[torch.Tensor] = []
-        with torch.no_grad():
-            for batch in val_loader:
-                batch = pl_module.transfer_batch_to_device(batch, device, dataloader_idx=0)
-                out = pl_module(batch)
-                if not isinstance(out, ModelOutput):
-                    continue
-                targets = task.extract_targets(batch)
-                if not isinstance(targets, torch.Tensor):
-                    continue
-                logits_chunks.append(out.logits.detach().cpu())
-                target_chunks.append(targets.detach().cpu())
-
-        if pl_module_was_training:
-            pl_module.train()
-
-        if not logits_chunks:
-            return
-
-        import math
-
-        all_logits = torch.cat(logits_chunks, dim=0)
-        all_targets = torch.cat(target_chunks, dim=0)
-        c_stat = time_dependent_c_statistic(all_logits, all_targets, task.num_tasks, task.num_bins)
-        if math.isnan(c_stat):
-            return
-
+    def on_train_batch_end(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        outputs,
+        batch,
+        batch_idx: int,
+    ) -> None:
         step = int(getattr(trainer, "global_step", 0))
-        for lg in trainer.loggers:
-            log_fn = getattr(lg, "log_metrics", None)
-            if callable(log_fn):
-                log_fn({"val/c_statistic": c_stat}, step=step)
-            if isinstance(lg, WandbLogger):
-                exp = getattr(lg, "experiment", None)
-                if exp is not None:
-                    exp.log({"val/c_statistic": c_stat}, step=step)
+        due_steps = [milestone for milestone in self._milestones if milestone <= step]
+        for milestone in sorted(due_steps):
+            if milestone in self._saved_steps:
+                continue
+            fraction = self._milestones[milestone]
+            checkpoint_name = self.filename.format(
+                fraction=fraction,
+                percent=100 * fraction,
+                step=step,
+            )
+            path = self.dirpath / f"{checkpoint_name}.ckpt"
+            trainer.save_checkpoint(str(path))
+            self._saved_steps.add(milestone)
 
 
 class GradientNormCallback(Callback):
-    """Log L2 gradient norms per top-level parameter group (e.g. ``model``).
+    """Log L2 gradient norms per MedRAP pipeline module.
 
-    Also logs ``train/grad_norm/query_projector`` and an alias
-    ``train/grad_norm/query_projection`` over all parameters whose name contains
-    ``query_projector`` (query encoder signal).
+    Metrics are named ``grad_norm/train/{module}`` so W&B groups them under a
+    dedicated ``grad_norm`` section rather than the headline ``train`` section.
+    Parameters under the wrapped ``model`` are grouped by the next path
+    component, e.g. ``model.encoder`` logs as ``grad_norm/train/encoder``.
+    Groups with trainable parameters but no gradient are logged as ``0.0`` so
+    dead paths are visible in W&B instead of missing.
 
     Uses :meth:`lightning.pytorch.core.module.LightningModule.log` so values
     reach WandB when a ``WandbLogger`` is configured.
@@ -671,7 +716,7 @@ class GradientNormCallback(Callback):
         ...     _DummyGrad(),
         ...     train_dataloaders=DataLoader(torch.randn(4, 2), batch_size=2),
         ... )
-        >>> any(str(k).startswith("train/grad_norm") for k in tr.callback_metrics)
+        >>> any(str(k).startswith("grad_norm/train") for k in tr.callback_metrics)
         True
         >>> from types import SimpleNamespace
         >>> class _QPG(pl.LightningModule):
@@ -696,7 +741,9 @@ class GradientNormCallback(Callback):
         []
         >>> gmod.training_step(gb, 0).backward()
         >>> gcb.on_after_backward(SimpleNamespace(global_step=50), gmod)
-        >>> any(str(x).startswith("train/grad_norm") for x in gcalls)
+        >>> any(str(x).startswith("grad_norm/train") for x in gcalls)
+        True
+        >>> "grad_norm/train/query_projector" in gcalls
         True
         >>> class _Mix(pl.LightningModule):
         ...     def __init__(self) -> None:
@@ -719,6 +766,25 @@ class GradientNormCallback(Callback):
         >>> gcb2.on_after_backward(SimpleNamespace(global_step=1), mx)
         >>> any("query_projector" in str(x) for x in mxcalls)
         True
+        >>> class _DetachedQP(pl.LightningModule):
+        ...     def __init__(self) -> None:
+        ...         super().__init__()
+        ...         self.model = torch.nn.Module()
+        ...         self.model.query_projector = torch.nn.Linear(2, 2)
+        ...         self.model.head = torch.nn.Linear(2, 1)
+        ...
+        ...     def training_step(self, batch, _i):
+        ...         _ = self.model.query_projector(batch.detach())
+        ...         return self.model.head(batch).sum()
+        >>> dq = _DetachedQP()
+        >>> dq_calls: dict[str, float] = {}
+        >>> dq.log = lambda name, value, **_: dq_calls.update({name: float(value)})
+        >>> dq.training_step(torch.randn(2, 2), 0).backward()
+        >>> GradientNormCallback(every_n_steps=1).on_after_backward(SimpleNamespace(global_step=1), dq)
+        >>> dq_calls["grad_norm/train/query_projector"]
+        0.0
+        >>> dq_calls["grad_norm/train/head"] > 0.0
+        True
         >>> GradientNormCallback(every_n_steps=0).every_n_steps
         1
     """
@@ -727,47 +793,70 @@ class GradientNormCallback(Callback):
         super().__init__()
         self.every_n_steps = max(1, int(every_n_steps))
 
+    @staticmethod
+    def _group_name(parameter_name: str) -> str:
+        """Return the diagnostic gradient group for a parameter name.
+
+        Examples:
+            >>> GradientNormCallback._group_name("model.encoder.embedding.weight")
+            'encoder'
+            >>> GradientNormCallback._group_name("model.query_projector.linear.weight")
+            'query_projector'
+            >>> GradientNormCallback._group_name("loss_fn.weight")
+            'loss_fn'
+            >>> GradientNormCallback._group_name("model.weight")
+            'model'
+        """
+        parts = parameter_name.split(".")
+        if parts[0] == "model" and len(parts) > 2:
+            return parts[1]
+        return parts[0]
+
+    @classmethod
+    def _trainable_groups(cls, pl_module: pl.LightningModule) -> set[str]:
+        """Return gradient groups that contain at least one trainable parameter.
+
+        Examples:
+            >>> import lightning.pytorch as pl
+            >>> import torch
+            >>> class _Grouped(pl.LightningModule):
+            ...     def __init__(self) -> None:
+            ...         super().__init__()
+            ...         self.model = torch.nn.Module()
+            ...         self.model.query_projector = torch.nn.Linear(2, 2)
+            ...         self.model.head = torch.nn.Linear(2, 1)
+            >>> GradientNormCallback._trainable_groups(_Grouped()) == {"query_projector", "head"}
+            True
+        """
+        return {
+            cls._group_name(name)
+            for name, parameter in pl_module.named_parameters()
+            if parameter.requires_grad
+        }
+
     def on_after_backward(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         if trainer.global_step % self.every_n_steps != 0:
             return
         sq_by_group: dict[str, float] = defaultdict(float)
-        query_projector_sq = 0.0
+        trainable_groups = self._trainable_groups(pl_module)
         for name, parameter in pl_module.named_parameters():
             grad = parameter.grad
             if grad is None:
                 continue
             n = float(grad.detach().norm(2).item())
-            group = name.split(".", 1)[0]
-            sq_by_group[group] += n * n
-            if "query_projector" in name:
-                query_projector_sq += n * n
-        for group, sq in sorted(sq_by_group.items()):
+            sq_by_group[self._group_name(name)] += n * n
+        for group in sorted(trainable_groups | set(sq_by_group)):
+            sq = sq_by_group.get(group, 0.0)
             pl_module.log(
-                f"train/grad_norm/{group}",
+                f"grad_norm/train/{group}",
                 sq**0.5,
-                on_step=True,
-                on_epoch=False,
-                prog_bar=False,
-            )
-        if query_projector_sq > 0.0:
-            qp_norm = query_projector_sq**0.5
-            pl_module.log(
-                "train/grad_norm/query_projector",
-                qp_norm,
-                on_step=True,
-                on_epoch=False,
-                prog_bar=False,
-            )
-            pl_module.log(
-                "train/grad_norm/query_projection",
-                qp_norm,
                 on_step=True,
                 on_epoch=False,
                 prog_bar=False,
             )
         total_sq = sum(sq_by_group.values(), 0.0)
         pl_module.log(
-            "train/grad_norm/total",
+            "grad_norm/train/total",
             total_sq**0.5,
             on_step=True,
             on_epoch=False,

@@ -118,6 +118,9 @@ HFDatasetRetrieverConfig = builds_any(
     doc_ids_column="doc_ids",
     doc_key_embeddings_column="doc_key_embeddings",
     k=1,
+    device=None,
+    cache_payloads=False,
+    payload_cache_device=None,
     zen_dataclass={"cls_name": "HFDatasetRetrieverConfig"},
 )
 DemoInMemoryRetrieverConfig = builds_any(
@@ -202,6 +205,9 @@ MarginalizedRetrievalSupervisedLossConfig = builds_any(
 )
 MedRAPSupervisedLightningModuleConfig = builds_any(
     MedRAPSupervisedLightningModule,
+    diagnostics_every_n_steps=50,
+    validation_auroc=True,
+    validation_auroc_log_per_task=False,
     zen_dataclass={"cls_name": "MedRAPSupervisedLightningModuleConfig"},
 )
 LoadHFSourceConfig = builds_any(
@@ -279,6 +285,8 @@ LightningDefaultTrainerConfig = builds_any(
     enable_checkpointing=True,
     enable_model_summary=False,
     enable_progress_bar=False,
+    gradient_clip_val=1.0,
+    gradient_clip_algorithm="norm",
     log_every_n_steps=10,
     zen_dataclass={"cls_name": "LightningDefaultTrainerConfig"},
 )
