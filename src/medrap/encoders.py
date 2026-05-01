@@ -128,7 +128,7 @@ class _TimeDeltaRoPEAttention(nn.Module):
 
 
 class _TimeDeltaRoPELayer(nn.Module):
-    """Single transformer layer: RoPE attention → residual+LN → GELU FFN → residual+LN."""
+    """Single transformer layer: LN → RoPE attention → residual → LN → GELU FFN → residual."""
 
     def __init__(self, d_model: int, num_heads: int, ff_dim: int, dropout: float) -> None:
         super().__init__()
@@ -149,9 +149,9 @@ class _TimeDeltaRoPELayer(nn.Module):
         rope_sin: Tensor,
         key_padding_mask: Tensor | None = None,
     ) -> Tensor:
-        attn_out = self.attn(x, rope_cos, rope_sin, key_padding_mask)
-        x = self.norm1(x + self.drop(attn_out))
-        x = self.norm2(x + self.drop(self.ff(x)))
+        attn_out = self.attn(self.norm1(x), rope_cos, rope_sin, key_padding_mask)
+        x = x + self.drop(attn_out)
+        x = x + self.drop(self.ff(self.norm2(x)))
         return x
 
 
@@ -319,8 +319,8 @@ class TimeDeltaRoPEPatientEncoder(PatientEncoder):
     """Transformer encoder with time-delta rotary position embeddings (RoPE).
 
     Each EHR code is first mapped to a learned embedding, then multi-head
-    self-attention layers enrich the sequence using rotary position embeddings
-    derived from cumulative log-time deltas between events.  Padding positions
+    pre-norm self-attention layers enrich the sequence using rotary position
+    embeddings derived from cumulative log-time deltas between events. Padding positions
     (``code == 0``) are masked from self-attention, and the embedding table uses
     ``padding_idx=0`` so padding tokens remain zero-initialised.
 
