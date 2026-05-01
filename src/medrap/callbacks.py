@@ -458,6 +458,8 @@ class GradientNormCallback(Callback):
     dedicated ``grad_norm`` section rather than the headline ``train`` section.
     Parameters under the wrapped ``model`` are grouped by the next path
     component, e.g. ``model.encoder`` logs as ``grad_norm/train/encoder``.
+    Groups with trainable parameters but no gradient are logged as ``0.0`` so
+    dead paths are visible in W&B instead of missing.
 
     Uses :meth:`lightning.pytorch.core.module.LightningModule.log` so values
     reach WandB when a ``WandbLogger`` is configured.
@@ -568,17 +570,41 @@ class GradientNormCallback(Callback):
             return parts[1]
         return parts[0]
 
+    @classmethod
+    def _trainable_groups(cls, pl_module: pl.LightningModule) -> set[str]:
+        """Return gradient groups that contain at least one trainable parameter.
+
+        Examples:
+            >>> import lightning.pytorch as pl
+            >>> import torch
+            >>> class _Grouped(pl.LightningModule):
+            ...     def __init__(self) -> None:
+            ...         super().__init__()
+            ...         self.model = torch.nn.Module()
+            ...         self.model.query_projector = torch.nn.Linear(2, 2)
+            ...         self.model.head = torch.nn.Linear(2, 1)
+            >>> GradientNormCallback._trainable_groups(_Grouped()) == {"query_projector", "head"}
+            True
+        """
+        return {
+            cls._group_name(name)
+            for name, parameter in pl_module.named_parameters()
+            if parameter.requires_grad
+        }
+
     def on_after_backward(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         if trainer.global_step % self.every_n_steps != 0:
             return
         sq_by_group: dict[str, float] = defaultdict(float)
+        trainable_groups = self._trainable_groups(pl_module)
         for name, parameter in pl_module.named_parameters():
             grad = parameter.grad
             if grad is None:
                 continue
             n = float(grad.detach().norm(2).item())
             sq_by_group[self._group_name(name)] += n * n
-        for group, sq in sorted(sq_by_group.items()):
+        for group in sorted(trainable_groups | set(sq_by_group)):
+            sq = sq_by_group.get(group, 0.0)
             pl_module.log(
                 f"grad_norm/train/{group}",
                 sq**0.5,

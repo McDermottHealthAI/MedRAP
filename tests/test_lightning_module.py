@@ -245,6 +245,47 @@ def test_gradient_norm_callback_logs_wrapped_model_modules() -> None:
     assert "grad_norm/train/model" not in metric_names
 
 
+def test_gradient_norm_callback_logs_zero_for_missing_module_gradients() -> None:
+    class DetachedQueryModel(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.encoder = nn.Linear(3, 3)
+            self.query_projector = nn.Linear(3, 3)
+            self.head = nn.Linear(3, 1)
+
+        def forward(self, batch: MEDSTorchBatch) -> ModelOutput:
+            x = self.encoder(batch.code.float())
+            _unused_query = self.query_projector(x.detach())
+            return ModelOutput(logits=self.head(x))
+
+    module = MedRAPSupervisedLightningModule(
+        model=DetachedQueryModel(),
+        task=BinaryClassificationTask(),
+    )
+    trainer = lightning.Trainer(
+        max_epochs=1,
+        logger=False,
+        enable_checkpointing=False,
+        enable_model_summary=False,
+        enable_progress_bar=False,
+        callbacks=[GradientNormCallback(every_n_steps=1)],
+        limit_train_batches=1,
+    )
+    batch = MEDSTorchBatch(
+        code=torch.LongTensor([[1, 2, 3], [3, 2, 1]]),
+        numeric_value=torch.zeros((2, 3), dtype=torch.float32),
+        numeric_value_mask=torch.zeros((2, 3), dtype=torch.bool),
+        time_delta_days=torch.zeros((2, 3), dtype=torch.float32),
+    )
+    batch.boolean_value = torch.BoolTensor([True, False])
+
+    trainer.fit(module, train_dataloaders=DataLoader([batch], batch_size=None))
+
+    assert trainer.callback_metrics["grad_norm/train/query_projector"].item() == 0.0
+    assert trainer.callback_metrics["grad_norm/train/encoder"].item() > 0.0
+    assert trainer.callback_metrics["grad_norm/train/head"].item() > 0.0
+
+
 def test_validation_loop_logs_binary_auroc() -> None:
     class CodeLogitModel(nn.Module):
         def forward(self, batch: MEDSTorchBatch) -> ModelOutput:
