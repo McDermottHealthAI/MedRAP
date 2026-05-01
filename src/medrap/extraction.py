@@ -80,6 +80,8 @@ import torch
 from torch import Tensor
 from torch.utils.data import DataLoader, RandomSampler
 
+from medrap.types import FusionInput
+
 
 def _fill_differentiable_doc_scores(artifacts: dict[str, Tensor], *, similarity: str = "dot") -> None:
     """Compute ``differentiable_doc_scores`` post-hoc from saved query/key embeddings.
@@ -159,6 +161,7 @@ def extract_artifacts(
     trainer: lightning.Trainer,
     *,
     output_dir: str | Path,
+    use_cache: bool = False,
 ) -> Path:
     """Run prediction and save retrieval artifacts to disk.
 
@@ -173,6 +176,11 @@ def extract_artifacts(
         trainer: Lightning Trainer to use for prediction.
         output_dir: Directory to save the artifacts into. Will be created if
             it does not exist.
+        use_cache: When ``True``, return the existing ``extraction_artifacts.pt``
+            in ``output_dir`` without re-running ``trainer.predict``. Skips the
+            ``shuffle`` and ``num_devices`` validation since the dataloader and
+            trainer are not used in this branch. Defaults to ``False`` (always
+            re-run, original behavior). Delete the ``.pt`` to force a recompute.
 
     Returns:
         Path to the saved ``.pt`` file.
@@ -211,6 +219,12 @@ def extract_artifacts(
         ...     sorted(artifacts.keys())
         ['differentiable_doc_scores', 'doc_ids', 'doc_key_embeddings', 'doc_scores', 'logits', 'query_embeddings', 'targets']
     """
+    out = Path(output_dir)
+    artifact_path = out / "extraction_artifacts.pt"
+
+    if use_cache and artifact_path.is_file():
+        return artifact_path
+
     if isinstance(dataloader.sampler, RandomSampler):
         raise ValueError(
             "extract_artifacts requires shuffle=False: row i of the saved .pt must "
@@ -223,13 +237,348 @@ def extract_artifacts(
             f"can return rank-interleaved outputs (got num_devices={num_devices})."
         )
 
-    out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
     batch_predictions = trainer.predict(module, dataloaders=dataloader)
     collated = collate_prediction_batches(batch_predictions)
     _fill_differentiable_doc_scores(collated)
 
-    artifact_path = out / "extraction_artifacts.pt"
     torch.save(collated, artifact_path)
     return artifact_path
+
+
+def compute_per_doc_logits_single_doc(
+    module: lightning.LightningModule, dataloader: DataLoader
+) -> Tensor:
+    """Compute per-document logits via single-doc forward passes.
+
+    For each retrieved document ``k`` per sample, re-run only the post-retrieval
+    pipeline (``fusion -> pooling -> head``) with ``retrieval_memory`` sliced to
+    that single doc. The resulting ``logits[i, k, :]`` answers: "what would the
+    model predict for sample ``i`` if it only saw document ``k``?"
+
+    This is the closest semantic substitute for the marginalized
+    ``per_doc_logits`` when the model uses cross-attention fusion (which fuses
+    all K docs jointly and produces no native per-doc prediction).
+
+    Cost is roughly ``K`` extra forwards through ``fusion -> pooling -> head``
+    per batch; ``encoder``, ``query_projector``, ``retriever``, and
+    ``retrieval_encoder`` each run once per batch.
+
+    Args:
+        module: Trained Lightning module with a ``RetrievalAugmentedModel`` at
+            ``module.model``. The retrieval encoder must produce
+            ``retrieval_memory`` shaped ``(B, R, K, S_doc, D_mem)``.
+        dataloader: DataLoader to iterate over. Must NOT shuffle, so the row
+            order matches that of :func:`extract_artifacts`.
+
+    Returns:
+        Tensor with shape ``(N_total, K, C)`` and floating dtype, on CPU.
+
+    Notes:
+        Cross-attention models trained with ``K > 1`` see only one doc at a
+        time during this computation -- the values are mildly out of training
+        distribution. Treat them as relative per-doc rankings, not as
+        calibrated probabilities. The pooling call mirrors
+        ``RetrievalAugmentedModel.forward`` exactly (no attention mask passed),
+        so any padding-related quirk in production is preserved.
+
+    Examples:
+        >>> from medrap.encoders import MEDSCodeEncoder
+        >>> from medrap.fusion import CrossAttentionFusion
+        >>> from medrap.heads import LinearHead
+        >>> from medrap.lightning_module import MedRAPSupervisedLightningModule
+        >>> from medrap.model import RetrievalAugmentedModel
+        >>> from medrap.pooling import MaskedMeanPooling
+        >>> from medrap.query_projection import SequenceMeanQueryProjector
+        >>> from medrap.retrieval_encoder import TokenFeatureRetrievalEncoder
+        >>> from medrap.retrievers import InMemoryRetriever
+        >>> _ = torch.manual_seed(0)
+        >>> model = RetrievalAugmentedModel(
+        ...     encoder=MEDSCodeEncoder(),
+        ...     query_projector=SequenceMeanQueryProjector(in_dim=1, out_dim=4),
+        ...     retriever=InMemoryRetriever(
+        ...         doc_key_embeddings=torch.eye(4)[:3].float(),
+        ...         doc_tokens=torch.LongTensor([[1, 2], [3, 4], [5, 6]]),
+        ...         doc_attention_mask=torch.BoolTensor([[True, True]] * 3),
+        ...         k=3,
+        ...     ),
+        ...     retrieval_encoder=TokenFeatureRetrievalEncoder(vocab_size=16, embedding_dim=4),
+        ...     fusion=CrossAttentionFusion(
+        ...         d_model=8, num_heads=2, ff_dim=16, num_layers=1, d_in_patient=1, d_in_doc=4
+        ...     ),
+        ...     pooling=MaskedMeanPooling(),
+        ...     head=LinearHead(in_dim=8, out_dim=1),
+        ... )
+        >>> module = MedRAPSupervisedLightningModule(model=model)
+        >>> dl = torch.utils.data.DataLoader([make_supervised_batch()], batch_size=None)
+        >>> per_doc = compute_per_doc_logits_single_doc(module, dl)
+        >>> tuple(per_doc.shape)
+        (2, 3, 1)
+    """
+    if isinstance(dataloader.sampler, RandomSampler):
+        raise ValueError(
+            "compute_per_doc_logits_single_doc requires shuffle=False so row order "
+            "matches extract_artifacts."
+        )
+
+    model = module.model
+    device = next(model.parameters()).device
+    was_training = module.training
+    module.eval()
+
+    per_batch: list[Tensor] = []
+    with torch.no_grad():
+        for batch in dataloader:
+            batch = module.transfer_batch_to_device(batch, device, dataloader_idx=0)
+            encoder_out = model.encoder(batch)
+            query_out = model.query_projector(encoder_out.patient_state)
+            retrieval_out = model.retriever(query_out.query_embeddings)
+            retrieval_encoded = model.retrieval_encoder(retrieval_out)
+
+            rm = retrieval_encoded.retrieval_memory  # (B, R, K, S_doc, D_mem)
+            if rm.ndim != 5:
+                raise ValueError(
+                    "compute_per_doc_logits_single_doc expects 5D retrieval_memory "
+                    f"(B, R, K, S_doc, D_mem); got {tuple(rm.shape)}"
+                )
+            mask = retrieval_out.doc_attention_mask  # (B, R, K, S_doc) or None
+            b, r, k_docs, s_doc, d_mem = rm.shape
+
+            # Vectorize the K dim into the batch dim: one fusion call instead of
+            # K small ones. Row b*K + k of the effective batch corresponds to
+            # (sample b, doc k) -- the same pairing the original K-loop produced.
+            rm_v = rm.transpose(1, 2).reshape(b * k_docs, r, s_doc, d_mem).unsqueeze(2)
+            mask_v: Tensor | None = None
+            if mask is not None:
+                mask_v = mask.transpose(1, 2).reshape(b * k_docs, r, s_doc).unsqueeze(2)
+            ps_v = encoder_out.patient_state.repeat_interleave(k_docs, dim=0)
+            sid_v: Tensor | None = None
+            if query_out.retrieval_step_ids is not None:
+                sid_v = query_out.retrieval_step_ids.repeat_interleave(k_docs, dim=0)
+
+            fused = model.fusion(
+                FusionInput(
+                    patient_state=ps_v,
+                    retrieval_memory=rm_v,
+                    retrieval_step_ids=sid_v,
+                    doc_attention_mask=mask_v,
+                )
+            )
+            pooled = model.pooling(fused.fused_state)
+            logit = model.head(pooled)  # (B*K, C)
+            per_batch.append(logit.view(b, k_docs, -1).detach().cpu())
+
+    if was_training:
+        module.train()
+
+    return torch.cat(per_batch, dim=0).float()
+
+
+def persist_single_doc_per_doc_logits(
+    artifact_path: str | Path,
+    module: lightning.LightningModule,
+    dataloader: DataLoader,
+) -> Tensor:
+    """Compute and cache single-doc per-doc logits in the saved ``.pt`` artifact.
+
+    On the first call this runs :func:`compute_per_doc_logits_single_doc`, loads
+    the existing artifact dict from ``artifact_path``, adds a
+    ``per_doc_logits_single_doc`` key, and re-saves. On subsequent calls the
+    cached tensor is returned without invoking the model. To force a recompute,
+    delete the ``.pt`` file (or the key) and call again.
+
+    Args:
+        artifact_path: Path to the ``.pt`` written by :func:`extract_artifacts`.
+        module: Trained Lightning module (see
+            :func:`compute_per_doc_logits_single_doc`).
+        dataloader: Same ``shuffle=False`` dataloader used for extraction.
+
+    Returns:
+        The ``per_doc_logits_single_doc`` tensor with shape ``(N, K, C)``.
+    """
+    path = Path(artifact_path)
+    artifacts: dict[str, Tensor] = torch.load(path, weights_only=True)
+
+    cached = artifacts.get("per_doc_logits_single_doc")
+    if cached is not None:
+        return cached
+
+    per_doc_logits = compute_per_doc_logits_single_doc(module, dataloader)
+    artifacts["per_doc_logits_single_doc"] = per_doc_logits
+    torch.save(artifacts, path)
+    return per_doc_logits
+
+
+def compute_per_doc_loo_delta_logits(
+    module: lightning.LightningModule, dataloader: DataLoader
+) -> Tensor:
+    """Compute per-document Δlogit via leave-one-out forward passes.
+
+    For each retrieved document ``k``, run the model with the other ``K-1`` docs
+    as retrieval context, then take ``Δ[i, k] = full_logit[i] - leave_k_out_logit[i]``.
+    A positive Δ means doc ``k`` pushed sample ``i`` toward the positive class
+    relative to the model's prediction without it.
+
+    Unlike :func:`compute_per_doc_logits_single_doc`, this stays in the training
+    distribution (the cross-attention layer always sees a multi-doc context),
+    so the per-doc signal is more meaningful when the model relies on
+    cross-document interactions.
+
+    Cost per batch is roughly **two** vectorized forwards through
+    ``fusion -> pooling -> head`` (one full, one with effective batch ``B*K`` and
+    one doc masked per row); ``encoder``, ``query_projector``, ``retriever``,
+    and ``retrieval_encoder`` each run once per batch.
+
+    Args:
+        module: Trained Lightning module with a ``RetrievalAugmentedModel`` at
+            ``module.model``. The retrieval encoder must produce
+            ``retrieval_memory`` shaped ``(B, R, K, S_doc, D_mem)``.
+        dataloader: DataLoader to iterate over. Must NOT shuffle, so the row
+            order matches that of :func:`extract_artifacts`.
+
+    Returns:
+        Tensor with shape ``(N_total, K, C)`` and floating dtype, on CPU.
+
+    Examples:
+        >>> from medrap.encoders import MEDSCodeEncoder
+        >>> from medrap.fusion import CrossAttentionFusion
+        >>> from medrap.heads import LinearHead
+        >>> from medrap.lightning_module import MedRAPSupervisedLightningModule
+        >>> from medrap.model import RetrievalAugmentedModel
+        >>> from medrap.pooling import MaskedMeanPooling
+        >>> from medrap.query_projection import SequenceMeanQueryProjector
+        >>> from medrap.retrieval_encoder import TokenFeatureRetrievalEncoder
+        >>> from medrap.retrievers import InMemoryRetriever
+        >>> _ = torch.manual_seed(0)
+        >>> model = RetrievalAugmentedModel(
+        ...     encoder=MEDSCodeEncoder(),
+        ...     query_projector=SequenceMeanQueryProjector(in_dim=1, out_dim=4),
+        ...     retriever=InMemoryRetriever(
+        ...         doc_key_embeddings=torch.eye(4)[:3].float(),
+        ...         doc_tokens=torch.LongTensor([[1, 2], [3, 4], [5, 6]]),
+        ...         doc_attention_mask=torch.BoolTensor([[True, True]] * 3),
+        ...         k=3,
+        ...     ),
+        ...     retrieval_encoder=TokenFeatureRetrievalEncoder(vocab_size=16, embedding_dim=4),
+        ...     fusion=CrossAttentionFusion(
+        ...         d_model=8, num_heads=2, ff_dim=16, num_layers=1, d_in_patient=1, d_in_doc=4
+        ...     ),
+        ...     pooling=MaskedMeanPooling(),
+        ...     head=LinearHead(in_dim=8, out_dim=1),
+        ... )
+        >>> module = MedRAPSupervisedLightningModule(model=model)
+        >>> dl = torch.utils.data.DataLoader([make_supervised_batch()], batch_size=None)
+        >>> delta = compute_per_doc_loo_delta_logits(module, dl)
+        >>> tuple(delta.shape)
+        (2, 3, 1)
+    """
+    if isinstance(dataloader.sampler, RandomSampler):
+        raise ValueError(
+            "compute_per_doc_loo_delta_logits requires shuffle=False so row order "
+            "matches extract_artifacts."
+        )
+
+    model = module.model
+    device = next(model.parameters()).device
+    was_training = module.training
+    module.eval()
+
+    per_batch: list[Tensor] = []
+    with torch.no_grad():
+        for batch in dataloader:
+            batch = module.transfer_batch_to_device(batch, device, dataloader_idx=0)
+            encoder_out = model.encoder(batch)
+            query_out = model.query_projector(encoder_out.patient_state)
+            retrieval_out = model.retriever(query_out.query_embeddings)
+            retrieval_encoded = model.retrieval_encoder(retrieval_out)
+
+            rm = retrieval_encoded.retrieval_memory  # (B, R, K, S_doc, D_mem)
+            if rm.ndim != 5:
+                raise ValueError(
+                    "compute_per_doc_loo_delta_logits expects 5D retrieval_memory "
+                    f"(B, R, K, S_doc, D_mem); got {tuple(rm.shape)}"
+                )
+            mask = retrieval_out.doc_attention_mask  # (B, R, K, S_doc) or None
+            b, r, k_docs, s_doc, _ = rm.shape
+
+            # 1. Full forward (all K docs visible).
+            full_fused = model.fusion(
+                FusionInput(
+                    patient_state=encoder_out.patient_state,
+                    retrieval_memory=rm,
+                    retrieval_step_ids=query_out.retrieval_step_ids,
+                    doc_attention_mask=mask,
+                )
+            )
+            full_logit = model.head(model.pooling(full_fused.fused_state))  # (B, C)
+
+            # 2. Vectorized LOO: row b*K+k carries sample b's full retrieval,
+            # but with doc k masked out. Effective batch B*K.
+            rm_v = rm.repeat_interleave(k_docs, dim=0)  # (B*K, R, K, S_doc, D_mem)
+            ps_v = encoder_out.patient_state.repeat_interleave(k_docs, dim=0)
+            sid_v: Tensor | None = None
+            if query_out.retrieval_step_ids is not None:
+                sid_v = query_out.retrieval_step_ids.repeat_interleave(k_docs, dim=0)
+
+            # Build the keep-mask: True everywhere except (row b*K+k, :, k, :).
+            keep = torch.ones(b * k_docs, r, k_docs, s_doc, dtype=torch.bool, device=rm.device)
+            row_idx = torch.arange(b * k_docs, device=rm.device)
+            k_idx = row_idx % k_docs
+            keep[row_idx, :, k_idx, :] = False
+            mask_v = (
+                mask.repeat_interleave(k_docs, dim=0) & keep if mask is not None else keep
+            )
+
+            loo_fused = model.fusion(
+                FusionInput(
+                    patient_state=ps_v,
+                    retrieval_memory=rm_v,
+                    retrieval_step_ids=sid_v,
+                    doc_attention_mask=mask_v,
+                )
+            )
+            loo_logit = model.head(model.pooling(loo_fused.fused_state))  # (B*K, C)
+
+            delta = full_logit.unsqueeze(1) - loo_logit.view(b, k_docs, -1)
+            per_batch.append(delta.detach().cpu())
+
+    if was_training:
+        module.train()
+
+    return torch.cat(per_batch, dim=0).float()
+
+
+def persist_loo_per_doc_logits(
+    artifact_path: str | Path,
+    module: lightning.LightningModule,
+    dataloader: DataLoader,
+) -> Tensor:
+    """Compute and cache LOO Δlogits in the saved ``.pt`` artifact.
+
+    On the first call this runs :func:`compute_per_doc_loo_delta_logits`, loads
+    the existing artifact dict from ``artifact_path``, adds a
+    ``per_doc_loo_delta_logits`` key, and re-saves. On subsequent calls the
+    cached tensor is returned without invoking the model. To force a recompute,
+    delete the ``.pt`` file (or the key) and call again.
+
+    Args:
+        artifact_path: Path to the ``.pt`` written by :func:`extract_artifacts`.
+        module: Trained Lightning module (see
+            :func:`compute_per_doc_loo_delta_logits`).
+        dataloader: Same ``shuffle=False`` dataloader used for extraction.
+
+    Returns:
+        The ``per_doc_loo_delta_logits`` tensor with shape ``(N, K, C)``.
+    """
+    path = Path(artifact_path)
+    artifacts: dict[str, Tensor] = torch.load(path, weights_only=True)
+
+    cached = artifacts.get("per_doc_loo_delta_logits")
+    if cached is not None:
+        return cached
+
+    delta = compute_per_doc_loo_delta_logits(module, dataloader)
+    artifacts["per_doc_loo_delta_logits"] = delta
+    torch.save(artifacts, path)
+    return delta

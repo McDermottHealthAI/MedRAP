@@ -23,9 +23,12 @@ from medrap.llm_judge import (
     OpenAIJudge,
     PatientTimelineRenderer,
     Verdict,
+    _clean_lab_description,
+    _render_patient_narrative,
     build_human_validation_subset,
     build_pairs,
     build_per_patient_rollup,
+    compute_patient_clinical_summary,
     run_judge,
     summarize_winrates,
     write_results_workbook,
@@ -440,6 +443,40 @@ def test_prompt_builder_places_target_according_to_position(tmp_path: Path) -> N
     assert up_b.index("text for doc-other") < up_b.index("text for doc-target")
 
 
+def test_prompt_builder_uses_xml_delimited_sections_and_rubric(tmp_path: Path) -> None:
+    codes_fp = _save_codes_parquet(tmp_path, ["A"], ["desc"])
+    retrieval_ds_path = _save_retrieval_ds(tmp_path, titles=["doc-target", "doc-other"])
+    from datasets import load_from_disk
+
+    ds = load_from_disk(str(retrieval_ds_path))
+    builder = JudgePromptBuilder(
+        task_description="Predict outcome X.",
+        timeline_renderer=PatientTimelineRenderer(codes_parquet=codes_fp),
+        retrieval_ds=ds,
+        doc_id_to_row={100: 0, 101: 1},
+    )
+    pair = JudgePair(
+        pair_id="p1", family="F1", anchor_row_idx=0, anchor_subject_id=1, anchor_label=1,
+        target_doc_id=100, other_doc_id=101, target_position="A",
+    )
+    sys_p, user_p = builder.build(pair, patient_timeline="PATIENT: 50yo M")
+    # XML-delimited sections in the user prompt.
+    for tag in ("<task>", "</task>", "<patient>", "</patient>",
+                "<document_a>", "</document_a>", "<document_b>", "</document_b>"):
+        assert tag in user_p, f"missing tag {tag}"
+    # Section order: task → patient → doc A → doc B.
+    assert (
+        user_p.index("<task>")
+        < user_p.index("<patient>")
+        < user_p.index("<document_a>")
+        < user_p.index("<document_b>")
+    )
+    # Rubric + bias controls live in the system prompt.
+    assert "EVALUATION CRITERIA" in sys_p
+    assert "BIAS CONTROLS" in sys_p
+    assert "Patient specificity" in sys_p
+
+
 def test_prompt_builder_truncates_doc_texts_to_max_chars(tmp_path: Path) -> None:
     codes_fp = _save_codes_parquet(tmp_path, ["A"], ["desc"])
     long_text = "x" * 20_000
@@ -648,6 +685,240 @@ def test_codes_parquet_must_be_one_to_one(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Clinical summary (healthcare utilization + chronic conditions)
+# ---------------------------------------------------------------------------
+
+
+def test_compute_patient_clinical_summary_counts_utilization_codes(tmp_path: Path) -> None:
+    cohort = _make_meds_cohort(
+        tmp_path,
+        {
+            42: [
+                (datetime(2023, 1, 1), "HOSPITAL_ADMISSION//EW EMER.//EMERGENCY ROOM"),
+                (datetime(2023, 1, 2), "ICU_ADMISSION//MICU"),
+                (datetime(2023, 2, 1), "TRANSFER_TO//ED//Emergency Department"),
+                (datetime(2023, 3, 1), "HOSPITAL_ADMISSION//URGENT//EMERGENCY ROOM"),
+                # Event after prediction_time — must NOT be counted.
+                (datetime(2025, 1, 1), "ICU_ADMISSION//SICU"),
+            ]
+        },
+    )
+    summary = compute_patient_clinical_summary(42, datetime(2024, 1, 1), cohort)
+    assert summary["n_hospital_admissions"] == 2
+    assert summary["n_icu_admissions"] == 1
+    assert summary["n_ed_visits"] == 1
+
+
+def test_compute_patient_clinical_summary_flags_chronic_conditions_from_icd10(
+    tmp_path: Path,
+) -> None:
+    cohort = _make_meds_cohort(
+        tmp_path,
+        {
+            7: [
+                (datetime(2023, 1, 1), "DIAGNOSIS//ICD//10//E1165"),  # diabetes
+                (datetime(2023, 1, 2), "DIAGNOSIS//ICD//10//N183"),   # CKD
+                (datetime(2023, 1, 3), "DIAGNOSIS//ICD//10//I509"),   # CHF
+                (datetime(2023, 1, 4), "DIAGNOSIS//ICD//10//J449"),   # COPD
+                (datetime(2023, 1, 5), "DIAGNOSIS//ICD//10//Z5189"),  # non-Charlson
+            ]
+        },
+    )
+    summary = compute_patient_clinical_summary(7, datetime(2024, 1, 1), cohort)
+    conds = set(summary["chronic_conditions"])
+    assert "Diabetes mellitus" in conds
+    assert "Chronic kidney disease" in conds
+    assert "Congestive heart failure" in conds
+    assert "Chronic pulmonary disease / COPD" in conds
+    assert summary["chronic_condition_count"] == 4
+    # Non-matching Z-code must not create a flag.
+    assert not any("Z" in c for c in conds)
+
+
+def test_timeline_renderer_includes_clinical_summary_when_provided(tmp_path: Path) -> None:
+    codes_fp = _save_codes_parquet(tmp_path, ["LAB//E1"], ["Hemoglobin"])
+    cohort = _make_meds_cohort(
+        tmp_path,
+        {9: [(datetime(2024, 1, 1), "LAB//E1")]},
+    )
+    renderer = PatientTimelineRenderer(codes_parquet=codes_fp, max_events=5)
+    summary = {
+        "n_hospital_admissions": 3,
+        "n_icu_admissions": 1,
+        "n_ed_visits": 2,
+        "chronic_conditions": ["Diabetes mellitus", "Chronic kidney disease"],
+        "chronic_condition_count": 2,
+    }
+    text = renderer.render(
+        9, datetime(2024, 1, 2), cohort, clinical_summary=summary,
+    )
+    assert "CLINICAL SUMMARY:" in text
+    assert "3 hospital admission(s)" in text
+    assert "1 ICU stay(s)" in text
+    assert "2 ED visit(s)" in text
+    assert "Diabetes mellitus" in text
+    assert "Chronic kidney disease" in text
+    # Without a summary, the marker must be absent.
+    text_plain = renderer.render(9, datetime(2024, 1, 2), cohort)
+    assert "CLINICAL SUMMARY:" not in text_plain
+
+
+def test_clean_lab_description_strips_loinc_cruft() -> None:
+    cases = {
+        "Carbon dioxide, total [Moles/volume] in Blood by calculation": "Carbon dioxide, total",
+        "Lactate [Moles/volume] in Blood": "Lactate",
+        "pH of Blood": "pH",
+        "Oxygen [Partial pressure] in Blood": "Oxygen",
+        "Urea nitrogen [Mass/volume] in Serum or Plasma": "Urea nitrogen",
+        "Leukocytes [#/volume] in Blood by Automated count": "Leukocytes",
+        "Sodium [Moles/volume] in Serum or Plasma": "Sodium",
+        # Already-clean strings must be untouched.
+        "Hemoglobin": "Hemoglobin",
+        "Anion gap 4 in Serum or Plasma": "Anion gap 4",
+    }
+    for raw, expected in cases.items():
+        assert _clean_lab_description(raw) == expected, f"{raw!r} -> {_clean_lab_description(raw)!r}"
+
+
+def test_patient_narrative_combines_demographics_and_clinical_summary() -> None:
+    demographics = {"gender": "F", "race": "WHITE", "birth_time": datetime(1958, 1, 1)}
+    summary = {
+        "n_hospital_admissions": 1,
+        "n_icu_admissions": 1,
+        "n_ed_visits": 1,
+        "chronic_conditions": [],
+        "chronic_condition_count": 0,
+    }
+    text = _render_patient_narrative(demographics, datetime(2026, 6, 1), summary)
+    assert text is not None
+    assert "68-year-old" in text
+    assert "White" in text
+    assert "woman" in text
+    assert "1 hospital admission" in text
+    assert "1 ICU stay" in text
+    assert "1 ED visit" in text
+    assert "No chronic conditions detected" in text
+    # Explicitly prose — no all-caps section headers.
+    assert "PATIENT:" not in text
+    assert "CLINICAL SUMMARY:" not in text
+
+
+def test_patient_narrative_inlines_chronic_conditions_when_present() -> None:
+    demographics = {"gender": "M", "birth_time": datetime(1960, 1, 1)}
+    summary = {
+        "n_hospital_admissions": 0,
+        "n_icu_admissions": 0,
+        "n_ed_visits": 0,
+        "chronic_conditions": ["Diabetes mellitus", "Chronic kidney disease"],
+        "chronic_condition_count": 2,
+    }
+    text = _render_patient_narrative(demographics, datetime(2024, 1, 1), summary)
+    assert text is not None
+    assert "History notable for Diabetes mellitus, Chronic kidney disease" in text
+
+
+def test_categorical_renderer_partitions_events_by_category(tmp_path: Path) -> None:
+    codes_fp = _save_codes_parquet(
+        tmp_path,
+        [
+            "DIAGNOSIS//ICD//10//E11",
+            "MEDICATION//METFORMIN",
+            "PROCEDURE//ICD//10//0T1807C",
+            "LAB//50811//g/dL",
+            "HOSPITAL_ADMISSION//EW EMER.",
+            "ICU_ADMISSION//MICU",
+        ],
+        [
+            "Type 2 diabetes mellitus",
+            "METFORMIN",
+            "Bypass ureters",
+            "Hemoglobin",
+            "EW Emergency Admission",
+            "Medical ICU",
+        ],
+    )
+    cohort = _make_meds_cohort(
+        tmp_path,
+        {
+            1: [
+                (datetime(2024, 1, 1), "HOSPITAL_ADMISSION//EW EMER."),
+                (datetime(2024, 1, 1), "DIAGNOSIS//ICD//10//E11"),
+                (datetime(2024, 1, 1), "MEDICATION//METFORMIN"),
+                (datetime(2024, 1, 2), "PROCEDURE//ICD//10//0T1807C"),
+                (datetime(2024, 1, 2), "LAB//50811//g/dL", 9.5),
+                (datetime(2024, 1, 2), "ICU_ADMISSION//MICU"),
+            ],
+        },
+    )
+    renderer = PatientTimelineRenderer(codes_parquet=codes_fp, max_events=100)
+    text = renderer.render_categorical(1, datetime(2024, 1, 3), cohort)
+    assert "Diagnoses (from history):" in text
+    assert "Active medications (recent):" in text
+    assert "Recent procedures:" in text
+    assert "Recent labs (most recent value):" in text
+    assert "Type 2 diabetes mellitus" in text
+    assert "METFORMIN" in text
+    assert "Bypass ureters" in text
+    assert "Hemoglobin: 9.50 g/dL" in text
+    # Admission/transfer codes are suppressed — they live in CLINICAL SUMMARY.
+    assert "EW Emergency Admission" not in text
+    assert "Medical ICU" not in text
+
+
+def test_categorical_renderer_dedupes_within_category_and_keeps_latest_lab(
+    tmp_path: Path,
+) -> None:
+    codes_fp = _save_codes_parquet(
+        tmp_path,
+        ["DIAGNOSIS//ICD//10//E11", "LAB//50811//g/dL"],
+        ["Type 2 diabetes mellitus", "Hemoglobin"],
+    )
+    cohort = _make_meds_cohort(
+        tmp_path,
+        {
+            2: [
+                (datetime(2024, 1, 1), "DIAGNOSIS//ICD//10//E11"),
+                (datetime(2024, 1, 2), "DIAGNOSIS//ICD//10//E11"),
+                (datetime(2024, 1, 1), "LAB//50811//g/dL", 7.0),
+                (datetime(2024, 1, 2), "LAB//50811//g/dL", 12.0),
+            ],
+        },
+    )
+    renderer = PatientTimelineRenderer(codes_parquet=codes_fp, max_events=100)
+    text = renderer.render_categorical(2, datetime(2024, 1, 3), cohort)
+    # Diagnosis listed once despite two occurrences.
+    assert text.count("- Type 2 diabetes mellitus") == 1
+    # Lab listed once, showing the most recent value (12, not 7).
+    assert "Hemoglobin: 12 g/dL" in text
+    assert "Hemoglobin: 7" not in text
+
+
+def test_categorical_renderer_caps_per_category(tmp_path: Path) -> None:
+    codes_fp = _save_codes_parquet(
+        tmp_path,
+        [f"DIAGNOSIS//ICD//10//D{i}" for i in range(10)],
+        [f"Diagnosis {i}" for i in range(10)],
+    )
+    cohort = _make_meds_cohort(
+        tmp_path,
+        {
+            3: [
+                (datetime(2024, 1, 1, 0, i), f"DIAGNOSIS//ICD//10//D{i}") for i in range(10)
+            ],
+        },
+    )
+    renderer = PatientTimelineRenderer(codes_parquet=codes_fp, max_events=100)
+    text = renderer.render_categorical(
+        3, datetime(2024, 1, 2), cohort, max_diagnoses=3
+    )
+    # Cap retains the last 3 (most recent) only.
+    assert "Diagnosis 9" in text
+    assert "Diagnosis 7" in text
+    assert "Diagnosis 6" not in text
+    assert text.count("- Diagnosis") == 3
+
+
+# ---------------------------------------------------------------------------
 # T16–T19, T24: aggregation / bootstrap
 # ---------------------------------------------------------------------------
 
@@ -732,6 +1003,50 @@ def test_summarize_winrates_drop_vs_count_as_loss_policy() -> None:
     assert abs(counted_row["target_preferred_rate"] - 0.5) < 1e-9
     assert drop_row["n_invalid"] == 1
     assert counted_row["n_invalid"] == 1
+    # The tie contributes to n_ties but not to the error categories.
+    assert drop_row["n_ties"] == 1
+    assert drop_row["n_api_errors"] == 0
+    assert drop_row["n_parse_errors"] == 0
+    assert drop_row["n_client_init_errors"] == 0
+    assert drop_row["n_other_invalid"] == 0
+
+
+def test_summarize_winrates_splits_invalid_into_labeled_error_columns() -> None:
+    # One of each failure mode, plus one valid row. target_won=None for invalids.
+    df = _verdicts_df(
+        [
+            {"pair_id": "valid", "family": "F1", "anchor_subject_id": 1, "anchor_label": 0,
+             "target_won": True, "winner_position": "A", "rationale": "ok"},
+            {"pair_id": "tie", "family": "F1", "anchor_subject_id": 2, "anchor_label": 0,
+             "target_won": None, "winner_position": "tie", "rationale": "equally relevant"},
+            {"pair_id": "api", "family": "F1", "anchor_subject_id": 3, "anchor_label": 0,
+             "target_won": None, "winner_position": "invalid", "rationale": "api error: 500 server error"},
+            {"pair_id": "parse", "family": "F1", "anchor_subject_id": 4, "anchor_label": 0,
+             "target_won": None, "winner_position": "invalid", "rationale": "parse error: bad JSON"},
+            {"pair_id": "init", "family": "F1", "anchor_subject_id": 5, "anchor_label": 0,
+             "target_won": None, "winner_position": "invalid",
+             "rationale": "openai client init failed: missing OPENAI_API_KEY"},
+            {"pair_id": "other", "family": "F1", "anchor_subject_id": 6, "anchor_label": 0,
+             "target_won": None, "winner_position": "invalid", "rationale": "something else"},
+        ]
+    )
+    summary = summarize_winrates(df, n_bootstrap=50, seed=0)
+    row = summary.filter(pl.col("family") == "F1").row(0, named=True)
+    assert row["n_invalid"] == 5
+    assert row["n_ties"] == 1
+    assert row["n_api_errors"] == 1
+    assert row["n_parse_errors"] == 1
+    assert row["n_client_init_errors"] == 1
+    assert row["n_other_invalid"] == 1
+    # Error-category counts must sum to n_invalid.
+    assert (
+        row["n_ties"]
+        + row["n_api_errors"]
+        + row["n_parse_errors"]
+        + row["n_client_init_errors"]
+        + row["n_other_invalid"]
+        == row["n_invalid"]
+    )
 
 
 def test_summarize_winrates_standard_error_matches_bootstrap_std() -> None:
@@ -960,6 +1275,27 @@ def test_per_patient_rollup_skips_missing_doc_metadata_columns(tmp_path: Path) -
     df = build_per_patient_rollup(**inputs, doc_metadata_columns=("title",))
     # 'title' is not present on the ds; column must simply be absent (no crash).
     assert "target_doc_title" not in df.columns
+
+
+def test_per_patient_rollup_includes_clinical_summary_columns(tmp_path: Path) -> None:
+    inputs = _rollup_inputs(tmp_path)
+    summaries = {
+        10: {"n_hospital_admissions": 2, "n_icu_admissions": 1, "n_ed_visits": 0,
+             "chronic_conditions": ["Diabetes mellitus"], "chronic_condition_count": 1},
+        20: {"n_hospital_admissions": 5, "n_icu_admissions": 2, "n_ed_visits": 3,
+             "chronic_conditions": [], "chronic_condition_count": 0},
+    }
+    df = build_per_patient_rollup(**inputs, clinical_summaries_by_subject_id=summaries)
+    by_sid = {r["anchor_subject_id"]: r for r in df.iter_rows(named=True)}
+    assert by_sid[10]["n_hospital_admissions"] == 2
+    assert by_sid[10]["n_icu_admissions"] == 1
+    assert by_sid[10]["chronic_conditions"] == "Diabetes mellitus"
+    assert by_sid[10]["chronic_condition_count"] == 1
+    assert by_sid[20]["n_ed_visits"] == 3
+    assert by_sid[20]["chronic_conditions"] == ""
+    # Patients without a summary (30, 40) must still appear, with None columns.
+    assert by_sid[30]["n_hospital_admissions"] is None
+    assert by_sid[30]["chronic_conditions"] is None
 
 
 # ---------------------------------------------------------------------------

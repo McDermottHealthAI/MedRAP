@@ -1,13 +1,22 @@
 """Extract retrieval artifacts from a trained MedRAP run and generate diagnostic plots.
 
 Loads the saved config and checkpoint from a training run directory, runs extraction
-via ``extract_artifacts()``, and produces a 5-panel diagnostic figure.
+via ``extract_artifacts()``, and produces a 6-panel diagnostic figure.
 
 Usage::
 
     python scripts/extract_and_visualize.py --run_dir outputs/margin_check_XXX
 
 The script also works on real-data runs (e.g. MIMIC retrieval-only).
+
+Cross-attention runs (which fuse all retrieved docs jointly) do not produce a
+native ``per_doc_logits``. For those checkpoints the script computes a
+leave-one-out (LOO) Δlogit proxy via :func:`medrap.extraction.persist_loo_per_doc_logits`,
+caches it back into the saved ``.pt`` artifact under ``per_doc_loo_delta_logits``,
+and aliases it to ``per_doc_logits`` in memory so the existing per-doc plot
+panels render. Each value answers: "how much does this doc shift the patient's
+positive logit, relative to a forward pass without it?" Positive Δ = doc pushes
+the patient toward the positive class.
 """
 
 from __future__ import annotations
@@ -35,7 +44,7 @@ if str(_repo_root / "src") not in sys.path:
 
 from medrap.configs import instantiate_datamodule, instantiate_training_module  # noqa: E402
 from medrap.demographic_analysis import LDATopicProvider  # noqa: E402
-from medrap.extraction import extract_artifacts  # noqa: E402
+from medrap.extraction import extract_artifacts, persist_loo_per_doc_logits  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Checkpoint resolution (mirrors cli._find_checkpoint_path)
@@ -102,21 +111,71 @@ def run_extraction(
     )
 
     extract_dir = run_dir / "extraction"
-    artifact_path = extract_artifacts(module, dataloader, trainer, output_dir=extract_dir)
+    cache_existed = (extract_dir / "extraction_artifacts.pt").is_file()
+    artifact_path = extract_artifacts(
+        module, dataloader, trainer, output_dir=extract_dir, use_cache=True
+    )
+    if cache_existed:
+        print(f"Using cached artifacts at {artifact_path}; skipped trainer.predict.")
     artifacts = torch.load(artifact_path, weights_only=True)
+
+    if "per_doc_logits" not in artifacts:
+        delta = persist_loo_per_doc_logits(artifact_path, module, dataloader)
+        artifacts["per_doc_loo_delta_logits"] = delta
+        artifacts["per_doc_logits"] = delta
+        print(
+            "Computed leave-one-out Δlogit per doc via 1 full + 1 vectorized LOO "
+            f"forward per batch; cached at {artifact_path} under key "
+            "'per_doc_loo_delta_logits'."
+        )
+
     return artifacts, artifact_path, all_doc_keys, retrieval_db_path
 
 
 # ---------------------------------------------------------------------------
-# PCA helper (avoids sklearn dependency)
+# 2-D dimensionality reduction (PCA / t-SNE / UMAP)
 # ---------------------------------------------------------------------------
 
 
 def _pca_2d(x: np.ndarray) -> np.ndarray:
-    """Project rows of *x* to 2D via PCA (mean-centered SVD)."""
+    """Project rows of *x* to 2D via PCA (mean-centered SVD).  No sklearn dep."""
     x_centered = x - x.mean(axis=0, keepdims=True)
     _, _, vt = np.linalg.svd(x_centered, full_matrices=False)
     return x_centered @ vt[:2].T
+
+
+def _tsne_2d(x: np.ndarray) -> np.ndarray:
+    """Project rows of *x* to 2D via t-SNE (sklearn)."""
+    from sklearn.manifold import TSNE
+
+    perplexity = float(min(30, max(5, (x.shape[0] - 1) / 3)))
+    return TSNE(
+        n_components=2,
+        perplexity=perplexity,
+        init="pca",
+        random_state=0,
+    ).fit_transform(x)
+
+
+def _umap_2d(x: np.ndarray) -> np.ndarray:
+    """Project rows of *x* to 2D via UMAP (umap-learn)."""
+    import umap
+
+    n_neighbors = int(min(15, max(2, x.shape[0] - 1)))
+    return umap.UMAP(
+        n_components=2,
+        n_neighbors=n_neighbors,
+        random_state=0,
+    ).fit_transform(x)
+
+
+_REDUCERS = {"pca": _pca_2d, "tsne": _tsne_2d, "umap": _umap_2d}
+
+
+def _reduce_2d(x: np.ndarray, method: str) -> np.ndarray:
+    if method not in _REDUCERS:
+        raise ValueError(f"unknown method {method!r}; expected one of {sorted(_REDUCERS)}")
+    return _REDUCERS[method](x)
 
 
 # ---------------------------------------------------------------------------
@@ -128,21 +187,28 @@ def generate_plots(
     artifacts: dict[str, Tensor],
     output_path: Path,
     all_doc_key_embeddings: np.ndarray | None = None,
+    *,
+    method: str = "pca",
 ) -> None:
     """Create a 6-panel diagnostic figure and save to *output_path*.
 
     Args:
         all_doc_key_embeddings: Full corpus key matrix ``(N_docs, D)`` from the
-            retriever.  When provided, Plot 2 uses the full corpus for PCA
-            rather than only the retrieved subset.
+            retriever.  When provided, Plot 2 uses the full corpus rather than
+            only the retrieved subset.
+        method: 2-D dim reduction for Plots 1 and 2 — ``"pca"``, ``"tsne"``, or
+            ``"umap"``.  The other panels are unaffected.
     """
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    method_label = method.upper() if method in {"pca", "tsne", "umap"} else method
     fig, axes = plt.subplots(2, 3, figsize=(18, 11))
-    fig.suptitle("MedRAP Retrieval Extraction Diagnostics", fontsize=14, y=0.98)
+    fig.suptitle(
+        f"MedRAP Retrieval Extraction Diagnostics ({method_label})", fontsize=14, y=0.98
+    )
 
     targets = artifacts["targets"].numpy()
     logits = artifacts["logits"].numpy()
@@ -176,7 +242,7 @@ def generate_plots(
     # Plot 1: Query embedding PCA scatter
     # ------------------------------------------------------------------
     ax1 = axes[0, 0]
-    q_proj = _pca_2d(query_emb)
+    q_proj = _reduce_2d(query_emb, method)
     ax1.scatter(
         q_proj[neg_mask, 0],
         q_proj[neg_mask, 1],
@@ -197,13 +263,13 @@ def generate_plots(
         edgecolors="none",
         label="Label 1",
     )
-    ax1.set_xlabel("PC1")
-    ax1.set_ylabel("PC2")
-    ax1.set_title("Query Embeddings (PCA)")
+    ax1.set_xlabel(f"{method_label}-1")
+    ax1.set_ylabel(f"{method_label}-2")
+    ax1.set_title(f"Query Embeddings ({method_label})")
     ax1.legend(fontsize=8)
 
     # ------------------------------------------------------------------
-    # Plot 2: Doc key embedding PCA scatter, colored by avg per-doc logit
+    # Plot 2: Doc key embedding PCA scatter, colored by avg LOO Δlogit per doc
     # ------------------------------------------------------------------
     ax2 = axes[0, 1]
     # Use full corpus keys if available, otherwise unique retrieved keys.
@@ -243,7 +309,7 @@ def generate_plots(
         retrieved_mask = doc_count > 0
         doc_avg_logit[retrieved_mask] /= doc_count[retrieved_mask]
 
-        k_proj = _pca_2d(corpus_keys)
+        k_proj = _reduce_2d(corpus_keys, method)
         sc = ax2.scatter(
             k_proj[:, 0],
             k_proj[:, 1],
@@ -259,15 +325,18 @@ def generate_plots(
             for i, (x, y) in enumerate(k_proj):
                 label = f"D{i}" if retrieved_mask[i] else f"D{i}*"
                 ax2.annotate(label, (x, y), textcoords="offset points", xytext=(6, 6), fontsize=7)
-        ax2.set_xlabel("PC1")
-        ax2.set_ylabel("PC2")
-        ax2.set_title("Doc Key Embeddings (PCA)\ncolor = avg positive logit")
+        ax2.set_xlabel(f"{method_label}-1")
+        ax2.set_ylabel(f"{method_label}-2")
+        ax2.set_title(
+            f"Doc Key Embeddings ({method_label})\n"
+            "color = avg LOO Δlogit (red = pushes toward positive)"
+        )
         fig.colorbar(sc, ax=ax2, fraction=0.046, pad=0.04)
     else:
         ax2.text(
             0.5,
             0.5,
-            "doc_key_embeddings or\nper_doc_logits not available",
+            "doc_key_embeddings or\nper-doc Δlogit not available",
             ha="center",
             va="center",
             transform=ax2.transAxes,
@@ -276,23 +345,23 @@ def generate_plots(
         ax2.set_title("Doc Key Embeddings (N/A)")
 
     # ------------------------------------------------------------------
-    # Plot 3: Per-doc logit vs differentiable score, colored by patient class
+    # Plot 3: Per-doc LOO Δlogit vs differentiable score, colored by patient class
     # ------------------------------------------------------------------
     ax3 = axes[0, 2]
     if has_per_doc:
         c_idx = min(1, per_doc_logits.shape[-1] - 1)
         n_patients, k_docs = diff_scores.shape
 
-        x_vals = per_doc_logits[:, :, c_idx].reshape(-1)  # per-doc positive logit
+        x_vals = per_doc_logits[:, :, c_idx].reshape(-1)  # per-doc LOO Δlogit
         y_vals = diff_scores.reshape(-1)  # differentiable doc score
         colors = np.array(
             ["blue" if pos_mask[i] else "red" for i in range(n_patients) for _ in range(k_docs)]
         )
 
         ax3.scatter(x_vals, y_vals, c=colors, s=20, alpha=0.2, edgecolors="none")
-        ax3.set_xlabel("Per-doc positive logit")
+        ax3.set_xlabel("Per-doc LOO Δlogit")
         ax3.set_ylabel("Differentiable doc score")
-        ax3.set_title("Doc Prediction vs Relevance Score")
+        ax3.set_title("Doc Contribution vs Retrieval Score")
 
         # Legend.
         ax3.scatter([], [], c="blue", label="Positive patient", s=40)
@@ -311,7 +380,7 @@ def generate_plots(
         ax3.set_title("Doc Prediction vs Score (N/A)")
 
     # ------------------------------------------------------------------
-    # Plot 4: Per-doc positive logit vs patient predicted logit, colored by doc score
+    # Plot 4: Per-doc LOO Δlogit vs patient predicted logit, colored by doc score
     # ------------------------------------------------------------------
     ax4 = axes[1, 0]
     if has_per_doc:
@@ -332,9 +401,9 @@ def generate_plots(
         hb = ax4.hexbin(
             x_vals, y_vals, C=color_vals, reduce_C_function=np.mean, gridsize=30, cmap="viridis", mincnt=1
         )
-        ax4.set_xlabel("Per-doc positive logit")
+        ax4.set_xlabel("Per-doc LOO Δlogit")
         ax4.set_ylabel("Patient predicted logit (positive)")
-        ax4.set_title("Doc Logit vs Patient Logit\ncolor = avg doc weight (softmax)")
+        ax4.set_title("Doc Δlogit vs Patient Logit\ncolor = avg doc weight (softmax)")
         fig.colorbar(hb, ax=ax4, fraction=0.046, pad=0.04, label="Avg doc weight")
     else:
         ax4.text(
@@ -403,7 +472,7 @@ def generate_plots(
         )
 
     # ------------------------------------------------------------------
-    # Plot 6: Score-weighted average positive logit by class (box plot)
+    # Plot 6: Score-weighted average LOO Δlogit by class (box plot)
     # ------------------------------------------------------------------
     ax6 = axes[1, 2]
     if has_per_doc:
@@ -430,8 +499,8 @@ def generate_plots(
         bp["boxes"][0].set_facecolor("cornflowerblue")
         bp["boxes"][1].set_facecolor("salmon")
         ax6.set_xlabel("Ground truth label")
-        ax6.set_ylabel("Score-weighted avg positive logit")
-        ax6.set_title("Soft Retrieval Class-Conditionality")
+        ax6.set_ylabel("Score-weighted avg LOO Δlogit")
+        ax6.set_title("Soft Retrieval Class-Conditionality (LOO)")
     else:
         ax6.text(
             0.5,
@@ -557,8 +626,25 @@ def main() -> None:
     if all_doc_keys_np is not None:
         print(f"  Full corpus: {all_doc_keys_np.shape[0]} documents")
 
-    output_path = artifact_path.parent / "extraction_diagnostics.png"
-    generate_plots(artifacts, output_path, all_doc_key_embeddings=all_doc_keys_np)
+    method_outputs = {
+        "pca": artifact_path.parent / "extraction_diagnostics.png",
+        "tsne": artifact_path.parent / "extraction_diagnostics_tsne.png",
+        "umap": artifact_path.parent / "extraction_diagnostics_umap.png",
+    }
+    for method, output_path in method_outputs.items():
+        try:
+            generate_plots(
+                artifacts,
+                output_path,
+                all_doc_key_embeddings=all_doc_keys_np,
+                method=method,
+            )
+        except ImportError as exc:
+            print(
+                f"Skipping {method} plot ({output_path.name}): {exc}. "
+                f"Install the missing package to enable it.",
+                file=sys.stderr,
+            )
 
     if retrieval_db_path is not None:
         write_top_retrieved_docs(
