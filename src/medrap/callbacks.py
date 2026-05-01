@@ -454,9 +454,10 @@ class EndOfFitValAUROCCallback(Callback):
 class GradientNormCallback(Callback):
     """Log L2 gradient norms per top-level parameter group (e.g. ``model``).
 
-    Also logs ``train/grad_norm/query_projector`` and an alias
-    ``train/grad_norm/query_projection`` over all parameters whose name contains
-    ``query_projector`` (query encoder signal).
+    Metrics are named ``grad_norm/train/{module}`` so W&B groups them under a
+    dedicated ``grad_norm`` section rather than the headline ``train`` section.
+    Also logs ``grad_norm/train/query_projector`` over all parameters whose
+    name contains ``query_projector``.
 
     Uses :meth:`lightning.pytorch.core.module.LightningModule.log` so values
     reach WandB when a ``WandbLogger`` is configured.
@@ -490,7 +491,7 @@ class GradientNormCallback(Callback):
         ...     _DummyGrad(),
         ...     train_dataloaders=DataLoader(torch.randn(4, 2), batch_size=2),
         ... )
-        >>> any(str(k).startswith("train/grad_norm") for k in tr.callback_metrics)
+        >>> any(str(k).startswith("grad_norm/train") for k in tr.callback_metrics)
         True
         >>> from types import SimpleNamespace
         >>> class _QPG(pl.LightningModule):
@@ -515,7 +516,7 @@ class GradientNormCallback(Callback):
         []
         >>> gmod.training_step(gb, 0).backward()
         >>> gcb.on_after_backward(SimpleNamespace(global_step=50), gmod)
-        >>> any(str(x).startswith("train/grad_norm") for x in gcalls)
+        >>> any(str(x).startswith("grad_norm/train") for x in gcalls)
         True
         >>> class _Mix(pl.LightningModule):
         ...     def __init__(self) -> None:
@@ -562,7 +563,7 @@ class GradientNormCallback(Callback):
                 query_projector_sq += n * n
         for group, sq in sorted(sq_by_group.items()):
             pl_module.log(
-                f"train/grad_norm/{group}",
+                f"grad_norm/train/{group}",
                 sq**0.5,
                 on_step=True,
                 on_epoch=False,
@@ -571,14 +572,14 @@ class GradientNormCallback(Callback):
         if query_projector_sq > 0.0:
             qp_norm = query_projector_sq**0.5
             pl_module.log(
-                "train/grad_norm/query_projector",
+                "grad_norm/train/query_projector",
                 qp_norm,
                 on_step=True,
                 on_epoch=False,
                 prog_bar=False,
             )
             pl_module.log(
-                "train/grad_norm/query_projection",
+                "grad_norm/train/query_projection",
                 qp_norm,
                 on_step=True,
                 on_epoch=False,
@@ -586,7 +587,7 @@ class GradientNormCallback(Callback):
             )
         total_sq = sum(sq_by_group.values(), 0.0)
         pl_module.log(
-            "train/grad_norm/total",
+            "grad_norm/train/total",
             total_sq**0.5,
             on_step=True,
             on_epoch=False,
