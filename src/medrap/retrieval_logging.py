@@ -77,14 +77,15 @@ def _probability_scalars(logits: Tensor, *, prefix: str) -> dict[str, Tensor]:
     logits = logits.detach().float()
     if logits.numel() == 0:
         return {}
-    if logits.shape[-1] == 1:
+    if logits.shape[-1] == 2:
+        probs = torch.softmax(logits, dim=-1)
+        entropy = -(probs * torch.log(probs.clamp_min(1e-8))).sum(dim=-1)
+    else:
+        # Scalar binary and multitask binary heads are independent BCE logits.
         probs = torch.sigmoid(logits)
         entropy = -(probs * torch.log(probs.clamp_min(1e-8))) - (
             (1.0 - probs) * torch.log((1.0 - probs).clamp_min(1e-8))
         )
-    else:
-        probs = torch.softmax(logits, dim=-1)
-        entropy = -(probs * torch.log(probs.clamp_min(1e-8))).sum(dim=-1)
     return {
         f"{prefix}/prob_mean": probs.mean(),
         f"{prefix}/prob_std": _std(probs),

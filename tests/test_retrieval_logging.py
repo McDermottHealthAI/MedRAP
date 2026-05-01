@@ -56,6 +56,26 @@ def test_model_diagnostic_scalars_include_differentiable_retrieval_scores() -> N
     assert "val_diagnostics/prediction/entropy_mean" in logs
 
 
+def test_model_diagnostic_scalars_use_sigmoid_for_multitask_binary_logits() -> None:
+    predictions = ModelOutput(
+        logits=torch.FloatTensor(
+            [
+                [-2.0, 0.0, 2.0],
+                [-1.0, 1.0, 3.0],
+            ]
+        ),
+    )
+
+    logs = model_diagnostic_scalars(predictions, _batch(), stage="val")
+
+    expected = torch.sigmoid(predictions.logits).mean()
+    assert torch.allclose(logs["val_diagnostics/prediction/prob_mean"], expected)
+    assert not torch.allclose(
+        logs["val_diagnostics/prediction/prob_mean"],
+        torch.tensor(1.0 / predictions.logits.shape[-1]),
+    )
+
+
 def test_validation_diagnostics_use_separate_group_and_prune_score_summaries() -> None:
     predictions = ModelOutput(
         logits=torch.FloatTensor([[0.0], [1.0]]),
