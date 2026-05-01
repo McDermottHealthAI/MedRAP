@@ -1,6 +1,9 @@
 """Lightning callbacks for training diagnostics."""
 
+import math
 from collections import defaultdict
+from collections.abc import Sequence
+from pathlib import Path
 
 import lightning.pytorch as pl
 import torch
@@ -471,6 +474,103 @@ class EndOfFitValAUROCCallback(Callback):
             pl_module.train()
         else:
             pl_module.eval()
+
+
+class ProgressCheckpointCallback(Callback):
+    """Save checkpoints at fixed training progress milestones.
+
+    This complements Lightning's ``ModelCheckpoint`` callback: keep using that
+    for best/last checkpoints, and use this callback for lightweight early,
+    middle, and late snapshots from long runs.
+
+    Args:
+        dirpath: Directory where progress checkpoints are written.
+        fractions: Training-progress fractions to checkpoint, in ``(0, 1]``.
+        filename: Checkpoint filename format. Supports ``fraction``, ``percent``,
+            and ``step`` format fields.
+
+    Examples:
+        >>> from types import SimpleNamespace
+        >>> import tempfile
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     cb = ProgressCheckpointCallback(dirpath=tmpdir, fractions=[0.25, 0.5, 1.0])
+        ...     saved: list[str] = []
+        ...     trainer = SimpleNamespace(
+        ...         estimated_stepping_batches=4,
+        ...         global_step=0,
+        ...         save_checkpoint=lambda path: saved.append(Path(path).name),
+        ...     )
+        ...     cb.on_train_start(trainer, SimpleNamespace())
+        ...     for step in range(1, 5):
+        ...         trainer.global_step = step
+        ...         cb.on_train_batch_end(trainer, SimpleNamespace(), None, None, 0)
+        ...     saved
+        ['progress=0.25-step=1.ckpt', 'progress=0.50-step=2.ckpt', 'progress=1.00-step=4.ckpt']
+        >>> ProgressCheckpointCallback(dirpath=".", fractions=[0, 1.2, 0.5]).fractions
+        (0.5,)
+        >>> cb = ProgressCheckpointCallback(dirpath=".", fractions=[0.5])
+        >>> skipped: list[str] = []
+        >>> trainer = SimpleNamespace(
+        ...     estimated_stepping_batches=float("inf"),
+        ...     global_step=10,
+        ...     save_checkpoint=lambda path: skipped.append(path),
+        ... )
+        >>> cb.on_train_start(trainer, SimpleNamespace())
+        >>> cb.on_train_batch_end(trainer, SimpleNamespace(), None, None, 0)
+        >>> skipped
+        []
+    """
+
+    def __init__(
+        self,
+        *,
+        dirpath: str | Path,
+        fractions: Sequence[float] = (0.1, 0.5, 0.9),
+        filename: str = "progress={fraction:.2f}-step={step}",
+    ) -> None:
+        super().__init__()
+        self.dirpath = Path(dirpath)
+        self.fractions = tuple(sorted({float(f) for f in fractions if 0.0 < float(f) <= 1.0}))
+        self.filename = filename
+        self._milestones: dict[int, float] = {}
+        self._saved_steps: set[int] = set()
+
+    def on_train_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        total = float(getattr(trainer, "estimated_stepping_batches", 0))
+        if not self.fractions or not math.isfinite(total) or total <= 0:
+            self._milestones = {}
+            return
+
+        total_steps = int(total)
+        self._milestones = {
+            min(total_steps, max(1, math.ceil(fraction * total_steps))): fraction
+            for fraction in self.fractions
+        }
+        self._saved_steps.clear()
+        self.dirpath.mkdir(parents=True, exist_ok=True)
+
+    def on_train_batch_end(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        outputs,
+        batch,
+        batch_idx: int,
+    ) -> None:
+        step = int(getattr(trainer, "global_step", 0))
+        due_steps = [milestone for milestone in self._milestones if milestone <= step]
+        for milestone in sorted(due_steps):
+            if milestone in self._saved_steps:
+                continue
+            fraction = self._milestones[milestone]
+            checkpoint_name = self.filename.format(
+                fraction=fraction,
+                percent=100 * fraction,
+                step=step,
+            )
+            path = self.dirpath / f"{checkpoint_name}.ckpt"
+            trainer.save_checkpoint(str(path))
+            self._saved_steps.add(milestone)
 
 
 class GradientNormCallback(Callback):

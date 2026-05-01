@@ -20,6 +20,9 @@ callbacks:
     mode: min
     save_last: true
     auto_insert_metric_name: false
+  - _target_: medrap.callbacks.ProgressCheckpointCallback
+    dirpath: ${default_root_dir}/checkpoints
+    fractions: [0.1, 0.5, 0.9]
   - _target_: medrap.callbacks.GradientNormCallback
     every_n_steps: 50
   - _target_: lightning.pytorch.callbacks.LearningRateMonitor
