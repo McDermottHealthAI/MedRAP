@@ -245,3 +245,55 @@ def test_hf_dataset_retriever_cached_payloads_match_uncached() -> None:
     assert torch.allclose(cached_out.doc_scores, uncached_out.doc_scores)
     assert cached_out.doc_key_embeddings is not None and uncached_out.doc_key_embeddings is not None
     assert torch.equal(cached_out.doc_key_embeddings, uncached_out.doc_key_embeddings)
+
+
+def test_hf_dataset_retriever_cached_payloads_without_optional_columns() -> None:
+    dataset = Dataset.from_dict(
+        {
+            "doc_tokens": [[10, 11], [20, 21]],
+            "doc_attention_mask": [[1, 1], [1, 0]],
+            "index_embeddings": [[1.0, 0.0], [0.0, 1.0]],
+        }
+    )
+    dataset.add_faiss_index(column="index_embeddings", index_name="retrieval")
+    retriever = HFDatasetRetriever(
+        dataset=dataset,
+        index_name="retrieval",
+        doc_tokens_column="doc_tokens",
+        doc_attention_mask_column="doc_attention_mask",
+        k=1,
+        cache_payloads=True,
+    )
+
+    out = retriever(torch.FloatTensor([[[0.0, 1.0]]]))
+
+    assert out.doc_ids is not None
+    assert out.doc_ids.tolist() == [[[1]]]
+    assert out.doc_key_embeddings is None
+
+
+def test_hf_dataset_retriever_cached_output_requires_initialized_cache() -> None:
+    dataset = Dataset.from_dict(
+        {
+            "doc_tokens": [[10, 11]],
+            "doc_attention_mask": [[1, 1]],
+            "index_embeddings": [[1.0, 0.0]],
+        }
+    )
+    dataset.add_faiss_index(column="index_embeddings", index_name="retrieval")
+    retriever = HFDatasetRetriever(
+        dataset=dataset,
+        index_name="retrieval",
+        doc_tokens_column="doc_tokens",
+        doc_attention_mask_column="doc_attention_mask",
+    )
+
+    try:
+        retriever._materialize_cached_output(
+            row_indices=torch.LongTensor([[[0]]]),
+            scores=torch.FloatTensor([[[1.0]]]),
+            output_device=torch.device("cpu"),
+        )
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as e:
+        assert "Cached payloads are not initialized" in str(e)
