@@ -20,11 +20,19 @@ callbacks:
     mode: min
     save_last: true
     auto_insert_metric_name: false
+  - _target_: medrap.callbacks.ProgressCheckpointCallback
+    dirpath: ${default_root_dir}/checkpoints
+    fractions: [0.1, 0.5, 0.9]
   - _target_: medrap.callbacks.GradientNormCallback
     every_n_steps: 50
-  - _target_: medrap.callbacks.EndOfFitValAUROCCallback
-gradient_clip_val: null
+  - _target_: lightning.pytorch.callbacks.LearningRateMonitor
+    logging_interval: step
+gradient_clip_val: 1.0
+gradient_clip_algorithm: norm
 enable_checkpointing: true
 enable_model_summary: false
 enable_progress_bar: false
 log_every_n_steps: 10
+check_val_every_n_epoch: 1
+val_check_interval: 0.2
+limit_val_batches: 200

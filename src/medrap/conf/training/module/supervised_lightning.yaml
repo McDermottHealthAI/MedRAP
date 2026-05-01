@@ -2,3 +2,6 @@ _target_: medrap.lightning_module.MedRAPSupervisedLightningModule
 lr: 1e-3
 weight_decay: 0.01
 warmup_steps: 0
+diagnostics_every_n_steps: 50
+validation_auroc: true
+validation_auroc_log_per_task: false

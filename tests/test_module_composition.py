@@ -1,7 +1,9 @@
+import pytest
 import torch
 from meds_torchdata import MEDSTorchBatch
 from torch import nn
 
+import medrap.retrievers as retrievers_module
 from medrap.encoders import MEDSCodeEncoder
 from medrap.fusion import ReplaceFusion
 from medrap.model import RetrievalAugmentedModel
@@ -13,7 +15,7 @@ from medrap.retrieval_encoder import (
     PerDocMeanPooledRetrievalEncoder,
     TokenFeatureRetrievalEncoder,
 )
-from medrap.retrievers import InMemoryRetriever
+from medrap.retrievers import InMemoryRetriever, load_hf_dataset_retriever
 from medrap.types import FusionInput, RetrieverOutput
 
 
@@ -204,3 +206,82 @@ def test_in_memory_retriever_returns_query_dependent_payloads() -> None:
     assert out.doc_key_embeddings is not None
     assert out.doc_tokens.shape == (2, 1, 2, 2)
     assert out.doc_attention_mask.dtype == torch.bool
+
+
+def test_load_hf_dataset_retriever_passes_device_and_cache_options(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeDataset:
+        def load_faiss_index(self, index_name, index_path, *, device=None):
+            captured["load_faiss_index"] = (index_name, index_path, device)
+
+    class FakeRetriever:
+        def __init__(self, **kwargs):
+            self._dataset = kwargs["dataset"]
+            captured["retriever_kwargs"] = kwargs
+
+    monkeypatch.setattr(retrievers_module, "load_from_disk", lambda path: FakeDataset())
+    monkeypatch.setattr(retrievers_module, "HFDatasetRetriever", FakeRetriever)
+
+    retriever = load_hf_dataset_retriever(
+        dataset_path="/tmp/retrieval_db",
+        index_name="retrieval",
+        doc_tokens_column="doc_tokens",
+        doc_attention_mask_column="doc_attention_mask",
+        k=3,
+        device=0,
+        cache_payloads=True,
+        payload_cache_device="cpu",
+    )
+
+    assert isinstance(retriever, FakeRetriever)
+    assert captured["load_faiss_index"] == (
+        "retrieval",
+        "/tmp/retrieval_db/retrieval.faiss",
+        0,
+    )
+    assert captured["retriever_kwargs"] == {
+        "dataset": retriever._dataset,
+        "index_name": "retrieval",
+        "doc_tokens_column": "doc_tokens",
+        "doc_attention_mask_column": "doc_attention_mask",
+        "k": 3,
+        "doc_ids_column": None,
+        "doc_key_embeddings_column": None,
+        "cache_payloads": True,
+        "payload_cache_device": "cpu",
+    }
+
+
+def test_load_hf_dataset_retriever_explains_gpu_faiss_failure(monkeypatch) -> None:
+    class FakeDataset:
+        def load_faiss_index(self, index_name, index_path, *, device=None):
+            raise ImportError("no gpu faiss")
+
+    monkeypatch.setattr(retrievers_module, "load_from_disk", lambda path: FakeDataset())
+
+    with pytest.raises(RuntimeError, match="FAISS GPU retrieval was requested"):
+        load_hf_dataset_retriever(
+            dataset_path="/tmp/retrieval_db",
+            index_name="retrieval",
+            doc_tokens_column="doc_tokens",
+            doc_attention_mask_column="doc_attention_mask",
+            device=0,
+        )
+
+
+def test_load_hf_dataset_retriever_reraises_cpu_faiss_failure(monkeypatch) -> None:
+    class FakeDataset:
+        def load_faiss_index(self, index_name, index_path, *, device=None):
+            assert device is None
+            raise FileNotFoundError("missing index")
+
+    monkeypatch.setattr(retrievers_module, "load_from_disk", lambda path: FakeDataset())
+
+    with pytest.raises(FileNotFoundError, match="missing index"):
+        load_hf_dataset_retriever(
+            dataset_path="/tmp/retrieval_db",
+            index_name="retrieval",
+            doc_tokens_column="doc_tokens",
+            doc_attention_mask_column="doc_attention_mask",
+        )
