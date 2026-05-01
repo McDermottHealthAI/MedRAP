@@ -120,6 +120,7 @@ class _TimeDeltaRoPEAttention(nn.Module):
 
         attn = (q @ k.transpose(-2, -1)) * self.scale  # (B, H, S, S)
         if key_padding_mask is not None:
+            # True = padding → mask out from attending
             attn = attn.masked_fill(key_padding_mask.unsqueeze(1).unsqueeze(2), float("-inf"))
         attn = self.drop(attn.softmax(dim=-1))
 

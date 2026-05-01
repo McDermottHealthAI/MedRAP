@@ -274,6 +274,79 @@ class MarginalizedBinaryClassificationTask(SupervisedTask):
         return {"accuracy": (pred == tgt).float().mean()}
 
 
+class MultiTaskBinaryClassificationTask(SupervisedTask):
+    """Multi-task binary classification: predict N binary outcomes simultaneously.
+
+    Expects ``batch.multi_task_labels`` of shape ``(B, N)`` (float32, NaN = missing).
+    The model must produce logits of shape ``(B, N)``.
+
+    Args:
+        num_tasks: Number of binary prediction tasks N.
+
+    Examples:
+        >>> import torch
+        >>> from medrap.types import ModelOutput
+        >>> task = MultiTaskBinaryClassificationTask(num_tasks=3)
+        >>> task.output_dim
+        3
+    """
+
+    def __init__(self, *, num_tasks: int) -> None:
+        if num_tasks <= 0:
+            raise ValueError(f"num_tasks must be a positive integer, got {num_tasks}")
+        super().__init__(output_dim=num_tasks)
+        self.num_tasks = num_tasks
+
+    def extract_targets(self, batch: MEDSTorchBatch) -> Tensor:
+        """Extract multi-task labels from the batch.
+
+        Args:
+            batch: ``MEDSTorchBatch`` with ``multi_task_labels`` attribute of shape ``(B, N)``.
+
+        Returns:
+            Float tensor of shape ``(B, N)`` with NaN for missing labels.
+
+        Examples:
+            >>> import torch
+            >>> from meds_torchdata import MEDSTorchBatch
+            >>> task = MultiTaskBinaryClassificationTask(num_tasks=2)
+            >>> batch = MEDSTorchBatch(
+            ...     code=torch.LongTensor([[1, 2], [3, 4]]),
+            ...     numeric_value=torch.zeros(2, 2),
+            ...     numeric_value_mask=torch.zeros(2, 2, dtype=torch.bool),
+            ...     time_delta_days=torch.zeros(2, 2),
+            ... )
+            >>> batch.multi_task_labels = torch.tensor([[1.0, 0.0], [float("nan"), 1.0]])
+            >>> targets = task.extract_targets(batch)
+            >>> tuple(targets.shape)
+            (2, 2)
+        """
+        labels = getattr(batch, "multi_task_labels", None)
+        if not isinstance(labels, Tensor):
+            raise ValueError("Expected multi_task_labels on the MEDS batch.")
+        return labels.float()
+
+    def metrics(self, predictions: ModelOutput, targets: TaskTargets) -> Mapping[str, Tensor]:
+        """Return masked accuracy across all valid (patient, task) pairs.
+
+        Examples:
+            >>> import torch
+            >>> from medrap.types import ModelOutput
+            >>> task = MultiTaskBinaryClassificationTask(num_tasks=2)
+            >>> preds = ModelOutput(logits=torch.tensor([[2.0, -1.0], [-1.0, 2.0]]))
+            >>> targets = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+            >>> float(task.metrics(preds, targets)["accuracy"])
+            1.0
+        """
+        if not isinstance(targets, Tensor):
+            raise ValueError("MultiTaskBinaryClassificationTask expects tensor targets.")
+        logits = predictions.logits  # (B, N)
+        valid = ~targets.isnan()
+        preds = (logits >= 0).float()
+        correct = (preds == targets.nan_to_num(0.0)).float()
+        return {"accuracy": (correct * valid.float()).sum() / valid.float().sum().clamp(min=1)}
+
+
 class BinaryClassificationLoss(SupervisedLoss):
     """Binary BCE-with-logits loss for scalar binary predictions.
 

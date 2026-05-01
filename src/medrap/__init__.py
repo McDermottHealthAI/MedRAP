@@ -17,10 +17,12 @@ from .encoders import (
     TimeDeltaRoPEPatientEncoder,
     TokenEmbeddingEncoder,
 )
-from .fusion import ConcatFusion, CrossAttentionFusion, FusionModule, ReplaceFusion
+from .fusion import ConcatFusion, CrossAttentionFusion, FusionModule, PassthroughFusion, ReplaceFusion
 from .heads import LinearHead, PredictionHead
 from .lightning_module import MedRAPSupervisedLightningModule
+from .losses import MultiTaskBCELoss, MultiTaskBCEMarginalizedLoss
 from .model import RetrievalAugmentedModel
+from .multitask_datamodule import MultiTaskMEDSDatamodule, MultiTaskMEDSDataset, load_code_index
 from .pooling import IdentityPooling, MaskedMeanPooling, PoolingModule
 from .preparation import OrderedFieldDocumentRenderer, prepare_retrieval_dataset
 from .query_projection import LinearQueryProjector, QueryProjector, SequenceMeanQueryProjector
@@ -32,7 +34,7 @@ from .retrievers import (
     load_hf_dataset_retriever,
     load_in_memory_retriever,
 )
-from .task import BinaryClassificationLoss, BinaryClassificationTask
+from .task import BinaryClassificationLoss, BinaryClassificationTask, MultiTaskBinaryClassificationTask
 from .types import (
     EncoderOutput,
     FusionInput,
@@ -65,7 +67,13 @@ __all__ = [
     "MaskedMeanPooling",
     "MedRAPSupervisedLightningModule",
     "ModelOutput",
+    "MultiTaskBCELoss",
+    "MultiTaskBCEMarginalizedLoss",
+    "MultiTaskBinaryClassificationTask",
+    "MultiTaskMEDSDatamodule",
+    "MultiTaskMEDSDataset",
     "OrderedFieldDocumentRenderer",
+    "PassthroughFusion",
     "PatientEncoder",
     "PerDocMeanPooledRetrievalEncoder",
     "PipelineConfig",
@@ -87,6 +95,7 @@ __all__ = [
     "TokenEmbeddingEncoder",
     "float_tensor_config",
     "instantiate_model",
+    "load_code_index",
     "load_hf_dataset_retriever",
     "load_in_memory_retriever",
     "prepare_retrieval_dataset",
