@@ -14,8 +14,9 @@
 #                       d_model=256, num_heads=8, ff_dim=512, layers=2
 #   pooling         : masked_mean
 #   head            : linear 256 -> N (one logit per task)
-#   task/loss       : multitask_binary / multitask_binary_bce_marginalized
-#   retrieval       : REALM-style marginalized loss (retriever trained end-to-end)
+#   task/loss       : multitask_binary / multitask_binary_bce
+#   retrieval       : Cross-attention consumes retrieved token memory; top-k
+#                     selection remains non-differentiable.
 #
 # Prerequisites (run once before this script):
 #   sbatch scripts/prepare_multi_task_labels_slurm.sh
@@ -80,11 +81,9 @@ medrap train \
     head=linear \
     head.in_dim=256 \
     "head.out_dim=${NUM_TASKS}" \
-    model.marginalized_retrieval=true \
     training/task=multitask_binary \
     "training.task.num_tasks=${NUM_TASKS}" \
-    training/loss=multitask_binary_bce_marginalized \
-    "training.loss.num_tasks=${NUM_TASKS}" \
+    training/loss=multitask_binary_bce \
     training/datamodule=meds_multitask \
     "training.datamodule.config.tensorized_cohort_dir=${TENSORIZED_DIR}" \
     training.datamodule.config.max_seq_len=256 \
