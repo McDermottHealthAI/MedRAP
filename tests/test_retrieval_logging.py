@@ -52,11 +52,12 @@ def test_model_diagnostic_scalars_include_differentiable_retrieval_scores() -> N
 
     assert "val_diagnostics/retrieval/differentiable/score_mean" not in logs
     assert "val_diagnostics/retrieval/differentiable/score_entropy_mean" in logs
+    assert "val_diagnostics/retrieval/differentiable/effective_k_mean" not in logs
     assert "val_diagnostics/retrieval/differentiable/top1_top2_margin_mean" in logs
-    assert "val_diagnostics/prediction/entropy_mean" in logs
+    assert "val_diagnostics/prediction/entropy_mean" not in logs
 
 
-def test_model_diagnostic_scalars_use_sigmoid_for_multitask_binary_logits() -> None:
+def test_train_diagnostic_scalars_use_sigmoid_for_multitask_binary_logits() -> None:
     predictions = ModelOutput(
         logits=torch.FloatTensor(
             [
@@ -66,12 +67,12 @@ def test_model_diagnostic_scalars_use_sigmoid_for_multitask_binary_logits() -> N
         ),
     )
 
-    logs = model_diagnostic_scalars(predictions, _batch(), stage="val")
+    logs = model_diagnostic_scalars(predictions, _batch(), stage="train")
 
     expected = torch.sigmoid(predictions.logits).mean()
-    assert torch.allclose(logs["val_diagnostics/prediction/prob_mean"], expected)
+    assert torch.allclose(logs["prediction/train/prob_mean"], expected)
     assert not torch.allclose(
-        logs["val_diagnostics/prediction/prob_mean"],
+        logs["prediction/train/prob_mean"],
         torch.tensor(1.0 / predictions.logits.shape[-1]),
     )
 
@@ -93,8 +94,14 @@ def test_validation_diagnostics_use_separate_group_and_prune_score_summaries() -
     logs = model_diagnostic_scalars(predictions, _batch(), stage="val")
 
     assert "val_diagnostics/prediction/logits_std" in logs
+    assert "val_diagnostics/prediction/logits_max_abs" in logs
+    assert "val_diagnostics/prediction/finite_frac" not in logs
+    assert "val_diagnostics/prediction/prob_mean" not in logs
     assert "val_diagnostics/query/offdiag_cos_mean" in logs
+    assert "val_diagnostics/query/dim_std_mean" in logs
+    assert "val_diagnostics/query/norm_mean" not in logs
     assert "val_diagnostics/retrieval/unique_doc_ratio" in logs
+    assert "val_diagnostics/retrieval/top1_unique_ratio" in logs
     assert "val_diagnostics/retrieval/top1_mode_frac" in logs
     assert "val_diagnostics/retrieval/score_mean" not in logs
     assert "val_diagnostics/retrieval/top1_score_mean" not in logs

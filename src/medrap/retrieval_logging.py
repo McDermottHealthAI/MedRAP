@@ -177,22 +177,16 @@ def _differentiable_score_scalars(scores: Tensor, *, prefix: str) -> dict[str, T
 def _validation_diagnostic_logs(logs: dict[str, Tensor]) -> dict[str, Tensor]:
     """Keep validation diagnostics compact enough for routine W&B runs."""
     keep_suffixes = (
-        "/finite_frac",
         "/logits_std",
         "/logits_max_abs",
-        "/prob_mean",
-        "/prob_std",
-        "/entropy_mean",
         "/pad_fraction",
         "/valid_tokens_mean",
-        "/norm_mean",
         "/dim_std_mean",
         "/offdiag_cos_mean",
         "/unique_doc_ratio",
         "/top1_unique_ratio",
         "/top1_mode_frac",
         "/differentiable/score_entropy_mean",
-        "/differentiable/effective_k_mean",
         "/differentiable/top1_top2_margin_mean",
     )
     return {name: value for name, value in logs.items() if name.endswith(keep_suffixes)}
