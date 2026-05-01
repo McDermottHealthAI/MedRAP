@@ -1,19 +1,14 @@
 """Lightning callbacks for training diagnostics."""
 
-import json
 import math
-import os
-import re
 from collections import defaultdict
 from collections.abc import Sequence
 from pathlib import Path
 
 import lightning.pytorch as pl
-import numpy as np
 import torch
 from lightning.pytorch.callbacks import Callback
 from lightning.pytorch.loggers import WandbLogger
-from sklearn.metrics import roc_auc_score
 from torch import Tensor
 from torchmetrics.functional.classification import binary_auroc
 
@@ -479,102 +474,6 @@ class EndOfFitValAUROCCallback(Callback):
             pl_module.train()
         else:
             pl_module.eval()
-
-
-class EndOfFitMultiTaskAUROCCallback(Callback):
-    """Compute per-task and mean AUROC at the end of fit for multi-task binary models."""
-
-    def _load_code_names(self, trainer: pl.Trainer, num_tasks: int) -> list[str]:
-        dm = getattr(trainer, "datamodule", None)
-        labels_dir = getattr(dm, "mt_labels_dir", None)
-        if labels_dir:
-            try:
-                with open(os.path.join(labels_dir, "code_index.json")) as f:
-                    index = json.load(f)
-                return [index[str(i)] for i in range(num_tasks)]
-            except Exception:
-                pass
-        return [f"task_{i}" for i in range(num_tasks)]
-
-    @staticmethod
-    def _slugify(code: str) -> str:
-        return re.sub(r"[^a-zA-Z0-9]+", "_", code).strip("_").lower()[:60]
-
-    def on_fit_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        if getattr(trainer, "sanity_checking", False):
-            return
-
-        from .task import MultiTaskBinaryClassificationTask
-
-        task = getattr(pl_module, "task", None)
-        if not isinstance(task, MultiTaskBinaryClassificationTask):
-            return
-
-        val_loader = _resolve_val_dataloader(trainer)
-        if val_loader is None:
-            return
-
-        code_names = self._load_code_names(trainer, task.num_tasks)
-        device = pl_module.device
-        pl_module_was_training = pl_module.training
-        pl_module.eval()
-
-        logits_chunks: list[Tensor] = []
-        target_chunks: list[Tensor] = []
-        with torch.no_grad():
-            for batch in val_loader:
-                batch = pl_module.transfer_batch_to_device(batch, device, dataloader_idx=0)
-                out = pl_module(batch)
-                if not isinstance(out, ModelOutput):
-                    continue
-                targets = task.extract_targets(batch)
-                if not isinstance(targets, Tensor):
-                    continue
-                logits_chunks.append(out.logits.detach().cpu())
-                target_chunks.append(targets.detach().cpu())
-
-        if pl_module_was_training:
-            pl_module.train()
-        else:
-            pl_module.eval()
-
-        if not logits_chunks:
-            return
-
-        all_probs = torch.sigmoid(torch.cat(logits_chunks, dim=0)).numpy()
-        all_targets = torch.cat(target_chunks, dim=0).numpy()
-
-        per_task: dict[str, float] = {}
-        for task_idx in range(task.num_tasks):
-            targets = all_targets[:, task_idx]
-            valid = ~np.isnan(targets)
-            valid_targets = targets[valid]
-            valid_probs = all_probs[valid, task_idx]
-            if len(valid_targets) < 2 or len(np.unique(valid_targets)) < 2:
-                continue
-            try:
-                per_task[code_names[task_idx]] = float(roc_auc_score(valid_targets, valid_probs))
-            except Exception:
-                continue
-
-        if not per_task:
-            return
-
-        mean_auroc = float(np.mean(list(per_task.values())))
-        step = int(getattr(trainer, "global_step", 0))
-        metrics: dict[str, float] = {"final/val_auroc/mean": mean_auroc}
-        for code, auroc in per_task.items():
-            metrics[f"final/val_auroc/{self._slugify(code)}"] = auroc
-
-        for logger in trainer.loggers:
-            log_metrics = getattr(logger, "log_metrics", None)
-            if callable(log_metrics):
-                log_metrics(metrics, step=step)
-            if isinstance(logger, WandbLogger):
-                exp = getattr(logger, "experiment", None)
-                if exp is not None:
-                    exp.summary["final_val_auroc_mean"] = mean_auroc
-                    exp.log(metrics, step=step)
 
 
 class ProgressCheckpointCallback(Callback):
