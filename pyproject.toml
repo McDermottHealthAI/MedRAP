@@ -61,6 +61,25 @@ dev = [
   "notebook>=7.5.5",
 ]
 docs = []
+llm_judge = [
+  "openai>=1.0.0",
+  "tiktoken>=0.7.0",
+  "xlsxwriter>=3.2",
+  "openpyxl>=3.1",
+]
+viz = [
+  "matplotlib>=3.8",
+  "umap-learn>=0.5",
+]
+
+[tool.uv]
+# Install the llm_judge and viz dependency-groups on every `uv sync` so the
+# extraction-plot pipeline (matplotlib, umap-learn) and LLM-judge pipeline
+# (xlsxwriter, openpyxl, openai, tiktoken) work out of the box. The
+# corresponding [project.optional-dependencies] entries above are kept in
+# sync so external `pip install medrap[viz]` / `medrap[llm_judge]` still
+# works for PyPI users.
+default-groups = ["dev", "llm_judge", "viz"]
 
 [tool.setuptools_scm]
 

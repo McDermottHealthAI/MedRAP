@@ -1863,6 +1863,16 @@ dev = [
     { name = "pytest-cov" },
     { name = "ruff" },
 ]
+llm-judge = [
+    { name = "openai" },
+    { name = "openpyxl" },
+    { name = "tiktoken" },
+    { name = "xlsxwriter" },
+]
+viz = [
+    { name = "matplotlib" },
+    { name = "umap-learn" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -1900,6 +1910,16 @@ dev = [
     { name = "ruff" },
 ]
 docs = []
+llm-judge = [
+    { name = "openai", specifier = ">=1.0.0" },
+    { name = "openpyxl", specifier = ">=3.1" },
+    { name = "tiktoken", specifier = ">=0.7.0" },
+    { name = "xlsxwriter", specifier = ">=3.2" },
+]
+viz = [
+    { name = "matplotlib", specifier = ">=3.8" },
+    { name = "umap-learn", specifier = ">=0.5" },
+]
 
 [[package]]
 name = "meds"

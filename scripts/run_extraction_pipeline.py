@@ -3,13 +3,14 @@
 Wraps :mod:`scripts.extract_and_visualize` and :mod:`scripts.run_demographic_heatmap`
 into a single command. Reads ``--run_dir``, automatically discovers the checkpoint
 and (when possible) retrieval DB paths from ``<run_dir>/config.yaml``, and produces
-all 9 files in ``<run_dir>/extraction/``:
+the following files in ``<run_dir>/extraction/``:
 
-- ``extraction_artifacts.pt`` (with cached ``per_doc_loo_delta_logits``)
-- ``extraction_diagnostics.png`` (PCA), ``_tsne.png``, ``_umap.png``
+- ``extraction_artifacts.pt``
+- ``query_embeddings_pca.pdf``, ``query_embeddings_tsne.pdf``, ``query_embeddings_umap.pdf``
+- ``performance.pdf``
 - ``top_retrieved_docs.csv``
+- ``retrieval_counts.csv``
 - ``keyword_demographic_heatmap.png``
-- ``keyword_demographic_{age,gender,race}.csv``
 
 Both wrapped scripts already cache their work, so re-runs hit the cache and
 finish in ~2 minutes on a CPU node.

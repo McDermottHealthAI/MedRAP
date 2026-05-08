@@ -75,6 +75,37 @@ def _estimate_tokens(s: str) -> int:
         return max(1, len(s) // 4)
 
 
+def _format_sample_prompt(
+    sample_sys: str,
+    sample_user: str,
+    sample_timeline: str,
+    sample_timeline_chrono_len: int | None,
+) -> str:
+    """Render SYSTEM + USER prompt for pair 0 as a single text block with separators."""
+    bar = "=" * 80
+    header = f"SAMPLE PROMPT (pair 0) — USER  ({len(sample_user)} chars"
+    if sample_timeline_chrono_len is not None and sample_timeline_chrono_len > 0:
+        # Prompt length - timeline length + chrono length = chrono-equivalent prompt length.
+        chrono_equiv = len(sample_user) - len(sample_timeline) + sample_timeline_chrono_len
+        saved = chrono_equiv - len(sample_user)
+        pct = 100 * saved / chrono_equiv if chrono_equiv > 0 else 0
+        header += f"; chronological would be ~{chrono_equiv} chars, saved {saved} / {pct:.0f}%"
+    header += ")"
+    parts = [
+        bar,
+        "SAMPLE PROMPT (pair 0) — SYSTEM",
+        bar,
+        sample_sys,
+        "",
+        bar,
+        header,
+        bar,
+        sample_user,
+        bar,
+    ]
+    return "\n".join(parts) + "\n"
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="LLM-as-a-judge patient-level retrieval-relevance evaluation."
@@ -100,6 +131,15 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--timeline_max_events", type=int, default=20)
     parser.add_argument("--doc_max_chars", type=int, default=4000)
     parser.add_argument("--dry_run", action="store_true")
+    parser.add_argument(
+        "--save_sample_prompt",
+        type=Path,
+        default=None,
+        help=(
+            "Path to save the rendered SYSTEM+USER prompt for pair 0. "
+            "Works in --dry_run and live mode."
+        ),
+    )
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
 
@@ -314,26 +354,18 @@ def main() -> None:  # noqa: C901 - CLI pipeline, branches are linear
         f"~{total_output / 1e3:.1f}K output | est cost ~${est_cost:.2f}"
     )
 
+    sample_prompt_text = _format_sample_prompt(
+        sample_sys, sample_user, sample_timeline, sample_timeline_chrono_len
+    )
+
+    if args.save_sample_prompt is not None:
+        args.save_sample_prompt.parent.mkdir(parents=True, exist_ok=True)
+        args.save_sample_prompt.write_text(sample_prompt_text)
+        print(f"Saved sample prompt to {args.save_sample_prompt}")
+
     if args.dry_run:
         print()
-        print("=" * 80)
-        print("SAMPLE PROMPT (pair 0) — SYSTEM")
-        print("=" * 80)
-        print(sample_sys)
-        print()
-        print("=" * 80)
-        header = f"SAMPLE PROMPT (pair 0) — USER  ({len(sample_user)} chars"
-        if sample_timeline_chrono_len is not None and sample_timeline_chrono_len > 0:
-            # Prompt length - timeline length + chrono length = chrono-equivalent prompt length.
-            chrono_equiv = len(sample_user) - len(sample_timeline) + sample_timeline_chrono_len
-            saved = chrono_equiv - len(sample_user)
-            pct = 100 * saved / chrono_equiv if chrono_equiv > 0 else 0
-            header += f"; chronological would be ~{chrono_equiv} chars, saved {saved} / {pct:.0f}%"
-        header += ")"
-        print(header)
-        print("=" * 80)
-        print(sample_user)
-        print("=" * 80)
+        print(sample_prompt_text, end="")
         print("Dry-run: exiting before API calls.")
         return
 

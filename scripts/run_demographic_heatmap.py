@@ -209,21 +209,6 @@ def main() -> None:
         top_n_keywords=args.top_n_keywords,
     )
 
-    # Export CSV tables for each demographic axis.
-    import csv
-
-    for axis_name, info in tables.items():
-        tbl = info["table"]
-        bins = info["bins"]
-        kws = info["keywords"]
-        csv_path = extract_dir / f"keyword_demographic_{axis_name}.csv"
-        with open(csv_path, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(["", *kws])
-            for i, b in enumerate(bins):
-                writer.writerow([b] + [f"{tbl[i, j]:.6f}" for j in range(tbl.shape[1])])
-        print(f"Table saved to {csv_path}")
-
     # Diagnostic: check if table values differ across demographic bins.
     print("\n=== Invariance diagnostics ===")
     for axis_name, info in tables.items():
