@@ -195,6 +195,13 @@ class HFDatasetRetriever(Retriever):
         doc_ids_column: Optional column containing document ids.
         doc_key_embeddings_column: Optional column containing document key
             embeddings.
+        ablation_mode: Retrieval ablation mode. ``"none"`` returns normal
+            nearest-neighbor results. ``"shuffle_batch"`` permutes complete
+            retrieved top-k sets across batch items, preserving the retrieved
+            payload distribution while breaking patient-document alignment.
+            ``"random_docs"`` replaces nearest-neighbor rows with random corpus
+            rows, breaking both patient-document alignment and retrieved payload
+            distribution.
         cache_payloads: Whether to cache retrieval payload columns as tensors at
             construction time. This avoids Hugging Face Dataset row
             materialization in the per-batch retrieval hot path.
@@ -218,17 +225,22 @@ class HFDatasetRetriever(Retriever):
         k: int = 1,
         doc_ids_column: str | None = None,
         doc_key_embeddings_column: str | None = None,
+        ablation_mode: str = "none",
         cache_payloads: bool = False,
         payload_cache_device: str | int | torch.device | None = None,
     ) -> None:
         super().__init__()
 
+        if ablation_mode not in {"none", "shuffle_batch", "random_docs"}:
+            raise ValueError("ablation_mode must be one of: 'none', 'shuffle_batch', 'random_docs'")
         self.k = k
+        self.ablation_mode = ablation_mode
         self._doc_tokens_column = doc_tokens_column
         self._doc_attention_mask_column = doc_attention_mask_column
         self._doc_ids_column = doc_ids_column
         self._doc_key_embeddings_column = doc_key_embeddings_column
         self._dataset = dataset
+        self._dataset_num_rows = len(dataset)
         self._index_name = index_name
         self._cached_doc_tokens: Tensor | None = None
         self._cached_doc_attention_mask: Tensor | None = None
@@ -477,6 +489,57 @@ class HFDatasetRetriever(Retriever):
             self.k,
         )
         return scores, row_indices
+
+    def _apply_ablation(self, *, scores: Tensor, row_indices: Tensor) -> tuple[Tensor, Tensor]:
+        """Apply configured retrieval ablation to searched row ids.
+
+        Args:
+            scores: Retrieval scores with shape ``(B, R, K)``.
+            row_indices: Retrieved dataset row indices with shape ``(B, R, K)``.
+
+        Returns:
+            Possibly ablated ``(scores, row_indices)``.
+
+        Examples:
+            >>> retriever = object.__new__(HFDatasetRetriever)
+            >>> retriever.ablation_mode = "none"
+            >>> scores = torch.FloatTensor([[[1.0]], [[2.0]]])
+            >>> rows = torch.LongTensor([[[10]], [[20]]])
+            >>> out_scores, out_rows = retriever._apply_ablation(scores=scores, row_indices=rows)
+            >>> torch.equal(out_scores, scores), torch.equal(out_rows, rows)
+            (True, True)
+
+            >>> retriever.ablation_mode = "shuffle_batch"
+            >>> _ = torch.manual_seed(1)
+            >>> out_scores, out_rows = retriever._apply_ablation(scores=scores, row_indices=rows)
+            >>> out_rows.tolist(), out_scores.tolist()
+            ([[[20]], [[10]]], [[[2.0]], [[1.0]]])
+
+            >>> retriever.ablation_mode = "random_docs"
+            >>> retriever._dataset_num_rows = 100
+            >>> _ = torch.manual_seed(1)
+            >>> out_scores, out_rows = retriever._apply_ablation(scores=scores, row_indices=rows)
+            >>> out_rows.shape == rows.shape and out_rows.max() < 100 and out_rows.min() >= 0
+            tensor(True)
+            >>> torch.equal(out_scores, torch.zeros_like(scores))
+            True
+        """
+        if self.ablation_mode == "none":
+            return scores, row_indices
+        if self.ablation_mode == "shuffle_batch":
+            if row_indices.shape[0] < 2:
+                return scores, row_indices
+            permutation = torch.randperm(row_indices.shape[0], device=row_indices.device)
+            return scores.index_select(0, permutation), row_indices.index_select(0, permutation)
+        if self.ablation_mode == "random_docs":
+            random_rows = torch.randint(
+                self._dataset_num_rows,
+                row_indices.shape,
+                device=row_indices.device,
+                dtype=row_indices.dtype,
+            )
+            return torch.zeros_like(scores), random_rows
+        raise RuntimeError(f"Unsupported retrieval ablation mode: {self.ablation_mode!r}")
 
     def _materialize_output(
         self,
@@ -744,11 +807,23 @@ class HFDatasetRetriever(Retriever):
             [[[1]]]
             >>> out_cached_no_ids.doc_key_embeddings is None
             True
+
+            >>> HFDatasetRetriever(
+            ...     dataset=dataset,
+            ...     index_name="retrieval",
+            ...     doc_tokens_column="doc_tokens",
+            ...     doc_attention_mask_column="doc_attention_mask",
+            ...     ablation_mode="bad",
+            ... )  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: ablation_mode must be one of: 'none', 'shuffle_batch', 'random_docs'
         """
         if query_embeddings.ndim != 3:
             raise ValueError("query_embeddings must have shape (B, R, D_ret)")
 
         scores, row_indices = self._search_index(query_embeddings)
+        scores, row_indices = self._apply_ablation(scores=scores, row_indices=row_indices)
         return self._materialize_output(
             row_indices=row_indices,
             scores=scores,
@@ -767,6 +842,7 @@ def load_hf_dataset_retriever(
     doc_key_embeddings_column: str | None = None,
     index_path: str | None = None,
     device: int | list[int] | None = None,
+    ablation_mode: str = "none",
     cache_payloads: bool = False,
     payload_cache_device: str | int | torch.device | None = None,
 ) -> HFDatasetRetriever:
@@ -787,6 +863,8 @@ def load_hf_dataset_retriever(
         device: Optional FAISS device passed to
             :meth:`datasets.Dataset.load_faiss_index`. ``None`` keeps the index
             on CPU; ``0`` uses GPU 0; ``-1`` uses all GPUs.
+        ablation_mode: Retrieval ablation mode passed to
+            :class:`HFDatasetRetriever`.
         cache_payloads: Whether to cache retrieval payload columns as tensors at
             load time.
         payload_cache_device: Device for cached payload tensors. ``None`` means
@@ -846,6 +924,7 @@ def load_hf_dataset_retriever(
         k=k,
         doc_ids_column=doc_ids_column,
         doc_key_embeddings_column=doc_key_embeddings_column,
+        ablation_mode=ablation_mode,
         cache_payloads=cache_payloads,
         payload_cache_device=payload_cache_device,
     )

@@ -230,6 +230,7 @@ def test_load_hf_dataset_retriever_passes_device_and_cache_options(monkeypatch) 
         doc_attention_mask_column="doc_attention_mask",
         k=3,
         device=0,
+        ablation_mode="random_docs",
         cache_payloads=True,
         payload_cache_device="cpu",
     )
@@ -248,6 +249,7 @@ def test_load_hf_dataset_retriever_passes_device_and_cache_options(monkeypatch) 
         "k": 3,
         "doc_ids_column": None,
         "doc_key_embeddings_column": None,
+        "ablation_mode": "random_docs",
         "cache_payloads": True,
         "payload_cache_device": "cpu",
     }
