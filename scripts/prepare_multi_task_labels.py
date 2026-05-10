@@ -1,7 +1,10 @@
 """Compute multi-task binary labels from MEDS cohort data.
 
-For every patient the prediction anchor is the first dynamic (non-birth) clinical
-event plus ``--anchor_offset_hours`` hours (default 24 h).
+For every patient the prediction anchor is sampled uniformly at random from the
+window ``[first_event + min_history_days, last_event - horizon_days]``.  This
+guarantees the model sees a non-trivial history before the anchor and that a full
+label horizon exists after it.  Patients whose total timeline is shorter than
+``min_history_days + horizon_days`` are excluded.
 
 Codes are selected by a two-pass procedure that avoids trivially easy tasks:
 
@@ -38,10 +41,11 @@ Outputs
 Usage
 -----
 python scripts/prepare_multi_task_labels.py \\
-    --meds_cohort_dir  /path/to/MEDS_cohort \\
-    --output_dir       /path/to/mt_labels \\
-    --num_tasks        25 \\
-    --horizon_days     7
+    --meds_cohort_dir   /path/to/MEDS_cohort \\
+    --output_dir        /path/to/mt_labels \\
+    --num_tasks         25 \\
+    --horizon_days      7 \\
+    --min_history_days  1
 """
 
 from __future__ import annotations
@@ -51,6 +55,7 @@ import json
 import logging
 from pathlib import Path
 
+import numpy as np
 import polars as pl
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -144,12 +149,17 @@ def _select_candidates(
 def _process_shard(
     f: Path,
     codes: list[str],
-    offset_us: int,
     horizon_days: float,
+    min_history_days: float,
+    rng: np.random.Generator,
 ) -> pl.DataFrame | None:
     """Build binary label rows for one shard.
 
-    Returns None if no usable events.
+    Patients whose timeline is shorter than min_history_days + horizon_days are
+    excluded.  For the rest, prediction_time is sampled uniformly from
+    [first_event + min_history_days, last_event - horizon_days].
+
+    Returns None if no usable events survive filtering.
     """
     df = pl.read_parquet(f, columns=["subject_id", "time", "code"]).filter(pl.col("time").is_not_null())
     if df.is_empty():
@@ -159,12 +169,32 @@ def _process_shard(
     if clinical.is_empty():
         return None
 
-    anchors = (
+    min_history_us = int(min_history_days * 86_400 * 1_000_000)
+    horizon_us = int(horizon_days * 86_400 * 1_000_000)
+
+    bounds = (
         clinical.group_by("subject_id")
-        .agg(pl.col("time").min().alias("first_event_time"))
-        .with_columns(
-            (pl.col("first_event_time") + pl.duration(microseconds=offset_us)).alias("prediction_time")
+        .agg(
+            pl.col("time").min().dt.epoch(time_unit="us").alias("first_us"),
+            pl.col("time").max().dt.epoch(time_unit="us").alias("last_us"),
         )
+        .with_columns(
+            (pl.col("first_us") + min_history_us).alias("earliest_us"),
+            (pl.col("last_us") - horizon_us).alias("latest_us"),
+        )
+        .filter(pl.col("earliest_us") <= pl.col("latest_us"))
+    )
+
+    if bounds.is_empty():
+        return None
+
+    earliest = bounds["earliest_us"].to_numpy()
+    window = (bounds["latest_us"] - bounds["earliest_us"]).to_numpy()
+    offsets = (rng.random(len(bounds)) * window).astype(np.int64)
+
+    anchors = (
+        pl.DataFrame({"subject_id": bounds["subject_id"], "prediction_us": earliest + offsets})
+        .with_columns(pl.from_epoch("prediction_us", time_unit="us").alias("prediction_time"))
         .select(["subject_id", "prediction_time"])
     )
 
@@ -208,13 +238,14 @@ def _generate_labels(
     split: str,
     codes: list[str],
     horizon_days: float,
-    anchor_offset_hours: float,
+    min_history_days: float,
+    seed: int,
 ) -> pl.DataFrame:
-    offset_us = int(anchor_offset_hours * 3600 * 1_000_000)
+    rng = np.random.default_rng(seed)
     shards = [
         s
         for f in _shard_files(cohort_dir, split)
-        if (s := _process_shard(f, codes, offset_us, horizon_days)) is not None
+        if (s := _process_shard(f, codes, horizon_days, min_history_days, rng)) is not None
     ]
     if not shards:
         return pl.DataFrame()
@@ -296,10 +327,17 @@ def main() -> None:
         help="Days after prediction_time to look for code occurrence. Default: 7.",
     )
     parser.add_argument(
-        "--anchor_offset_hours",
+        "--min_history_days",
         type=float,
-        default=24.0,
-        help="Hours after first event to set as prediction_time.",
+        default=1.0,
+        help="Minimum days of history required before the prediction anchor. "
+        "Patients with total timeline < min_history_days + horizon_days are excluded. Default: 1.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for reproducible anchor sampling. Default: 42.",
     )
     parser.add_argument(
         "--measurement_threshold",
@@ -352,7 +390,7 @@ def main() -> None:
     # Pass 2a: train labels for candidates → positive-rate filtering
     log.info("Pass 2a: generating candidate labels for train split ...")
     train_labels_raw = _generate_labels(
-        args.meds_cohort_dir, "train", candidates, args.horizon_days, args.anchor_offset_hours
+        args.meds_cohort_dir, "train", candidates, args.horizon_days, args.min_history_days, args.seed
     )
     if train_labels_raw.is_empty():
         raise RuntimeError("No train labels generated. Check --meds_cohort_dir.")
@@ -391,7 +429,7 @@ def main() -> None:
             continue
         log.info("Pass 2b: generating labels for split %s ...", split)
         df = _generate_labels(
-            args.meds_cohort_dir, split, final_codes, args.horizon_days, args.anchor_offset_hours
+            args.meds_cohort_dir, split, final_codes, args.horizon_days, args.min_history_days, args.seed
         )
         if df.is_empty():
             log.warning("No labels for split %s — skipping.", split)
@@ -412,7 +450,8 @@ def main() -> None:
     metadata = {
         "num_tasks": len(final_codes),
         "horizon_days": args.horizon_days,
-        "anchor_offset_hours": args.anchor_offset_hours,
+        "min_history_days": args.min_history_days,
+        "seed": args.seed,
         "measurement_threshold": args.measurement_threshold,
         "min_positive_rate": args.min_positive_rate,
         "max_positive_rate": args.max_positive_rate,
