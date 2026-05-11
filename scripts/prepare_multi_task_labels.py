@@ -266,8 +266,14 @@ def _filter_by_positive_rate(
     min_rate: float,
     max_rate: float,
     num_tasks: int,
+    random_tasks: bool = False,
+    seed: int = 42,
 ) -> list[str]:
-    """Keep codes whose train positive rate is in [min_rate, max_rate]."""
+    """Keep codes whose train positive rate is in [min_rate, max_rate].
+
+    If random_tasks is True, sample num_tasks uniformly at random from the
+    passing codes instead of taking the top-N by patient count.
+    """
     n = len(train_labels)
     if n == 0:
         return candidates[:num_tasks]
@@ -291,9 +297,13 @@ def _filter_by_positive_rate(
             num_tasks,
         )
 
-    # Re-sort by patient count (preserve original ranking)
-    order = {c: i for i, c in enumerate(stats["code"].to_list())}
-    passing.sort(key=lambda c: order.get(c, 999_999))
+    if random_tasks:
+        rng = np.random.default_rng(seed)
+        rng.shuffle(passing)
+    else:
+        # Sort by patient count (preserve original ranking)
+        order = {c: i for i, c in enumerate(stats["code"].to_list())}
+        passing.sort(key=lambda c: order.get(c, 999_999))
     selected = passing[:num_tasks]
 
     if selected:
@@ -337,7 +347,12 @@ def main() -> None:
         "--seed",
         type=int,
         default=42,
-        help="Random seed for reproducible anchor sampling. Default: 42.",
+        help="Random seed for reproducible anchor sampling and (if --random_tasks) task selection. Default: 42.",
+    )
+    parser.add_argument(
+        "--random_tasks",
+        action="store_true",
+        help="Sample num_tasks randomly from passing codes instead of taking the top-N by patient count.",
     )
     parser.add_argument(
         "--measurement_threshold",
@@ -402,6 +417,8 @@ def main() -> None:
         min_rate=args.min_positive_rate,
         max_rate=args.max_positive_rate,
         num_tasks=args.num_tasks,
+        random_tasks=args.random_tasks,
+        seed=args.seed,
     )
     if not final_codes:
         raise RuntimeError(
