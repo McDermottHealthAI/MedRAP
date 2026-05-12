@@ -208,7 +208,7 @@ def test_in_memory_retriever_returns_query_dependent_payloads() -> None:
     assert out.doc_attention_mask.dtype == torch.bool
 
 
-def test_load_hf_dataset_retriever_passes_device_and_cache_options(monkeypatch) -> None:
+def test_load_hf_dataset_retriever_passes_device_cache_and_ablation_options(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     class FakeDataset:

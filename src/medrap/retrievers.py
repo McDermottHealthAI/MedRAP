@@ -197,8 +197,9 @@ class HFDatasetRetriever(Retriever):
             embeddings.
         ablation_mode: Retrieval ablation mode. ``"none"`` returns normal
             nearest-neighbor results. ``"random_docs"`` replaces
-            nearest-neighbor rows with random corpus rows, breaking
-            patient-document alignment.
+            nearest-neighbor row ids with uniform random corpus row ids sampled
+            with replacement, breaking patient-document alignment while keeping
+            the same payload materialization path.
         cache_payloads: Whether to cache retrieval payload columns as tensors at
             construction time. This avoids Hugging Face Dataset row
             materialization in the per-batch retrieval hot path.
@@ -495,7 +496,8 @@ class HFDatasetRetriever(Retriever):
             row_indices: Retrieved dataset row indices with shape ``(B, R, K)``.
 
         Returns:
-            Possibly ablated ``(scores, row_indices)``.
+            Possibly ablated ``(scores, row_indices)``. ``random_docs`` returns
+            uniform random row ids sampled with replacement and zero scores.
 
         Examples:
             >>> retriever = object.__new__(HFDatasetRetriever)
