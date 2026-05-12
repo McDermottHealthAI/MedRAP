@@ -3,14 +3,25 @@
 Wraps :mod:`scripts.extract_and_visualize` and :mod:`scripts.run_demographic_heatmap`
 into a single command. Reads ``--run_dir``, automatically discovers the checkpoint
 and (when possible) retrieval DB paths from ``<run_dir>/config.yaml``, and produces
-the following files in ``<run_dir>/extraction/``:
+the following files in ``<run_dir>/extraction/``.
+
+For binary single-task runs:
 
 - ``extraction_artifacts.pt``
-- ``query_embeddings_pca.pdf``, ``query_embeddings_tsne.pdf``, ``query_embeddings_umap.pdf``
-- ``performance.pdf``
+- ``query_embeddings_{pca,tsne,umap}.pdf``  (3 files)
+- ``performance.pdf``  (accuracy + AUROC)
 - ``top_retrieved_docs.csv``
 - ``retrieval_counts.csv``
 - ``keyword_demographic_heatmap.png``
+
+For multitask runs (``targets`` shape ``(N, T)``), the per-task plots replace
+the binary ones:
+
+- ``query_embeddings_task{K}_{pca,tsne,umap}.pdf`` for ``K = 0..T-1``
+- ``performance.pdf`` is a per-task AUROC bar chart with mean line
+
+Task type is auto-detected from the artifact tensor shapes; pass
+``--task_mode binary|multitask`` to override.
 
 Both wrapped scripts already cache their work, so re-runs hit the cache and
 finish in ~2 minutes on a CPU node.
@@ -19,6 +30,10 @@ Usage::
 
     python scripts/run_extraction_pipeline.py \\
         --run_dir outputs/mimic_run_rope_cross_attention \\
+        --meds_cohort /groups/mm6677_gp/data/MIMIC_MEDS/MEDS_cohort
+
+    python scripts/run_extraction_pipeline.py \\
+        --run_dir outputs/mt_rope_cross_attention \\
         --meds_cohort /groups/mm6677_gp/data/MIMIC_MEDS/MEDS_cohort
 """
 
@@ -94,6 +109,26 @@ def main() -> int:
         default=20,
         help="Cap on number of keywords shown per heatmap.",
     )
+    parser.add_argument(
+        "--task_mode",
+        choices=("auto", "binary", "multitask"),
+        default="auto",
+        help=(
+            "Forwarded to extract_and_visualize.py. Default 'auto' inspects "
+            "artifacts['targets'].ndim. Use 'binary' / 'multitask' to override."
+        ),
+    )
+    parser.add_argument(
+        "--mimic_labitems_path",
+        type=Path,
+        default=None,
+        help=(
+            "Forwarded to extract_and_visualize.py. Path to MIMIC-IV's "
+            "d_labitems CSV (gzip OK). Used to translate LAB//<itemid> task "
+            "codes into readable test names. Default: the script's built-in "
+            "default (cluster path)."
+        ),
+    )
     args = parser.parse_args()
 
     run_dir: Path = args.run_dir
@@ -109,7 +144,11 @@ def main() -> int:
         str(_SCRIPTS_DIR / "extract_and_visualize.py"),
         "--run_dir",
         str(run_dir),
+        "--task_mode",
+        args.task_mode,
     ]
+    if args.mimic_labitems_path is not None:
+        extract_cmd += ["--mimic_labitems_path", str(args.mimic_labitems_path)]
     print(">>> step 1/2:", " ".join(extract_cmd))
     subprocess.run(extract_cmd, check=True)
 

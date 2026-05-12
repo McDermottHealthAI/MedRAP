@@ -134,6 +134,26 @@ class MultiTaskMEDSDatamodule(lightning.LightningDataModule):
     def test_dataloader(self) -> DataLoader:
         return self._inner.test_dataloader()
 
+    @property
+    def train_dataset(self):
+        """Forward to the inner ``MEDSLightningDatamodule.train_dataset``."""
+        return self._inner.train_dataset
+
+    @property
+    def val_dataset(self):
+        """Forward to the inner ``MEDSLightningDatamodule.val_dataset``.
+
+        Required by ``extract_val_schema`` (used by the demographic-heatmap and
+        llm-judge pipelines) to recover ``(subject_id, end_event_index,
+        prediction_time)`` for each row of the val split.
+        """
+        return self._inner.val_dataset
+
+    @property
+    def test_dataset(self):
+        """Forward to the inner ``MEDSLightningDatamodule.test_dataset``."""
+        return self._inner.test_dataset
+
 
 def _make_dataset_class(*, mt_labels_dir: str, num_tasks: int) -> type[MultiTaskMEDSDataset]:
     """Return a MultiTaskMEDSDataset subclass with mt_labels_dir and num_tasks baked in.

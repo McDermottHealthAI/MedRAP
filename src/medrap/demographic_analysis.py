@@ -573,6 +573,117 @@ def build_keyword_demographic_table(
     return table, bin_labels, top_keywords
 
 
+def build_comorbidity_keyword_table(
+    doc_ids: np.ndarray,
+    diff_scores: np.ndarray,
+    comorbidity_mask: np.ndarray,
+    category_names: Sequence[str],
+    provider: DocKeywordProvider,
+    *,
+    top_n_keywords: int = 20,
+    include_none: bool = True,
+    include_any: bool = False,
+    none_label: str = "None of the tracked",
+    any_label: str = "Any tracked",
+) -> tuple[np.ndarray, list[str], list[str]]:
+    """Multi-membership version of :func:`build_keyword_demographic_table`.
+
+    Each patient's softmax-weighted keyword mass is added to *every*
+    category row they are flagged for in ``comorbidity_mask``. Optional
+    "None of the tracked" and "Any tracked" buckets aggregate the patients
+    with no flags / at least one flag respectively. Per-row normalization
+    matches the demographic table: each cell is the average per-patient
+    mass for that category-keyword combination.
+
+    Args:
+        doc_ids: ``(N, K)`` retrieved doc ids.
+        diff_scores: ``(N, K)`` differentiable retrieval scores.
+        comorbidity_mask: ``(N, C)`` bool. Each row is the patient's
+            indicator vector across ``category_names``.
+        category_names: ``length C``, the canonical row order for the heatmap.
+        provider: A :class:`DocKeywordProvider`.
+        top_n_keywords: Keep the top-K keywords across all bins.
+        include_none: Add a "None of the tracked" row aggregating
+            patients with zero flags.
+        include_any: Add an "Any tracked" row aggregating patients with at
+            least one flag.
+    """
+    if doc_ids.ndim != 2:
+        raise ValueError(f"doc_ids must be (N, K); got {doc_ids.shape}")
+    if diff_scores.shape != doc_ids.shape:
+        raise ValueError(
+            f"diff_scores shape {diff_scores.shape} must match doc_ids {doc_ids.shape}"
+        )
+    mask = np.asarray(comorbidity_mask, dtype=bool)
+    if mask.ndim != 2:
+        raise ValueError(f"comorbidity_mask must be (N, C); got {mask.shape}")
+    if mask.shape[0] != doc_ids.shape[0]:
+        raise ValueError(
+            f"comorbidity_mask N={mask.shape[0]} != doc_ids N={doc_ids.shape[0]}"
+        )
+    if mask.shape[1] != len(category_names):
+        raise ValueError(
+            f"comorbidity_mask C={mask.shape[1]} != len(category_names)={len(category_names)}"
+        )
+
+    weights = _softmax(diff_scores, axis=-1)  # (N, K)
+
+    bin_to_keyword_mass: dict[str, defaultdict[str, float]] = defaultdict(
+        lambda: defaultdict(float)
+    )
+    bin_counts: defaultdict[str, int] = defaultdict(int)
+
+    n, k_docs = doc_ids.shape
+    for i in range(n):
+        # One-pass per-patient contribution dict (avoid recomputing per category).
+        contributions: defaultdict[str, float] = defaultdict(float)
+        for k in range(k_docs):
+            d = int(doc_ids[i, k])
+            pw = float(weights[i, k])
+            for keyword, kw_weight in provider.keywords_for(d):
+                contributions[keyword] += pw * kw_weight
+
+        any_flagged = False
+        for c, cat in enumerate(category_names):
+            if mask[i, c]:
+                any_flagged = True
+                bin_counts[cat] += 1
+                for keyword, m in contributions.items():
+                    bin_to_keyword_mass[cat][keyword] += m
+
+        if include_any and any_flagged:
+            bin_counts[any_label] += 1
+            for keyword, m in contributions.items():
+                bin_to_keyword_mass[any_label][keyword] += m
+        if include_none and not any_flagged:
+            bin_counts[none_label] += 1
+            for keyword, m in contributions.items():
+                bin_to_keyword_mass[none_label][keyword] += m
+
+    # Row order: categories in given order (only those with ≥1 flagged patient),
+    # then "Any", then "None".
+    bin_labels = [c for c in category_names if c in bin_counts]
+    if include_any and any_label in bin_counts:
+        bin_labels.append(any_label)
+    if include_none and none_label in bin_counts:
+        bin_labels.append(none_label)
+
+    keyword_total: dict[str, float] = defaultdict(float)
+    for masses in bin_to_keyword_mass.values():
+        for keyword, m in masses.items():
+            keyword_total[keyword] += m
+    top_keywords = sorted(keyword_total, key=lambda kw: -keyword_total[kw])[:top_n_keywords]
+
+    table = np.zeros((len(bin_labels), len(top_keywords)), dtype=np.float64)
+    for i, b in enumerate(bin_labels):
+        denom = max(bin_counts[b], 1)
+        masses = bin_to_keyword_mass[b]
+        for j, kw in enumerate(top_keywords):
+            table[i, j] = masses.get(kw, 0.0) / denom
+
+    return table, bin_labels, top_keywords
+
+
 # ---------------------------------------------------------------------------
 # Heatmap rendering
 # ---------------------------------------------------------------------------
@@ -582,11 +693,21 @@ def render_demographic_heatmaps(
     artifacts: dict,
     provider: DocKeywordProvider,
     patient_frame: pl.DataFrame,
-    output_path: Path,
+    output_dir: Path,
     *,
     top_n_keywords: int = 20,
+    comorbidity_frame: "pl.DataFrame | None" = None,
+    comorbidity_categories: Sequence[str] | None = None,
 ) -> dict:
-    """Render age, race/ethnicity, gender heatmaps stacked vertically.
+    """Render demographic and optional chronic-comorbidity heatmaps.
+
+    Each axis is written to its own PNG so the panels can be sized and
+    embedded independently in paper figures::
+
+        <output_dir>/keyword_demographic_age.png
+        <output_dir>/keyword_demographic_race.png
+        <output_dir>/keyword_demographic_gender.png
+        <output_dir>/keyword_demographic_chronic.png   # only when comorbidity_frame is provided
 
     Args:
         artifacts: Dict loaded from ``extraction_artifacts.pt``. Must contain
@@ -594,12 +715,21 @@ def render_demographic_heatmaps(
         provider: Doc → keyword mapping.
         patient_frame: One row per validation sample, in dataloader order.
             Must contain ``age_bin``, ``race``, ``gender`` columns.
-        output_path: Where to save the PNG.
+        output_dir: Directory to write the PNGs into. Created if missing.
         top_n_keywords: Per-axis cap on keyword count.
+        comorbidity_frame: Optional per-patient comorbidity flag frame. Must
+            have one boolean column per name in ``comorbidity_categories``
+            and row count equal to ``patient_frame``. When provided, an
+            extra panel ``keyword_demographic_chronic.png`` is written
+            with multi-membership rows.
+        comorbidity_categories: Ordered list of category names matching
+            ``comorbidity_frame`` columns. Required when ``comorbidity_frame``
+            is provided.
 
     Returns:
-        Dict with table arrays and labels for each demographic axis, for
-        downstream inspection / diagnostics.
+        Dict with table arrays and labels for each axis, for downstream
+        inspection / diagnostics. Has keys ``"age"``, ``"race"``, ``"gender"``,
+        and (when ``comorbidity_frame`` is provided) ``"chronic"``.
     """
     import matplotlib
 
@@ -653,35 +783,93 @@ def render_demographic_heatmaps(
         top_n_keywords=top_n_keywords,
     )
 
-    fig, axes = plt.subplots(3, 1, figsize=(max(10, 0.5 * top_n_keywords + 4), 14))
-    fig.suptitle("Retrieval keyword mass by patient demographic", fontsize=14, y=0.995)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    fig_width = max(10, 0.5 * top_n_keywords + 4)
 
-    for ax, table, bins, kws, title in [
-        (axes[0], age_table, age_bins, age_kws, "Age (years)"),
-        (axes[1], race_table, race_bins, race_kws, "Race/Ethnicity"),
-        (axes[2], gender_table, gender_bins, gender_kws, "Gender"),
-    ]:
+    def _render_one(
+        table, bins, kws, title: str, out_path: Path, *, figsize: tuple[float, float] | None = None
+    ) -> None:
+        fig, ax = plt.subplots(figsize=figsize or (fig_width, 5))
         if table.size == 0:
-            ax.text(0.5, 0.5, f"No data for {title}", ha="center", va="center", transform=ax.transAxes)
-            ax.set_title(title)
+            ax.text(
+                0.5,
+                0.5,
+                f"No data for {title}",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+            )
+            ax.set_title(f"Retrieval keyword mass — {title}")
             ax.set_axis_off()
-            continue
-        im = ax.imshow(table, aspect="auto", cmap="viridis")
-        ax.set_xticks(range(len(kws)))
-        ax.set_xticklabels(kws, rotation=45, ha="right", fontsize=8)
-        ax.set_yticks(range(len(bins)))
-        ax.set_yticklabels(bins, fontsize=9)
-        ax.set_title(title)
-        fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02, label="avg softmax weight")
+        else:
+            im = ax.imshow(table, aspect="auto", cmap="viridis")
+            ax.set_xticks(range(len(kws)))
+            ax.set_xticklabels(kws, rotation=45, ha="right", fontsize=8)
+            ax.set_yticks(range(len(bins)))
+            ax.set_yticklabels(bins, fontsize=9)
+            ax.set_title(f"Retrieval keyword mass — {title}")
+            fig.colorbar(im, ax=ax, fraction=0.04, pad=0.02, label="avg softmax weight")
+        fig.tight_layout()
+        fig.savefig(out_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"Heatmap saved to {out_path}")
 
-    plt.tight_layout(rect=[0, 0, 1, 0.985])
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Heatmap saved to {output_path}")
+    _render_one(
+        age_table, age_bins, age_kws, "Age (years)",
+        output_dir / "keyword_demographic_age.png",
+    )
+    _render_one(
+        race_table, race_bins, race_kws, "Race/Ethnicity",
+        output_dir / "keyword_demographic_race.png",
+    )
+    _render_one(
+        gender_table, gender_bins, gender_kws, "Gender",
+        output_dir / "keyword_demographic_gender.png",
+    )
 
-    return {
+    result: dict[str, dict] = {
         "age": {"table": age_table, "bins": age_bins, "keywords": age_kws},
         "race": {"table": race_table, "bins": race_bins, "keywords": race_kws},
         "gender": {"table": gender_table, "bins": gender_bins, "keywords": gender_kws},
     }
+
+    # Optional 4th panel: chronic comorbidities (multi-membership rows).
+    if comorbidity_frame is not None and comorbidity_categories:
+        if comorbidity_frame.height != patient_frame.height:
+            raise RuntimeError(
+                f"comorbidity_frame rows ({comorbidity_frame.height}) != patient_frame "
+                f"rows ({patient_frame.height}); cannot align to the val schema."
+            )
+        missing_cols = [c for c in comorbidity_categories if c not in comorbidity_frame.columns]
+        if missing_cols:
+            raise ValueError(
+                f"comorbidity_frame is missing columns for categories: {missing_cols}"
+            )
+        comorbidity_mask = np.column_stack(
+            [comorbidity_frame[cat].to_numpy().astype(bool) for cat in comorbidity_categories]
+        )
+        chronic_table, chronic_bins, chronic_kws = build_comorbidity_keyword_table(
+            doc_ids,
+            diff_scores,
+            comorbidity_mask,
+            list(comorbidity_categories),
+            provider,
+            top_n_keywords=top_n_keywords,
+            include_none=True,
+        )
+        chronic_height = max(8.0, 0.3 * max(1, len(chronic_bins)) + 2.0)
+        _render_one(
+            chronic_table,
+            chronic_bins,
+            chronic_kws,
+            "Charlson Comorbidity Index",
+            output_dir / "keyword_demographic_chronic.png",
+            figsize=(fig_width, chronic_height),
+        )
+        result["chronic"] = {
+            "table": chronic_table,
+            "bins": chronic_bins,
+            "keywords": chronic_kws,
+        }
+
+    return result

@@ -20,6 +20,7 @@ from medrap.demographic_analysis import (
     _softmax,
     aggregate_race,
     bin_age,
+    build_comorbidity_keyword_table,
     build_keyword_demographic_table,
     build_patient_demographic_frame,
     extract_val_schema,
@@ -622,7 +623,8 @@ def test_load_subject_demographics_handles_missing_race_column(tmp_path: Path) -
 # ---------------------------------------------------------------------------
 
 
-def test_render_demographic_heatmaps_writes_png_and_returns_tables(tmp_path: Path) -> None:
+def test_render_demographic_heatmaps_writes_three_pngs_and_returns_tables(tmp_path: Path) -> None:
+    """Writes one PNG per demographic axis to ``output_dir`` and returns per-axis tables."""
     import torch
 
     artifacts = {
@@ -637,11 +639,18 @@ def test_render_demographic_heatmaps_writes_png_and_returns_tables(tmp_path: Pat
             "gender": ["M", "F", None],
         }
     )
-    output_path = tmp_path / "heatmap.png"
 
-    result = render_demographic_heatmaps(artifacts, provider, patient_frame, output_path)
+    result = render_demographic_heatmaps(
+        artifacts, provider, patient_frame, output_dir=tmp_path
+    )
 
-    assert output_path.is_file()
+    for axis in ("age", "race", "gender"):
+        assert (tmp_path / f"keyword_demographic_{axis}.png").is_file(), axis
+    # The legacy combined file is no longer produced.
+    assert not (tmp_path / "keyword_demographic_heatmap.png").exists()
+    # Chronic-comorbidity panel is opt-in; without ``comorbidity_frame`` it
+    # should not appear.
+    assert not (tmp_path / "keyword_demographic_chronic.png").exists()
     assert set(result.keys()) == {"age", "race", "gender"}
     for key in ("age", "race", "gender"):
         assert "table" in result[key]
@@ -655,7 +664,7 @@ def test_render_demographic_heatmaps_rejects_missing_artifact_keys(tmp_path: Pat
             {"unrelated": None},
             StaticMappingProvider([[("a", 1.0)]]),
             pl.DataFrame({"age_bin": ["0-18"], "race": ["WHITE"], "gender": ["M"]}),
-            tmp_path / "heatmap.png",
+            output_dir=tmp_path,
         )
 
 
@@ -679,12 +688,14 @@ def test_render_demographic_heatmaps_rejects_row_count_mismatch(tmp_path: Path) 
             artifacts,
             StaticMappingProvider([[("a", 1.0)], [("b", 1.0)]]),
             patient_frame,
-            tmp_path / "heatmap.png",
+            output_dir=tmp_path,
         )
 
 
 def test_render_demographic_heatmaps_displays_placeholder_when_tables_are_empty(tmp_path: Path) -> None:
-    """Exercises the ``if table.size == 0`` placeholder branch."""
+    """Exercises the ``if table.size == 0`` placeholder branch: each per-axis
+    PNG is still written (with the placeholder text) even when no rows are
+    available."""
     import torch
 
     artifacts = {
@@ -698,18 +709,118 @@ def test_render_demographic_heatmaps_displays_placeholder_when_tables_are_empty(
             "gender": pl.Series([], dtype=pl.Utf8),
         }
     )
-    output_path = tmp_path / "empty.png"
 
     result = render_demographic_heatmaps(
         artifacts,
         StaticMappingProvider([[("x", 1.0)]]),
         patient_frame,
-        output_path,
+        output_dir=tmp_path,
     )
 
-    assert output_path.is_file()
     for axis in ("age", "race", "gender"):
+        assert (tmp_path / f"keyword_demographic_{axis}.png").is_file(), axis
         assert result[axis]["table"].size == 0
+
+
+# ---------------------------------------------------------------------------
+# build_comorbidity_keyword_table + chronic heatmap panel
+# ---------------------------------------------------------------------------
+
+
+def test_build_comorbidity_keyword_table_multi_membership_sums_correctly() -> None:
+    """A patient flagged for multiple categories contributes to every one of
+    those rows; a patient flagged for none lands in the optional 'None'
+    bucket. Each row is L1-normalized like the demographic version."""
+    doc_ids = np.array([[0, 1], [0, 1], [1, 0]], dtype=np.int64)
+    diff_scores = np.array(
+        [[1.0, 0.0], [0.0, 1.0], [1.0, 0.0]], dtype=np.float64
+    )
+    # Patient 0: both categories. Patient 1: cat_A only. Patient 2: neither.
+    mask = np.array(
+        [[True, True], [True, False], [False, False]], dtype=bool
+    )
+    provider = StaticMappingProvider([[("a", 1.0)], [("b", 1.0)]])
+
+    table, bin_labels, kw_labels = build_comorbidity_keyword_table(
+        doc_ids,
+        diff_scores,
+        mask,
+        category_names=["cat_A", "cat_B"],
+        provider=provider,
+        top_n_keywords=20,
+        include_none=True,
+    )
+
+    # Row order: cat_A, cat_B, "None of the tracked".
+    assert bin_labels[0] == "cat_A"
+    assert bin_labels[1] == "cat_B"
+    assert "None" in bin_labels[2]
+    assert table.shape == (3, len(kw_labels))
+
+    # cat_A receives contributions from patients 0 and 1 (multi-membership):
+    # P0 softmax([1,0]) ≈ [0.731, 0.269] on (a, b)
+    # P1 softmax([0,1]) ≈ [0.269, 0.731] on (a, b)
+    # Pre-normalization sums on (a, b): (1.0, 1.0) → row normalizes to (0.5, 0.5)
+    cat_a_row = table[0]
+    np.testing.assert_allclose(cat_a_row, [0.5, 0.5], atol=1e-6)
+
+    # cat_B: only P0 contributes, so the row mirrors P0's softmax.
+    cat_b_row = table[1]
+    np.testing.assert_allclose(cat_b_row.sum(), 1.0, atol=1e-6)
+    assert cat_b_row[0] > cat_b_row[1]  # 'a' dominates
+
+    # None row: only P2 contributes; P2's softmax([1,0]) on doc_ids[1, 0] = [1, 0]
+    # → weight 0.731 on doc 1 (→ 'b') + 0.269 on doc 0 (→ 'a')
+    none_row = table[2]
+    np.testing.assert_allclose(none_row.sum(), 1.0, atol=1e-6)
+    assert none_row[1] > none_row[0]  # 'b' dominates
+
+
+def test_render_demographic_heatmaps_writes_chronic_png_when_comorbidity_frame_provided(
+    tmp_path: Path,
+) -> None:
+    """When ``comorbidity_frame`` + ``comorbidity_categories`` are passed, the
+    4th PNG appears and the return dict gains a ``'chronic'`` key."""
+    import torch
+
+    artifacts = {
+        "doc_ids": torch.tensor([[[0, 1]], [[0, 2]], [[1, 2]]], dtype=torch.long),
+        "differentiable_doc_scores": torch.tensor([[1.0, 0.5], [0.5, 1.0], [0.2, 0.8]]),
+    }
+    provider = StaticMappingProvider([[("a", 1.0)], [("b", 1.0)], [("c", 1.0)]])
+    patient_frame = pl.DataFrame(
+        {
+            "age_bin": ["0-18", "18-30", "30-45"],
+            "race": ["WHITE", "BLACK/AFRICAN AMERICAN", None],
+            "gender": ["M", "F", None],
+        }
+    )
+    comorbidity_frame = pl.DataFrame(
+        {
+            "subject_id": [1, 2, 3],
+            "Diabetes without chronic complications": [True, False, False],
+            "Renal disease": [True, True, False],
+        }
+    )
+
+    result = render_demographic_heatmaps(
+        artifacts,
+        provider,
+        patient_frame,
+        output_dir=tmp_path,
+        comorbidity_frame=comorbidity_frame,
+        comorbidity_categories=(
+            "Diabetes without chronic complications",
+            "Renal disease",
+        ),
+    )
+
+    for axis in ("age", "race", "gender", "chronic"):
+        assert (tmp_path / f"keyword_demographic_{axis}.png").is_file(), axis
+    assert "chronic" in result
+    assert "table" in result["chronic"]
+    assert "bins" in result["chronic"]
+    assert "keywords" in result["chronic"]
 
 
 # ---------------------------------------------------------------------------

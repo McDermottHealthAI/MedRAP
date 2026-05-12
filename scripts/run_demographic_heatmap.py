@@ -28,6 +28,11 @@ _repo_root = Path(__file__).resolve().parent.parent
 if str(_repo_root / "src") not in sys.path:
     sys.path.insert(0, str(_repo_root / "src"))
 
+from medrap.comorbidity import (  # noqa: E402
+    CHARLSON_CATEGORIES,
+    assign_patient_charlson,
+    load_charlson_lookup,
+)
 from medrap.configs import instantiate_datamodule, instantiate_training_module  # noqa: E402
 from medrap.demographic_analysis import (  # noqa: E402
     LDATopicProvider,
@@ -158,6 +163,36 @@ def main() -> None:
     print(f"  gender: {n_with_gender}/{patient_frame.height}")
     print(f"  race:   {n_with_race}/{patient_frame.height}")
 
+    # Step 3b: Per-patient Charlson comorbidity flags (multi-membership,
+    # with the canonical hierarchy de-duplication). Row order matches
+    # val_schema by construction.
+    print("Computing per-patient Charlson comorbidities from MEDS diagnoses...")
+    charlson_lookup = load_charlson_lookup()
+    comorbidity_frame = assign_patient_charlson(
+        args.meds_cohort, val_schema, lookup=charlson_lookup
+    )
+    if comorbidity_frame.height != patient_frame.height:
+        print(
+            f"ERROR: comorbidity_frame rows ({comorbidity_frame.height}) != "
+            f"patient_frame rows ({patient_frame.height}).",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    total_n = comorbidity_frame.height
+    n_any = int(comorbidity_frame["any_charlson"].sum())
+    print(
+        f"  Charlson prevalence in val split (N={total_n}, any flag: "
+        f"{n_any} = {100 * n_any / max(total_n, 1):.1f}%):"
+    )
+    prevalences = []
+    for cat in CHARLSON_CATEGORIES:
+        n_cat = int(comorbidity_frame[cat].sum())
+        prevalences.append((cat, n_cat, 100 * n_cat / max(total_n, 1)))
+    # Sort descending so the most prevalent categories print first.
+    for cat, n_cat, pct in sorted(prevalences, key=lambda x: -x[1]):
+        if n_cat > 0:
+            print(f"    {cat:<45}  {n_cat:>6}  ({pct:5.1f}%)")
+
     # Step 4: Build provider and render heatmaps.
     provider = _build_provider(args.keyword_provider, args.retrieval_db, n_topics=args.n_topics)
     print(f"Keyword vocab size: {len(provider.vocab)}")
@@ -200,13 +235,14 @@ def main() -> None:
         title = provider.keywords_for(int(did))[0][0]
         print(f"    doc_id={did} ({cnt} times, {100 * cnt / total_retrievals:.1f}%): {title[:60]}")
 
-    output_path = extract_dir / "keyword_demographic_heatmap.png"
     tables = render_demographic_heatmaps(
         artifacts=artifacts,
         provider=provider,
         patient_frame=patient_frame,
-        output_path=output_path,
+        output_dir=extract_dir,
         top_n_keywords=args.top_n_keywords,
+        comorbidity_frame=comorbidity_frame,
+        comorbidity_categories=CHARLSON_CATEGORIES,
     )
 
     # Diagnostic: check if table values differ across demographic bins.
