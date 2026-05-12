@@ -29,6 +29,73 @@ def _move_tensors_to_device(device: torch.device, *tensors: Tensor) -> tuple[Ten
     return tuple(tensor if tensor.device == device else tensor.to(device) for tensor in tensors)
 
 
+def _apply_retrieval_ablation(
+    *,
+    ablation_mode: str,
+    dataset_num_rows: int,
+    scores: Tensor,
+    row_indices: Tensor,
+) -> tuple[Tensor, Tensor]:
+    """Apply configured retrieval ablation to searched row ids.
+
+    Args:
+        ablation_mode: Retrieval ablation mode, one of ``"none"`` or
+            ``"random_docs"``.
+        dataset_num_rows: Number of rows in the retrieval dataset.
+        scores: Retrieval scores with shape ``(B, R, K)``.
+        row_indices: Retrieved dataset row indices with shape ``(B, R, K)``.
+
+    Returns:
+        Possibly ablated ``(scores, row_indices)``. ``random_docs`` returns
+        uniform random row ids sampled with replacement and zero scores.
+
+    Examples:
+        >>> scores = torch.FloatTensor([[[1.0]], [[2.0]]])
+        >>> rows = torch.LongTensor([[[10]], [[20]]])
+        >>> out_scores, out_rows = _apply_retrieval_ablation(
+        ...     ablation_mode="none",
+        ...     dataset_num_rows=100,
+        ...     scores=scores,
+        ...     row_indices=rows,
+        ... )
+        >>> torch.equal(out_scores, scores), torch.equal(out_rows, rows)
+        (True, True)
+
+        >>> _ = torch.manual_seed(1)
+        >>> out_scores, out_rows = _apply_retrieval_ablation(
+        ...     ablation_mode="random_docs",
+        ...     dataset_num_rows=100,
+        ...     scores=scores,
+        ...     row_indices=rows,
+        ... )
+        >>> out_rows.shape == rows.shape and out_rows.max() < 100 and out_rows.min() >= 0
+        tensor(True)
+        >>> torch.equal(out_scores, torch.zeros_like(scores))
+        True
+
+        >>> _apply_retrieval_ablation(
+        ...     ablation_mode="bad",
+        ...     dataset_num_rows=100,
+        ...     scores=scores,
+        ...     row_indices=rows,
+        ... )  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        RuntimeError: Unsupported retrieval ablation mode: 'bad'
+    """
+    if ablation_mode == "none":
+        return scores, row_indices
+    if ablation_mode == "random_docs":
+        random_rows = torch.randint(
+            dataset_num_rows,
+            row_indices.shape,
+            device=row_indices.device,
+            dtype=row_indices.dtype,
+        )
+        return torch.zeros_like(scores), random_rows
+    raise RuntimeError(f"Unsupported retrieval ablation mode: {ablation_mode!r}")
+
+
 class Retriever(nn.Module, ABC):
     """Abstract base class for retrievers.
 
@@ -488,47 +555,6 @@ class HFDatasetRetriever(Retriever):
         )
         return scores, row_indices
 
-    def _apply_ablation(self, *, scores: Tensor, row_indices: Tensor) -> tuple[Tensor, Tensor]:
-        """Apply configured retrieval ablation to searched row ids.
-
-        Args:
-            scores: Retrieval scores with shape ``(B, R, K)``.
-            row_indices: Retrieved dataset row indices with shape ``(B, R, K)``.
-
-        Returns:
-            Possibly ablated ``(scores, row_indices)``. ``random_docs`` returns
-            uniform random row ids sampled with replacement and zero scores.
-
-        Examples:
-            >>> retriever = object.__new__(HFDatasetRetriever)
-            >>> retriever.ablation_mode = "none"
-            >>> scores = torch.FloatTensor([[[1.0]], [[2.0]]])
-            >>> rows = torch.LongTensor([[[10]], [[20]]])
-            >>> out_scores, out_rows = retriever._apply_ablation(scores=scores, row_indices=rows)
-            >>> torch.equal(out_scores, scores), torch.equal(out_rows, rows)
-            (True, True)
-
-            >>> retriever.ablation_mode = "random_docs"
-            >>> retriever._dataset_num_rows = 100
-            >>> _ = torch.manual_seed(1)
-            >>> out_scores, out_rows = retriever._apply_ablation(scores=scores, row_indices=rows)
-            >>> out_rows.shape == rows.shape and out_rows.max() < 100 and out_rows.min() >= 0
-            tensor(True)
-            >>> torch.equal(out_scores, torch.zeros_like(scores))
-            True
-        """
-        if self.ablation_mode == "none":
-            return scores, row_indices
-        if self.ablation_mode == "random_docs":
-            random_rows = torch.randint(
-                self._dataset_num_rows,
-                row_indices.shape,
-                device=row_indices.device,
-                dtype=row_indices.dtype,
-            )
-            return torch.zeros_like(scores), random_rows
-        raise RuntimeError(f"Unsupported retrieval ablation mode: {self.ablation_mode!r}")
-
     def _materialize_output(
         self,
         *,
@@ -811,7 +837,12 @@ class HFDatasetRetriever(Retriever):
             raise ValueError("query_embeddings must have shape (B, R, D_ret)")
 
         scores, row_indices = self._search_index(query_embeddings)
-        scores, row_indices = self._apply_ablation(scores=scores, row_indices=row_indices)
+        scores, row_indices = _apply_retrieval_ablation(
+            ablation_mode=self.ablation_mode,
+            dataset_num_rows=self._dataset_num_rows,
+            scores=scores,
+            row_indices=row_indices,
+        )
         return self._materialize_output(
             row_indices=row_indices,
             scores=scores,
