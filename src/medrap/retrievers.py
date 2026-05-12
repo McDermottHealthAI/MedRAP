@@ -196,12 +196,9 @@ class HFDatasetRetriever(Retriever):
         doc_key_embeddings_column: Optional column containing document key
             embeddings.
         ablation_mode: Retrieval ablation mode. ``"none"`` returns normal
-            nearest-neighbor results. ``"shuffle_batch"`` permutes complete
-            retrieved top-k sets across batch items, preserving the retrieved
-            payload distribution while breaking patient-document alignment.
-            ``"random_docs"`` replaces nearest-neighbor rows with random corpus
-            rows, breaking both patient-document alignment and retrieved payload
-            distribution.
+            nearest-neighbor results. ``"random_docs"`` replaces
+            nearest-neighbor rows with random corpus rows, breaking
+            patient-document alignment.
         cache_payloads: Whether to cache retrieval payload columns as tensors at
             construction time. This avoids Hugging Face Dataset row
             materialization in the per-batch retrieval hot path.
@@ -231,8 +228,8 @@ class HFDatasetRetriever(Retriever):
     ) -> None:
         super().__init__()
 
-        if ablation_mode not in {"none", "shuffle_batch", "random_docs"}:
-            raise ValueError("ablation_mode must be one of: 'none', 'shuffle_batch', 'random_docs'")
+        if ablation_mode not in {"none", "random_docs"}:
+            raise ValueError("ablation_mode must be one of: 'none', 'random_docs'")
         self.k = k
         self.ablation_mode = ablation_mode
         self._doc_tokens_column = doc_tokens_column
@@ -509,12 +506,6 @@ class HFDatasetRetriever(Retriever):
             >>> torch.equal(out_scores, scores), torch.equal(out_rows, rows)
             (True, True)
 
-            >>> retriever.ablation_mode = "shuffle_batch"
-            >>> _ = torch.manual_seed(1)
-            >>> out_scores, out_rows = retriever._apply_ablation(scores=scores, row_indices=rows)
-            >>> out_rows.tolist(), out_scores.tolist()
-            ([[[20]], [[10]]], [[[2.0]], [[1.0]]])
-
             >>> retriever.ablation_mode = "random_docs"
             >>> retriever._dataset_num_rows = 100
             >>> _ = torch.manual_seed(1)
@@ -526,11 +517,6 @@ class HFDatasetRetriever(Retriever):
         """
         if self.ablation_mode == "none":
             return scores, row_indices
-        if self.ablation_mode == "shuffle_batch":
-            if row_indices.shape[0] < 2:
-                return scores, row_indices
-            permutation = torch.randperm(row_indices.shape[0], device=row_indices.device)
-            return scores.index_select(0, permutation), row_indices.index_select(0, permutation)
         if self.ablation_mode == "random_docs":
             random_rows = torch.randint(
                 self._dataset_num_rows,
@@ -817,7 +803,7 @@ class HFDatasetRetriever(Retriever):
             ... )  # doctest: +ELLIPSIS
             Traceback (most recent call last):
                 ...
-            ValueError: ablation_mode must be one of: 'none', 'shuffle_batch', 'random_docs'
+            ValueError: ablation_mode must be one of: 'none', 'random_docs'
         """
         if query_embeddings.ndim != 3:
             raise ValueError("query_embeddings must have shape (B, R, D_ret)")
