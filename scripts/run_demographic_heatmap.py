@@ -58,6 +58,42 @@ def _build_provider(name: str, retrieval_db: Path, *, n_topics: int = 30):
     raise ValueError(f"Unknown --keyword_provider: {name!r}. Supported: title, lda")
 
 
+def _print_top_residuals_per_axis(result: dict, *, k: int = 10) -> None:
+    """Print the top-``k`` |z|-largest Pearson residual cells per axis.
+
+    Numbers come from the same residual matrices the renderer wrote to
+    ``keyword_demographic_residuals.csv`` — printing them here means the run
+    log itself reports the strongest deviations without anyone having to
+    open a PDF or load the CSV.
+    """
+    import numpy as np  # local import — script imports are lazy at top
+
+    print()
+    print(f"=== Top {k} residual cells per axis (sorted by |z| desc; |z|>2 ~ p<0.05) ===")
+    for axis, entry in result.items():
+        bins = entry["bins"]
+        keywords = entry["keywords"]
+        residual = entry["residual"]
+        flat: list[tuple[str, str, float]] = []
+        for i, b in enumerate(bins):
+            for j, kw in enumerate(keywords):
+                z = float(residual[i, j])
+                if not np.isfinite(z):
+                    continue
+                flat.append((b, kw, z))
+        flat.sort(key=lambda x: -abs(x[2]))
+        top = flat[:k]
+        n_significant = sum(1 for _, _, z in flat if abs(z) > 2.0)
+        print(
+            f"\n  [{axis}] {n_significant}/{len(flat)} cells |z|>2;"
+            f" top {len(top)} by |z|:"
+        )
+        for b, kw, z in top:
+            sign = "+" if z >= 0 else "-"
+            kw_display = kw if len(kw) <= 60 else kw[:57] + "..."
+            print(f"    {b:<40}  z={sign}{abs(z):5.2f}  {kw_display}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Render keyword x demographic heatmaps for a MedRAP MIMIC run."
@@ -87,7 +123,15 @@ def main() -> None:
         help="Number of LDA topics (only used with --keyword_provider lda).",
     )
     parser.add_argument(
-        "--top_n_keywords", type=int, default=20, help="Cap on number of keywords shown per heatmap."
+        "--top_n_keywords",
+        type=int,
+        default=None,
+        help=(
+            "Cap the keyword axis to the top-N keywords by total mass. "
+            "Default ``None`` shows all keywords — recommended so low-mass "
+            "but statistically distinctive topics (e.g. pregnancy on the "
+            "gender axis) stay visible in the residual heatmap."
+        ),
     )
     args = parser.parse_args()
 
@@ -244,6 +288,10 @@ def main() -> None:
         comorbidity_frame=comorbidity_frame,
         comorbidity_categories=CHARLSON_CATEGORIES,
     )
+
+    # Diagnostic: top-10 strongest Pearson residual cells per axis. Lets the
+    # paper write-up cite specific z-scores without eyeballing PDFs.
+    _print_top_residuals_per_axis(tables, k=10)
 
     # Diagnostic: check if table values differ across demographic bins.
     print("\n=== Invariance diagnostics ===")
