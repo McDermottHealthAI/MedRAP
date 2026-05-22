@@ -1238,7 +1238,7 @@ def summarize_winrates(
     n_bootstrap: int = 2000,
     seed: int = 42,
     ci_level: float = 0.95,
-    invalid_policy: Literal["drop", "count_as_loss"] = "drop",
+    invalid_policy: Literal["drop", "count_as_loss", "half_credit_ties"] = "drop",
 ) -> pl.DataFrame:
     """Compute per-family ``target_preferred_rate`` with patient-cluster bootstrap CI.
 
@@ -1247,14 +1247,25 @@ def summarize_winrates(
     1. Count invalid verdicts (``target_won is None``) — surfaced as ``n_invalid``,
        plus a labeled split into ``n_ties``, ``n_api_errors``, ``n_parse_errors``,
        ``n_client_init_errors``, ``n_other_invalid`` (sum equals ``n_invalid``).
-    2. Apply ``invalid_policy``: ``"drop"`` removes invalid rows;
-       ``"count_as_loss"`` converts their ``target_won`` to ``False``.
+    2. Apply ``invalid_policy``:
+       - ``"drop"`` removes invalid rows from numerator and denominator —
+         rate = ``wins / (wins + losses)``, conditional on the judge picking a side.
+       - ``"count_as_loss"`` converts invalid ``target_won`` to ``False`` —
+         rate = ``wins / n_pairs``, treating ties as losses.
+       - ``"half_credit_ties"`` casts ``target_won`` to float and fills invalid
+         rows with ``0.5`` — rate = ``(wins + 0.5*invalid) / n_pairs``,
+         the expected score under a ``{win=1, tie=0.5, loss=0}`` scoring rule
+         (chess-Elo style). Note that this folds API/parse errors into the
+         half-credit bin alongside true ties; restrict the input to non-error
+         rows if that is undesirable.
     3. Within-patient averaging first — ``per_patient = mean(target_won)`` per
        ``(family, anchor_subject_id)`` — so a patient's pairs count once.
     4. Point estimate = ``mean(per_patient)`` across patients in the family.
     5. Patient-cluster bootstrap: resample ``N`` patients with replacement from
        the per-patient means, ``n_bootstrap`` times; SE = ``np.std(replicates, ddof=1)``;
-       CI via percentile method at ``ci_level``.
+       CI via percentile method at ``ci_level``. The bootstrap is non-parametric
+       and stays valid whether per-patient values are in ``{0, 1}`` or
+       ``{0, 0.5, 1}``.
     """
     rng = np.random.default_rng(seed)
     alpha = (1.0 - ci_level) / 2.0
@@ -1293,8 +1304,12 @@ def summarize_winrates(
 
         if invalid_policy == "drop":
             working = fam_df.filter(pl.col("target_won").is_not_null())
-        else:  # count_as_loss
+        elif invalid_policy == "count_as_loss":
             working = fam_df.with_columns(pl.col("target_won").fill_null(False))
+        else:  # half_credit_ties
+            working = fam_df.with_columns(
+                pl.col("target_won").cast(pl.Float64).fill_null(0.5)
+            )
 
         if working.height == 0:
             results.append(

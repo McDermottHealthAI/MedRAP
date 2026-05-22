@@ -7,6 +7,7 @@ spec in ``D3_plan.md`` § "Test layout".
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from pathlib import Path
 
@@ -983,6 +984,57 @@ def test_summarize_winrates_bootstrap_ci_covers_point_estimate() -> None:
     summary = summarize_winrates(df, n_bootstrap=500, seed=0)
     f1 = summary.filter(pl.col("family") == "F1").row(0, named=True)
     assert f1["ci_low"] <= f1["target_preferred_rate"] <= f1["ci_high"]
+
+
+def test_summarize_winrates_half_credit_ties_matches_hand_computed() -> None:
+    """Each tie counts as 0.5 of a win, ie rate = (wins + 0.5*ties) / n_pairs.
+
+    With 3 wins, 6 losses, 91 ties across distinct anchors (one pair per
+    patient, so the per-patient mean equals the per-pair value), the
+    headline rate must equal (3 + 0.5 * 91) / 100 = 0.485.
+    """
+    rows: list[dict] = []
+    anchor = 1
+    for _ in range(3):  # wins
+        rows.append({
+            "pair_id": f"p{anchor}", "family": "F1", "anchor_subject_id": anchor,
+            "anchor_label": 0, "target_won": True, "winner_position": "A",
+        })
+        anchor += 1
+    for _ in range(6):  # losses
+        rows.append({
+            "pair_id": f"p{anchor}", "family": "F1", "anchor_subject_id": anchor,
+            "anchor_label": 0, "target_won": False, "winner_position": "B",
+        })
+        anchor += 1
+    for _ in range(91):  # ties
+        rows.append({
+            "pair_id": f"p{anchor}", "family": "F1", "anchor_subject_id": anchor,
+            "anchor_label": 0, "target_won": None, "winner_position": "tie",
+        })
+        anchor += 1
+    df = _verdicts_df(rows)
+
+    half = summarize_winrates(df, n_bootstrap=200, seed=0, invalid_policy="half_credit_ties")
+    half_row = half.filter(pl.col("family") == "F1").row(0, named=True)
+    assert abs(half_row["target_preferred_rate"] - 0.485) < 1e-9
+    # SE/CI are well-defined under half-credit; bootstrap shouldn't collapse to NaN.
+    assert half_row["n_patients"] == 100
+    assert not math.isnan(half_row["standard_error"])
+    assert not math.isnan(half_row["ci_low"])
+    assert not math.isnan(half_row["ci_high"])
+    assert half_row["ci_low"] <= half_row["target_preferred_rate"] <= half_row["ci_high"]
+
+    # Cross-check against the other policies on the same data.
+    drop = summarize_winrates(df, n_bootstrap=0, seed=0, invalid_policy="drop")
+    drop_row = drop.filter(pl.col("family") == "F1").row(0, named=True)
+    assert abs(drop_row["target_preferred_rate"] - (3.0 / 9.0)) < 1e-9
+    assert drop_row["n_patients"] == 9
+
+    counted = summarize_winrates(df, n_bootstrap=0, seed=0, invalid_policy="count_as_loss")
+    counted_row = counted.filter(pl.col("family") == "F1").row(0, named=True)
+    assert abs(counted_row["target_preferred_rate"] - 0.03) < 1e-9
+    assert counted_row["n_patients"] == 100
 
 
 def test_summarize_winrates_drop_vs_count_as_loss_policy() -> None:

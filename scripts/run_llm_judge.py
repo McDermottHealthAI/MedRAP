@@ -3,14 +3,35 @@
 Reuses extraction artifacts from a trained MedRAP run (same cache block as
 ``scripts/run_demographic_heatmap.py``). See ``D3_plan.md`` for the method.
 
-Auto-detects binary vs. multitask runs from
-``artifacts['targets'].ndim`` so the same command works on both training
-setups; pass ``--task_mode binary|multitask`` to override.
+Auto-detects from ``artifacts['targets'].ndim``: 1-D targets ⇒ ``binary``,
+2-D targets ⇒ ``overall`` (one judge sweep over the entire val cohort).
+Pass ``--task_mode multitask`` to opt back into the 25-task per-task
+sweep; pass ``--task_mode binary|overall`` to force one of the
+single-sweep modes.
 
-In multitask mode, a single invocation sweeps all 25 tasks (or just one
-when ``--target_task K`` is set). Per-task outputs land at
+In ``overall`` mode, outputs land directly at ``<run_dir>/llm_judge/``
+(no per-task subdirs, no cross-task summary CSVs). The judge sees an
+auto-generated task description built from the multitask metadata's
+horizon and anchor (override with ``--task_description``).
+
+In ``multitask`` mode, a single invocation sweeps all 25 tasks (or just
+one when ``--target_task K`` is set). Per-task outputs land at
 ``<run_dir>/llm_judge/task<K>/``; a cross-task summary is written at
 ``<run_dir>/llm_judge/all_task_winrates{,_wide}.csv``.
+
+The default ``--families F1`` runs only the random-doc counterfactual
+(retrieved doc vs. a uniformly random corpus doc). Pass
+``--families F1,F2,F3,F4`` to also evaluate the lower-rank, same-label
+different-patient, and opposite-label different-patient counterfactuals.
+Note: F3/F4 degenerate under ``overall`` mode (labels are dummy zeros),
+so stick with F1 (or F1,F2) there.
+
+The default tie handling is ``--invalid_policy half_credit_ties``: each
+tie counts as 0.5 of a win, so the headline rate is
+``(wins + 0.5*invalid) / n_pairs`` (a chess-Elo-style expected score).
+Pass ``--invalid_policy drop`` for the conditional rate
+``wins / (wins+losses)``, or ``--invalid_policy count_as_loss`` to fold
+ties into losses.
 
 Auto-generated multitask task descriptions use the readable task name
 (via the same ``d_labitems`` lookup ``scripts/extract_and_visualize.py``
@@ -133,13 +154,32 @@ def _format_sample_prompt(
     return "\n".join(parts) + "\n"
 
 
+def _families_require_both_classes(families: tuple[str, ...]) -> bool:
+    """Return True iff any requested family samples by patient label.
+
+    F3 (same-label different patient) and F4 (opposite-label different
+    patient) degenerate when only one class is present. F1 (random corpus
+    doc) and F2 (same-patient lower rank) ignore labels entirely, so the
+    both-classes-present guardrail in ``_run_one_task`` should not fire
+    for an F1/F2-only run.
+    """
+    return bool({"F3", "F4"} & set(families))
+
+
 def _resolve_task_mode(mode: str, raw_targets: np.ndarray) -> str:
-    """Map ``--task_mode auto|binary|multitask`` to ``binary`` or ``multitask``."""
+    """Map ``--task_mode auto|binary|multitask|overall`` to a concrete mode.
+
+    ``auto`` returns ``binary`` for 1-D targets and ``overall`` for 2-D
+    targets (multitask checkpoint default). The 25-task per-task sweep
+    (``multitask``) is reachable only via explicit override.
+    """
     if mode == "auto":
-        return "multitask" if raw_targets.ndim == 2 else "binary"
-    if mode in ("binary", "multitask"):
+        return "overall" if raw_targets.ndim == 2 else "binary"
+    if mode in ("binary", "multitask", "overall"):
         return mode
-    raise ValueError(f"unknown task_mode {mode!r}; expected one of auto/binary/multitask")
+    raise ValueError(
+        f"unknown task_mode {mode!r}; expected one of auto/binary/multitask/overall"
+    )
 
 
 def _auto_task_description(
@@ -253,11 +293,13 @@ def _parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--task_mode",
-        choices=("auto", "binary", "multitask"),
+        choices=("auto", "binary", "multitask", "overall"),
         default="auto",
         help=(
             "Default 'auto' inspects artifacts['targets'].ndim — 1-D → binary, "
-            "2-D → multitask. Use 'binary' / 'multitask' to override."
+            "2-D → overall (one judge sweep over the whole val cohort). Use "
+            "'multitask' to opt back into the 25-task per-task sweep, or "
+            "'binary' / 'overall' to force a specific single-sweep mode."
         ),
     )
     parser.add_argument(
@@ -279,12 +321,36 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
 
-    parser.add_argument("--families", type=str, default="F1,F2,F3,F4")
+    parser.add_argument(
+        "--families",
+        type=str,
+        default="F1",
+        help=(
+            "Comma-separated counterfactual families to evaluate. Default 'F1' "
+            "isolates the random-doc comparison (retrieved vs. random corpus "
+            "doc). Pass 'F1,F2,F3,F4' to also include lower-rank, same-label "
+            "different-patient, and opposite-label different-patient "
+            "counterfactuals."
+        ),
+    )
     parser.add_argument("--n_patients", type=int, default=100)
     parser.add_argument("--pairs_per_patient_per_family", type=int, default=1)
     parser.add_argument("--model", type=str, default="gpt-4o-mini")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--n_bootstrap", type=int, default=2000)
+    parser.add_argument(
+        "--invalid_policy",
+        choices=("drop", "count_as_loss", "half_credit_ties"),
+        default="half_credit_ties",
+        help=(
+            "How ties / API errors / parse errors count toward the win-rate. "
+            "'drop' (rate = wins/(wins+losses)) excludes them; "
+            "'count_as_loss' treats them as losses (rate = wins/n_pairs); "
+            "'half_credit_ties' (default) scores each invalid pair as 0.5, so "
+            "rate = (wins + 0.5*invalid)/n_pairs — a chess-Elo-style expected "
+            "score that uses every pair."
+        ),
+    )
     parser.add_argument("--max_workers", type=int, default=8)
     parser.add_argument("--out_dir", type=Path, default=None)
     parser.add_argument("--human_validation_n", type=int, default=50)
@@ -464,10 +530,11 @@ def _run_one_task(
     """
     n_pos = int((labels == 1).sum())
     n_neg = int((labels == 0).sum())
-    if n_pos == 0 or n_neg == 0:
+    if _families_require_both_classes(families) and (n_pos == 0 or n_neg == 0):
         print(
-            f"[{task_label_for_log}] skipped: need both classes present "
-            f"(n_pos={n_pos}, n_neg={n_neg}, n_valid={labels.size}).",
+            f"[{task_label_for_log}] skipped: families F3/F4 require both "
+            f"classes present (n_pos={n_pos}, n_neg={n_neg}, "
+            f"n_valid={labels.size}).",
             file=sys.stderr,
         )
         return None
@@ -622,7 +689,12 @@ def _run_one_task(
         max_workers=args.max_workers,
     )
 
-    summary_df = summarize_winrates(verdicts_df, n_bootstrap=args.n_bootstrap, seed=args.seed)
+    summary_df = summarize_winrates(
+        verdicts_df,
+        n_bootstrap=args.n_bootstrap,
+        seed=args.seed,
+        invalid_policy=args.invalid_policy,
+    )
     per_patient_df = build_per_patient_rollup(
         pairs,
         verdicts_df,
@@ -677,6 +749,7 @@ def _run_one_task(
         "model": args.model,
         "seed": args.seed,
         "n_bootstrap": args.n_bootstrap,
+        "invalid_policy": args.invalid_policy,
         "n_pairs_actual": len(pairs),
         "k": k_docs,
     }
@@ -862,11 +935,18 @@ def main() -> None:  # noqa: C901 - CLI orchestration, branches are linear
                 file=sys.stderr,
             )
             sys.exit(2)
-    else:  # multitask
+    else:  # overall or multitask
         if raw_targets.ndim != 2:
             print(
-                f"Error: --task_mode multitask requires 2-D targets; got shape "
+                f"Error: --task_mode {task_mode} requires 2-D targets; got shape "
                 f"{raw_targets.shape}.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if task_mode == "overall" and args.target_task is not None:
+            print(
+                "Error: --target_task is rejected for overall runs (use "
+                "--task_mode multitask --target_task K for a single task).",
                 file=sys.stderr,
             )
             sys.exit(2)
@@ -912,6 +992,77 @@ def main() -> None:  # noqa: C901 - CLI orchestration, branches are linear
         result = _run_one_task(
             task_label_for_log="binary",
             task_description=binary_task_description,
+            target_task=None,
+            task_code=None,
+            horizon_days=None,
+            anchor_offset_hours=None,
+            labels=labels,
+            artifacts_np=artifacts_np,
+            val_schema=val_schema,
+            retrieval_ds=retrieval_ds,
+            doc_id_to_row=doc_id_to_row,
+            corpus_size=corpus_size,
+            k_docs=k_docs,
+            timeline_renderer=timeline_renderer,
+            demo_by_sid=demo_by_sid,
+            timelines_cache=timelines_cache,
+            clinical_summaries_cache=clinical_summaries_cache,
+            out_dir=out_dir,
+            families=families,
+            args=args,
+            save_sample_prompt_to=args.save_sample_prompt,
+            show_sample_prompt=True,
+        )
+        if result is None:
+            sys.exit(2)
+        if not args.dry_run and result.get("summary_df") is not None:
+            print()
+            print(result["summary_df"])
+        return
+
+    if task_mode == "overall":
+        # Explicit --task_description wins; otherwise auto-generate from the
+        # multitask metadata's horizon/anchor so the judge has a time frame.
+        overall_task_description = _resolve_task_description(args)
+        if overall_task_description is None:
+            mt_labels_dir_str = OmegaConf.select(cfg, "training.datamodule.mt_labels_dir")
+            if mt_labels_dir_str is None:
+                print(
+                    "Error: --task_description not provided and the config has no "
+                    "training.datamodule.mt_labels_dir to auto-generate one from. "
+                    "Pass --task_description explicitly.",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
+            metadata_path = Path(mt_labels_dir_str) / "metadata.json"
+            if not metadata_path.is_file():
+                print(
+                    f"Error: --task_description not provided and {metadata_path} "
+                    "is missing — cannot auto-generate. Pass --task_description "
+                    "explicitly.",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
+            metadata = json.loads(metadata_path.read_text())
+            horizon_days = float(metadata["horizon_days"])
+            anchor_offset_hours = float(metadata["anchor_offset_hours"])
+            overall_task_description = (
+                f"Predict any of the labeled clinical events for this patient within "
+                f"{horizon_days:g} days after the patient's first clinical event "
+                f"(anchor: first event + {anchor_offset_hours:g} h)."
+            )
+
+        # F1 (the default counterfactual family) doesn't use labels. Pass zeros
+        # so downstream rollups receive the expected shape. F3/F4 would
+        # degenerate in overall mode (no opposite-label patients exist with
+        # dummy labels) — out of scope for this isolation step.
+        n_patients = doc_ids_np.shape[0]
+        labels = np.zeros(n_patients, dtype=int)
+        out_dir = args.out_dir or (run_dir / "llm_judge")
+        artifacts_np = {**artifacts_np_full, "targets": labels}
+        result = _run_one_task(
+            task_label_for_log="overall",
+            task_description=overall_task_description,
             target_task=None,
             task_code=None,
             horizon_days=None,

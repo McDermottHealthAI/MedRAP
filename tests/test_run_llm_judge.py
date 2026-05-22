@@ -33,6 +33,81 @@ import run_llm_judge  # noqa: E402
 
 _select_target_task = run_llm_judge._select_target_task
 _auto_task_description = run_llm_judge._auto_task_description
+_resolve_task_mode = run_llm_judge._resolve_task_mode
+_families_require_both_classes = run_llm_judge._families_require_both_classes
+
+
+# ---------------------------------------------------------------------------
+# _families_require_both_classes
+# ---------------------------------------------------------------------------
+
+
+def test_families_require_both_classes_F1_only_is_false() -> None:
+    """F1 (random corpus doc) ignores labels, so a dummy-zeros label vector
+    should not trip the both-classes-present guardrail in ``_run_one_task``."""
+    assert _families_require_both_classes(("F1",)) is False
+
+
+def test_families_require_both_classes_F2_only_is_false() -> None:
+    """F2 (same-patient lower rank) also ignores labels."""
+    assert _families_require_both_classes(("F2",)) is False
+
+
+def test_families_require_both_classes_F3_is_true() -> None:
+    assert _families_require_both_classes(("F3",)) is True
+
+
+def test_families_require_both_classes_F4_is_true() -> None:
+    assert _families_require_both_classes(("F4",)) is True
+
+
+def test_families_require_both_classes_mixed_is_true_if_any_label_dependent() -> None:
+    assert _families_require_both_classes(("F1", "F3")) is True
+    assert _families_require_both_classes(("F1", "F2", "F3", "F4")) is True
+
+
+def test_families_require_both_classes_empty_is_false() -> None:
+    assert _families_require_both_classes(()) is False
+
+
+# ---------------------------------------------------------------------------
+# _resolve_task_mode
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_task_mode_auto_maps_2d_targets_to_overall() -> None:
+    """Default behavior on a multitask checkpoint is the overall sweep, not
+    the 25-task per-task sweep. The 25-task path is reachable explicitly via
+    ``--task_mode multitask``."""
+    two_d = np.zeros((4, 25), dtype=float)
+    assert _resolve_task_mode("auto", two_d) == "overall"
+
+
+def test_resolve_task_mode_auto_maps_1d_targets_to_binary() -> None:
+    one_d = np.zeros(4, dtype=float)
+    assert _resolve_task_mode("auto", one_d) == "binary"
+
+
+def test_resolve_task_mode_accepts_explicit_overall() -> None:
+    two_d = np.zeros((4, 25), dtype=float)
+    assert _resolve_task_mode("overall", two_d) == "overall"
+
+
+def test_resolve_task_mode_preserves_explicit_multitask() -> None:
+    """Soft change: explicit ``--task_mode multitask`` still reaches the
+    25-task sweep."""
+    two_d = np.zeros((4, 25), dtype=float)
+    assert _resolve_task_mode("multitask", two_d) == "multitask"
+
+
+def test_resolve_task_mode_preserves_explicit_binary() -> None:
+    one_d = np.zeros(4, dtype=float)
+    assert _resolve_task_mode("binary", one_d) == "binary"
+
+
+def test_resolve_task_mode_rejects_unknown_mode() -> None:
+    with pytest.raises(ValueError, match="unknown task_mode"):
+        _resolve_task_mode("bogus", np.zeros(4, dtype=float))
 
 
 # ---------------------------------------------------------------------------
