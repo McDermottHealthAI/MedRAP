@@ -17,7 +17,7 @@ from .encoders import (
     TimeDeltaRoPEPatientEncoder,
     TokenEmbeddingEncoder,
 )
-from .fusion import ConcatFusion, CrossAttentionFusion, FusionModule, PassthroughFusion, ReplaceFusion
+from .fusion import ConcatFusion, CrossAttentionFusion, FusionModule, PassthroughFusion, PerDocCrossAttentionFusion, ReplaceFusion
 from .heads import LinearHead, PredictionHead
 from .lightning_module import MedRAPSupervisedLightningModule
 from .losses import MultiTaskBCELoss, MultiTaskBCEMarginalizedLoss
@@ -74,6 +74,7 @@ __all__ = [
     "MultiTaskMEDSDataset",
     "OrderedFieldDocumentRenderer",
     "PassthroughFusion",
+    "PerDocCrossAttentionFusion",
     "PatientEncoder",
     "PerDocMeanPooledRetrievalEncoder",
     "PipelineConfig",

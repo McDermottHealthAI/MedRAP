@@ -1,2 +1,2 @@
 _target_: medrap.losses.MultiTaskBCEMarginalizedLoss
-num_tasks: ???
+num_tasks: ${training.task.num_tasks}

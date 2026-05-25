@@ -220,6 +220,7 @@ class HFDatasetRetriever(Retriever):
         doc_key_embeddings_column: str | None = None,
         cache_payloads: bool = False,
         payload_cache_device: str | int | torch.device | None = None,
+        append_null_doc: bool = False,
     ) -> None:
         super().__init__()
 
@@ -230,6 +231,7 @@ class HFDatasetRetriever(Retriever):
         self._doc_key_embeddings_column = doc_key_embeddings_column
         self._dataset = dataset
         self._index_name = index_name
+        self._append_null_doc = append_null_doc
         self._cached_doc_tokens: Tensor | None = None
         self._cached_doc_attention_mask: Tensor | None = None
         self._cached_doc_ids: Tensor | None = None
@@ -749,6 +751,14 @@ class HFDatasetRetriever(Retriever):
             raise ValueError("query_embeddings must have shape (B, R, D_ret)")
 
         scores, row_indices = self._search_index(query_embeddings)
+
+        if self._append_null_doc:
+            b, r, _ = row_indices.shape
+            null_idx = torch.full((b, r, 1), len(self._dataset) - 1, dtype=row_indices.dtype)
+            null_score = torch.zeros(b, r, 1, dtype=scores.dtype)
+            row_indices = torch.cat([row_indices, null_idx], dim=2)
+            scores = torch.cat([scores, null_score], dim=2)
+
         return self._materialize_output(
             row_indices=row_indices,
             scores=scores,
@@ -769,6 +779,7 @@ def load_hf_dataset_retriever(
     device: int | list[int] | None = None,
     cache_payloads: bool = False,
     payload_cache_device: str | int | torch.device | None = None,
+    append_null_doc: bool = False,
 ) -> HFDatasetRetriever:
     """Load a static dataset-backed retriever from a saved artifact.
 
@@ -848,6 +859,7 @@ def load_hf_dataset_retriever(
         doc_key_embeddings_column=doc_key_embeddings_column,
         cache_payloads=cache_payloads,
         payload_cache_device=payload_cache_device,
+        append_null_doc=append_null_doc,
     )
 
 

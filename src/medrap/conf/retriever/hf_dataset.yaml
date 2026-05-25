@@ -10,3 +10,4 @@ k: 1
 device: null
 cache_payloads: false
 payload_cache_device: null
+append_null_doc: false

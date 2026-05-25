@@ -1,0 +1,8 @@
+_target_: medrap.fusion.PerDocCrossAttentionFusion
+d_model: 256
+num_heads: 8
+ff_dim: 512
+num_layers: 2
+d_in_patient: ${encoder.embedding_dim}
+d_in_doc: ${retrieval_encoder.embedding_dim}
+dropout: 0.1
