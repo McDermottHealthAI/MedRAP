@@ -97,6 +97,38 @@ def binary_auroc_torch(targets: Tensor, scores: Tensor) -> Tensor | None:
     return (rank_sum_pos - n_pos * (n_pos + 1.0) / 2.0) / (n_pos * n_neg)
 
 
+def multitask_win_rate(aurocs_a: dict[int, float], aurocs_b: dict[int, float]) -> float | None:
+    """Compute the win rate of model A over model B across shared tasks.
+
+    For each task present in both dicts, model A "wins" if its AUROC exceeds
+    model B's. The win rate is the fraction of shared tasks won by A. Tasks
+    present in only one dict are ignored.
+
+    Args:
+        aurocs_a: Per-task AUROC for model A, keyed by task index.
+        aurocs_b: Per-task AUROC for model B, keyed by task index.
+
+    Returns:
+        float | None: Fraction of shared tasks where A beats B, or ``None``
+        when there are no shared tasks.
+
+    Examples:
+        >>> multitask_win_rate({0: 0.8, 1: 0.6, 2: 0.7}, {0: 0.75, 1: 0.65, 2: 0.65})
+        0.6666666666666666
+        >>> multitask_win_rate({0: 0.8, 1: 0.6}, {0: 0.75, 1: 0.65}) == 0.5
+        True
+        >>> multitask_win_rate({0: 0.8}, {1: 0.7}) is None
+        True
+        >>> multitask_win_rate({}, {0: 0.7}) is None
+        True
+    """
+    shared = set(aurocs_a) & set(aurocs_b)
+    if not shared:
+        return None
+    wins = sum(1 for t in shared if aurocs_a[t] > aurocs_b[t])
+    return wins / len(shared)
+
+
 def multitask_auroc_torch(targets: Tensor, logits: Tensor) -> dict[int, float]:
     """Compute per-task AUROC for independent binary logits.
 

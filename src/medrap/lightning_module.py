@@ -9,7 +9,7 @@ from torch import Tensor, nn
 from torch.optim import Optimizer
 from transformers import get_cosine_schedule_with_warmup
 
-from .metrics import binary_auroc_torch, multitask_auroc_torch, positive_class_probs
+from .metrics import binary_auroc_torch, multitask_auroc_torch, multitask_win_rate, positive_class_probs
 from .retrieval_logging import model_diagnostic_scalars
 from .task import (
     BinaryClassificationLoss,
@@ -221,6 +221,10 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
             if not per_task:
                 return {}
             metrics = {"val/auroc/mean": sum(per_task.values()) / len(per_task)}
+            chance = {t: 0.5 for t in per_task}
+            win_rate = multitask_win_rate(per_task, chance)
+            if win_rate is not None:
+                metrics["val/auroc/win_rate_vs_chance"] = win_rate
             if self.validation_auroc_log_per_task:
                 metrics.update({f"val/auroc/task_{task_idx}": value for task_idx, value in per_task.items()})
             return metrics
