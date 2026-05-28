@@ -75,12 +75,12 @@ def test_families_require_both_classes_empty_is_false() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_task_mode_auto_maps_2d_targets_to_overall() -> None:
-    """Default behavior on a multitask checkpoint is the overall sweep, not
-    the 25-task per-task sweep. The 25-task path is reachable explicitly via
-    ``--task_mode multitask``."""
+def test_resolve_task_mode_auto_maps_2d_targets_to_multitask() -> None:
+    """Default behavior on a multitask checkpoint is the per-task 25-task
+    sweep. The single overall-pool sweep is reachable explicitly via
+    ``--task_mode overall``."""
     two_d = np.zeros((4, 25), dtype=float)
-    assert _resolve_task_mode("auto", two_d) == "overall"
+    assert _resolve_task_mode("auto", two_d) == "multitask"
 
 
 def test_resolve_task_mode_auto_maps_1d_targets_to_binary() -> None:

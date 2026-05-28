@@ -309,6 +309,155 @@ def test_build_pairs_ab_position_roughly_balanced() -> None:
     assert 0.4 <= frac_a <= 0.6
 
 
+def test_judge_pair_target_rank_defaults_to_zero() -> None:
+    """Back-compat: existing callers that don't set ``target_rank`` get 0."""
+    from medrap.llm_judge import JudgePair
+
+    pair = JudgePair(
+        pair_id="p1",
+        family="F1",
+        anchor_row_idx=0,
+        anchor_subject_id=1,
+        anchor_label=0,
+        target_doc_id=0,
+        other_doc_id=1,
+        target_position="A",
+    )
+    assert pair.target_rank == 0
+
+
+def test_build_pairs_f1_default_keeps_rank_zero() -> None:
+    """Without ``f1_rank_sweep=True``, every F1 pair targets the rank-0 doc."""
+    artifacts = _make_artifacts(n_patients=8, k=4, labels=[0] * 4 + [1] * 4)
+    schema = _make_val_schema(list(range(8)))
+    pairs = build_pairs(
+        artifacts=artifacts,
+        val_schema=schema,
+        labels=artifacts["targets"].astype(int),
+        families=("F1",),
+        n_patients=8,
+        pairs_per_patient_per_family=1,
+        corpus_size=10_000,
+        k=4,
+        seed=0,
+    )
+    for p in pairs:
+        assert p.target_rank == 0
+        assert p.target_doc_id == artifacts["doc_ids"][p.anchor_row_idx, 0, 0]
+
+
+def test_build_pairs_f1_rank_sweep_emits_one_pair_per_rank_per_patient() -> None:
+    """``f1_rank_sweep=True`` iterates over ranks 0..k-1; each pair tags its
+    rank and uses the rank-k retrieved doc as the target."""
+    artifacts = _make_artifacts(n_patients=4, k=3, labels=[0, 1, 0, 1])
+    schema = _make_val_schema(list(range(4)))
+    pairs = build_pairs(
+        artifacts=artifacts,
+        val_schema=schema,
+        labels=artifacts["targets"].astype(int),
+        families=("F1",),
+        n_patients=4,
+        pairs_per_patient_per_family=1,
+        corpus_size=10_000,
+        k=3,
+        seed=0,
+        f1_rank_sweep=True,
+    )
+    assert len(pairs) == 12  # 4 patients * 3 ranks
+    ranks = sorted(p.target_rank for p in pairs)
+    assert ranks == [0] * 4 + [1] * 4 + [2] * 4
+    for p in pairs:
+        assert p.target_doc_id == artifacts["doc_ids"][p.anchor_row_idx, 0, p.target_rank]
+
+
+def test_build_pairs_f1_target_rank_restricts_to_single_rank() -> None:
+    """``f1_target_rank=R`` emits one F1 pair per patient at rank R only."""
+    artifacts = _make_artifacts(n_patients=4, k=3, labels=[0, 1, 0, 1])
+    schema = _make_val_schema(list(range(4)))
+    pairs = build_pairs(
+        artifacts=artifacts,
+        val_schema=schema,
+        labels=artifacts["targets"].astype(int),
+        families=("F1",),
+        n_patients=4,
+        pairs_per_patient_per_family=1,
+        corpus_size=10_000,
+        k=3,
+        seed=0,
+        f1_target_rank=2,
+    )
+    assert len(pairs) == 4
+    for p in pairs:
+        assert p.target_rank == 2
+        assert p.target_doc_id == artifacts["doc_ids"][p.anchor_row_idx, 0, 2]
+
+
+def test_build_pairs_f1_target_rank_overrides_rank_sweep() -> None:
+    """If both ``f1_target_rank`` and ``f1_rank_sweep`` are set, the explicit
+    target wins (single rank emitted)."""
+    artifacts = _make_artifacts(n_patients=4, k=3, labels=[0, 1, 0, 1])
+    schema = _make_val_schema(list(range(4)))
+    pairs = build_pairs(
+        artifacts=artifacts,
+        val_schema=schema,
+        labels=artifacts["targets"].astype(int),
+        families=("F1",),
+        n_patients=4,
+        pairs_per_patient_per_family=1,
+        corpus_size=10_000,
+        k=3,
+        seed=0,
+        f1_rank_sweep=True,
+        f1_target_rank=1,
+    )
+    assert len(pairs) == 4
+    assert all(p.target_rank == 1 for p in pairs)
+
+
+def test_summarize_winrates_extra_group_cols_breaks_out_per_rank() -> None:
+    """``extra_group_cols=('target_rank',)`` produces one summary row per
+    (family, target_rank) instead of collapsing to one row per family."""
+    rows = [
+        {"pair_id": "p1", "family": "F1", "anchor_subject_id": 1, "anchor_label": 0,
+         "target_won": True, "target_rank": 0, "winner_position": "A"},
+        {"pair_id": "p2", "family": "F1", "anchor_subject_id": 2, "anchor_label": 0,
+         "target_won": True, "target_rank": 0, "winner_position": "A"},
+        {"pair_id": "p3", "family": "F1", "anchor_subject_id": 3, "anchor_label": 0,
+         "target_won": False, "target_rank": 1, "winner_position": "B"},
+        {"pair_id": "p4", "family": "F1", "anchor_subject_id": 4, "anchor_label": 0,
+         "target_won": False, "target_rank": 1, "winner_position": "B"},
+    ]
+    df = _verdicts_df(rows)
+    summary = summarize_winrates(
+        df,
+        n_bootstrap=0,
+        invalid_policy="drop",
+        extra_group_cols=("target_rank",),
+    )
+    assert summary.height == 2  # one row per (family, target_rank)
+    rank0 = summary.filter(pl.col("target_rank") == 0).row(0, named=True)
+    rank1 = summary.filter(pl.col("target_rank") == 1).row(0, named=True)
+    assert abs(rank0["target_preferred_rate"] - 1.0) < 1e-9
+    assert abs(rank1["target_preferred_rate"] - 0.0) < 1e-9
+    assert rank0["n_patients"] == 2
+    assert rank1["n_patients"] == 2
+
+
+def test_summarize_winrates_without_extra_group_cols_unchanged() -> None:
+    """Default behavior (no ``extra_group_cols``) stays one row per family."""
+    rows = [
+        {"pair_id": "p1", "family": "F1", "anchor_subject_id": 1, "anchor_label": 0,
+         "target_won": True, "target_rank": 0, "winner_position": "A"},
+        {"pair_id": "p2", "family": "F1", "anchor_subject_id": 2, "anchor_label": 0,
+         "target_won": False, "target_rank": 1, "winner_position": "B"},
+    ]
+    df = _verdicts_df(rows)
+    summary = summarize_winrates(df, n_bootstrap=0, invalid_policy="drop")
+    assert summary.height == 1  # collapsed across ranks
+    row = summary.row(0, named=True)
+    assert abs(row["target_preferred_rate"] - 0.5) < 1e-9
+
+
 def test_stratified_patient_sample_respects_label_balance() -> None:
     artifacts = _make_artifacts(n_patients=40, k=3, labels=[0] * 20 + [1] * 20)
     schema = _make_val_schema(list(range(40)))

@@ -4,20 +4,20 @@ Reuses extraction artifacts from a trained MedRAP run (same cache block as
 ``scripts/run_demographic_heatmap.py``). See ``D3_plan.md`` for the method.
 
 Auto-detects from ``artifacts['targets'].ndim``: 1-D targets ⇒ ``binary``,
-2-D targets ⇒ ``overall`` (one judge sweep over the entire val cohort).
-Pass ``--task_mode multitask`` to opt back into the 25-task per-task
-sweep; pass ``--task_mode binary|overall`` to force one of the
-single-sweep modes.
+2-D targets ⇒ ``multitask`` (per-task sweep over all 25 tasks). Pass
+``--task_mode overall`` to pool patients across tasks for a single sweep;
+pass ``--task_mode binary|multitask|overall`` to force a specific mode.
+
+In ``multitask`` mode (default for 2-D targets), a single invocation
+sweeps all 25 tasks (or just one when ``--target_task K`` is set).
+Per-task outputs land at ``<run_dir>/llm_judge/task<K>/``; a cross-task
+summary is written at
+``<run_dir>/llm_judge/all_task_winrates{,_wide}.csv``.
 
 In ``overall`` mode, outputs land directly at ``<run_dir>/llm_judge/``
 (no per-task subdirs, no cross-task summary CSVs). The judge sees an
 auto-generated task description built from the multitask metadata's
 horizon and anchor (override with ``--task_description``).
-
-In ``multitask`` mode, a single invocation sweeps all 25 tasks (or just
-one when ``--target_task K`` is set). Per-task outputs land at
-``<run_dir>/llm_judge/task<K>/``; a cross-task summary is written at
-``<run_dir>/llm_judge/all_task_winrates{,_wide}.csv``.
 
 The default ``--families F1`` runs only the random-doc counterfactual
 (retrieved doc vs. a uniformly random corpus doc). Pass
@@ -169,12 +169,12 @@ def _families_require_both_classes(families: tuple[str, ...]) -> bool:
 def _resolve_task_mode(mode: str, raw_targets: np.ndarray) -> str:
     """Map ``--task_mode auto|binary|multitask|overall`` to a concrete mode.
 
-    ``auto`` returns ``binary`` for 1-D targets and ``overall`` for 2-D
-    targets (multitask checkpoint default). The 25-task per-task sweep
-    (``multitask``) is reachable only via explicit override.
+    ``auto`` returns ``binary`` for 1-D targets and ``multitask`` for 2-D
+    targets (the 25-task per-task sweep). The single overall-pool sweep
+    (``overall``) is reachable only via explicit override.
     """
     if mode == "auto":
-        return "overall" if raw_targets.ndim == 2 else "binary"
+        return "multitask" if raw_targets.ndim == 2 else "binary"
     if mode in ("binary", "multitask", "overall"):
         return mode
     raise ValueError(
@@ -297,9 +297,9 @@ def _parse_args() -> argparse.Namespace:
         default="auto",
         help=(
             "Default 'auto' inspects artifacts['targets'].ndim — 1-D → binary, "
-            "2-D → overall (one judge sweep over the whole val cohort). Use "
-            "'multitask' to opt back into the 25-task per-task sweep, or "
-            "'binary' / 'overall' to force a specific single-sweep mode."
+            "2-D → multitask (per-task sweep over all 25 tasks). Use "
+            "'overall' to pool patients across tasks for a single sweep, or "
+            "'binary' / 'multitask' / 'overall' to force a specific mode."
         ),
     )
     parser.add_argument(
@@ -338,6 +338,31 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--model", type=str, default="gpt-4o-mini")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--n_bootstrap", type=int, default=2000)
+    parser.add_argument(
+        "--rank_sweep",
+        action="store_true",
+        help=(
+            "F1 rank sweep: instead of comparing only top-1 vs random, build "
+            "(top-k vs random) pairs for every rank k in 1..k_docs. Multiplies "
+            "per-task pair count by k_docs (~800 pairs/task at defaults). The "
+            "per-rank summary appears as one row per (task, family, target_rank)"
+            " in all_task_winrates.csv. Diagnostic for whether retrieval rank "
+            "moves the judge's behavior."
+        ),
+    )
+    parser.add_argument(
+        "--target_rank",
+        type=int,
+        default=None,
+        help=(
+            "Single-cell mode: run only the (task, rank) combination given by "
+            "--target_task K and --target_rank R. Requires --rank_sweep and "
+            "--target_task. Output lands at <run_dir>/llm_judge/task<K>_rank<R>/ "
+            "instead of the shared task<K>/ subdir, so parallel SLURM array "
+            "elements don't race. Use scripts/submit_llm_judge_rank_sweep.sh "
+            "to launch all 200 (task, rank) cells as an array."
+        ),
+    )
     parser.add_argument(
         "--invalid_policy",
         choices=("drop", "count_as_loss", "half_credit_ties"),
@@ -560,13 +585,28 @@ def _run_one_task(
         corpus_size=corpus_size,
         k=k_docs,
         seed=args.seed,
+        f1_rank_sweep=args.rank_sweep,
+        f1_target_rank=args.target_rank,
     )
     print(f"pairs built: {len(pairs)}")
-    if len(pairs) > args.max_total_calls_cap:
+    # In rank-sweep mode F1 emits k_docs pairs per patient instead of 1, so
+    # the natural cap scales accordingly. The per-task ceiling is multiplied
+    # by k_docs so default settings (n_patients=100, cap=100, k_docs=8) work
+    # out of the box at ~800 pairs/task. Single-cell mode (--target_rank R)
+    # only emits one rank's worth, so the cap stays at args.max_total_calls_cap.
+    if args.target_rank is not None:
+        effective_cap = args.max_total_calls_cap
+    elif args.rank_sweep:
+        effective_cap = args.max_total_calls_cap * k_docs
+    else:
+        effective_cap = args.max_total_calls_cap
+    if len(pairs) > effective_cap:
         print(
             f"[{task_label_for_log}] ERROR: {len(pairs)} pairs exceeds "
-            f"--max_total_calls_cap={args.max_total_calls_cap}; lower --n_patients "
-            f"or raise the cap.",
+            f"effective cap {effective_cap} (--max_total_calls_cap="
+            f"{args.max_total_calls_cap}"
+            f"{f' × k_docs={k_docs}' if args.rank_sweep else ''}); "
+            "lower --n_patients or raise --max_total_calls_cap.",
             file=sys.stderr,
         )
         return None
@@ -694,6 +734,7 @@ def _run_one_task(
         n_bootstrap=args.n_bootstrap,
         seed=args.seed,
         invalid_policy=args.invalid_policy,
+        extra_group_cols=("target_rank",) if args.rank_sweep else (),
     )
     per_patient_df = build_per_patient_rollup(
         pairs,
@@ -750,6 +791,8 @@ def _run_one_task(
         "seed": args.seed,
         "n_bootstrap": args.n_bootstrap,
         "invalid_policy": args.invalid_policy,
+        "rank_sweep": bool(args.rank_sweep),
+        "target_rank": args.target_rank,
         "n_pairs_actual": len(pairs),
         "k": k_docs,
     }
@@ -876,6 +919,27 @@ def main() -> None:  # noqa: C901 - CLI orchestration, branches are linear
     if not (run_dir / "config.yaml").is_file():
         print(f"Error: {run_dir / 'config.yaml'} not found.", file=sys.stderr)
         sys.exit(1)
+
+    if args.target_rank is not None:
+        if not args.rank_sweep:
+            print(
+                "Error: --target_rank requires --rank_sweep.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if args.target_task is None:
+            print(
+                "Error: --target_rank requires --target_task (single-cell "
+                "mode runs one (task, rank) at a time).",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if args.target_rank < 0:
+            print(
+                f"Error: --target_rank must be >= 0; got {args.target_rank}.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
 
     families = tuple(f.strip() for f in args.families.split(",") if f.strip())
 
@@ -1146,6 +1210,14 @@ def main() -> None:  # noqa: C901 - CLI orchestration, branches are linear
     else:
         tasks_to_run = list(range(n_tasks))
 
+    if args.target_rank is not None and args.target_rank >= k_docs:
+        print(
+            f"Error: --target_rank={args.target_rank} >= k_docs={k_docs}; "
+            f"valid range is [0, {k_docs}).",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
     out_root = args.out_dir or (run_dir / "llm_judge")
     out_root.mkdir(parents=True, exist_ok=True)
 
@@ -1177,7 +1249,10 @@ def main() -> None:  # noqa: C901 - CLI orchestration, branches are linear
         # Subset val_schema (polars positional row index).
         val_schema_subset = val_schema[valid_indices.tolist()]
 
-        task_dir = out_root / f"task{task_idx}"
+        if args.target_rank is not None:
+            task_dir = out_root / f"task{task_idx}_rank{args.target_rank}"
+        else:
+            task_dir = out_root / f"task{task_idx}"
         # In multitask mode, `--save_sample_prompt` is ignored — every task
         # saves to its own subdir to keep them from clobbering one another.
         sample_prompt_path: Path | None = task_dir / "sample_prompt.txt"
@@ -1223,7 +1298,12 @@ def main() -> None:  # noqa: C901 - CLI orchestration, branches are linear
             print("Dry-run: exiting before API calls.")
             return
 
-    if not args.dry_run:
+    if not args.dry_run and args.target_rank is None:
+        # In single-cell mode (--target_rank R), 50+ concurrent SLURM array
+        # elements would race to overwrite all_task_winrates.csv at the parent
+        # llm_judge/ level. Skip the in-process cross-task writer here; the
+        # dependent aggregator job in scripts/aggregate_llm_judge_rank_sweep.py
+        # produces the canonical version from each task<K>_rank<R>/ subdir.
         _write_cross_task_summary(
             per_task_results,
             out_root,

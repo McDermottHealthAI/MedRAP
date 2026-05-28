@@ -95,6 +95,7 @@ class JudgePair:
     other_source_row_idx: int | None = None
     other_source_subject_id: int | None = None
     other_rank: int | None = None
+    target_rank: int = 0
     rng_seed: int = 0
 
 
@@ -1029,6 +1030,8 @@ def build_pairs(
     seed: int = 42,
     dedupe_identical_docs: bool = True,
     skip_missing_families: bool = True,
+    f1_rank_sweep: bool = False,
+    f1_target_rank: int | None = None,
 ) -> list[JudgePair]:
     """Construct the frozen list of pairs for this evaluation run.
 
@@ -1069,65 +1072,83 @@ def build_pairs(
                     continue
                 raise ValueError("F2 requires k >= 2")
 
-            for _ in range(pairs_per_patient_per_family):
-                other_doc: int | None = None
-                other_source_row: int | None = None
-                other_source_sid: int | None = None
-                other_rank: int | None = None
+            # F1 rank handling: an explicit single-rank target wins, then
+            # rank-sweep iterates 0..k-1, otherwise default to rank 0 (top-1).
+            # Non-F1 families always iterate just rank 0 (they use top-1 as
+            # the target regardless).
+            if family == "F1" and f1_target_rank is not None:
+                ranks_iter: Sequence[int] = (f1_target_rank,)
+            elif family == "F1" and f1_rank_sweep:
+                ranks_iter = range(k)
+            else:
+                ranks_iter = (0,)
 
+            for current_target_rank in ranks_iter:
                 if family == "F1":
-                    for _ in range(10):
-                        candidate = int(rng.integers(corpus_size))
-                        if not dedupe_identical_docs or candidate != target_doc:
-                            other_doc = candidate
-                            break
-                elif family == "F2":
-                    j = int(rng.integers(1, k))
-                    candidate = int(doc_ids[anchor_idx, 0, j])
-                    if dedupe_identical_docs and candidate == target_doc:
-                        continue  # unusual: top-1 == top-j; skip this pair
-                    other_doc = candidate
-                    other_rank = j + 1
-                elif family == "F3":
-                    pool = np.where(labels == anchor_label)[0]
-                    pool = pool[pool != anchor_idx]
-                    result = _sample_other_row(pool, target_doc)
-                    if result is None:
-                        continue
-                    other_source_row, other_doc = result
-                    other_source_sid = int(subject_ids[other_source_row])
-                elif family == "F4":
-                    pool = np.where(labels == (1 - anchor_label))[0]
-                    result = _sample_other_row(pool, target_doc)
-                    if result is None:
-                        continue
-                    other_source_row, other_doc = result
-                    other_source_sid = int(subject_ids[other_source_row])
+                    current_target_doc = int(doc_ids[anchor_idx, 0, current_target_rank])
                 else:
-                    raise ValueError(f"Unknown family: {family!r}")
+                    current_target_doc = target_doc
 
-                if other_doc is None:
-                    continue
+                for _ in range(pairs_per_patient_per_family):
+                    other_doc: int | None = None
+                    other_source_row: int | None = None
+                    other_source_sid: int | None = None
+                    other_rank: int | None = None
 
-                target_position: Literal["A", "B"] = "A" if rng.random() < 0.5 else "B"
-                rng_seed = int(rng.integers(1 << 30))
-                counter += 1
-                pairs.append(
-                    JudgePair(
-                        pair_id=f"p{counter:06d}",
-                        family=family,
-                        anchor_row_idx=anchor_idx,
-                        anchor_subject_id=anchor_sid,
-                        anchor_label=anchor_label,
-                        target_doc_id=target_doc,
-                        other_doc_id=other_doc,
-                        target_position=target_position,
-                        other_source_row_idx=other_source_row,
-                        other_source_subject_id=other_source_sid,
-                        other_rank=other_rank,
-                        rng_seed=rng_seed,
+                    if family == "F1":
+                        for _ in range(10):
+                            candidate = int(rng.integers(corpus_size))
+                            if not dedupe_identical_docs or candidate != current_target_doc:
+                                other_doc = candidate
+                                break
+                    elif family == "F2":
+                        j = int(rng.integers(1, k))
+                        candidate = int(doc_ids[anchor_idx, 0, j])
+                        if dedupe_identical_docs and candidate == current_target_doc:
+                            continue  # unusual: top-1 == top-j; skip this pair
+                        other_doc = candidate
+                        other_rank = j + 1
+                    elif family == "F3":
+                        pool = np.where(labels == anchor_label)[0]
+                        pool = pool[pool != anchor_idx]
+                        result = _sample_other_row(pool, current_target_doc)
+                        if result is None:
+                            continue
+                        other_source_row, other_doc = result
+                        other_source_sid = int(subject_ids[other_source_row])
+                    elif family == "F4":
+                        pool = np.where(labels == (1 - anchor_label))[0]
+                        result = _sample_other_row(pool, current_target_doc)
+                        if result is None:
+                            continue
+                        other_source_row, other_doc = result
+                        other_source_sid = int(subject_ids[other_source_row])
+                    else:
+                        raise ValueError(f"Unknown family: {family!r}")
+
+                    if other_doc is None:
+                        continue
+
+                    target_position: Literal["A", "B"] = "A" if rng.random() < 0.5 else "B"
+                    rng_seed = int(rng.integers(1 << 30))
+                    counter += 1
+                    pairs.append(
+                        JudgePair(
+                            pair_id=f"p{counter:06d}",
+                            family=family,
+                            anchor_row_idx=anchor_idx,
+                            anchor_subject_id=anchor_sid,
+                            anchor_label=anchor_label,
+                            target_doc_id=current_target_doc,
+                            other_doc_id=other_doc,
+                            target_position=target_position,
+                            other_source_row_idx=other_source_row,
+                            other_source_subject_id=other_source_sid,
+                            other_rank=other_rank,
+                            target_rank=current_target_rank,
+                            rng_seed=rng_seed,
+                        )
                     )
-                )
     return pairs
 
 
@@ -1184,6 +1205,7 @@ def run_judge(
                 "other_doc_id": pair.other_doc_id,
                 "target_position": pair.target_position,
                 "other_rank": pair.other_rank,
+                "target_rank": pair.target_rank,
                 "other_source_subject_id": pair.other_source_subject_id,
                 "winner_position": verdict.winner_position,
                 "target_won": _compute_target_won(verdict.winner_position, pair.target_position),
@@ -1239,6 +1261,7 @@ def summarize_winrates(
     seed: int = 42,
     ci_level: float = 0.95,
     invalid_policy: Literal["drop", "count_as_loss", "half_credit_ties"] = "drop",
+    extra_group_cols: Sequence[str] = (),
 ) -> pl.DataFrame:
     """Compute per-family ``target_preferred_rate`` with patient-cluster bootstrap CI.
 
@@ -1273,9 +1296,21 @@ def summarize_winrates(
     has_winner = "winner_position" in df.columns
     has_rationale = "rationale" in df.columns
 
+    group_keys: list[str] = ["family", *extra_group_cols]
+    if df.height == 0:
+        unique_groups: list[dict[str, Any]] = []
+    else:
+        unique_groups = (
+            df.select(group_keys).unique().sort(group_keys).to_dicts()
+        )
+
     results: list[dict[str, Any]] = []
-    for family in sorted(df["family"].unique().to_list()):
-        fam_df = df.filter(pl.col("family") == family)
+    for group_vals in unique_groups:
+        family = group_vals["family"]
+        filter_expr = pl.col("family") == family
+        for key in extra_group_cols:
+            filter_expr = filter_expr & (pl.col(key) == group_vals[key])
+        fam_df = df.filter(filter_expr)
         n_pairs = fam_df.height
         n_invalid = fam_df.filter(pl.col("target_won").is_null()).height
 
@@ -1314,7 +1349,7 @@ def summarize_winrates(
         if working.height == 0:
             results.append(
                 {
-                    "family": family,
+                    **group_vals,
                     "n_patients": 0,
                     "n_pairs": n_pairs,
                     "n_invalid": n_invalid,
@@ -1357,7 +1392,7 @@ def summarize_winrates(
 
         results.append(
             {
-                "family": family,
+                **group_vals,
                 "n_patients": n_patients,
                 "n_pairs": n_pairs,
                 "n_invalid": n_invalid,
