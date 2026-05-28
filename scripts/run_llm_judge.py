@@ -103,7 +103,6 @@ from extract_and_visualize import (  # noqa: E402
     _load_task_codes,
 )
 
-
 # Rough public pricing per 1K tokens for gpt-4o-mini (verify before paper
 # submission — these drift). Used only in the dry-run cost estimate.
 _PRICE_PER_1K = {
@@ -177,9 +176,7 @@ def _resolve_task_mode(mode: str, raw_targets: np.ndarray) -> str:
         return "multitask" if raw_targets.ndim == 2 else "binary"
     if mode in ("binary", "multitask", "overall"):
         return mode
-    raise ValueError(
-        f"unknown task_mode {mode!r}; expected one of auto/binary/multitask/overall"
-    )
+    raise ValueError(f"unknown task_mode {mode!r}; expected one of auto/binary/multitask/overall")
 
 
 def _auto_task_description(
@@ -306,10 +303,7 @@ def _parse_args() -> argparse.Namespace:
         "--target_task",
         type=int,
         default=None,
-        help=(
-            "Multitask only: run a single task index instead of sweeping all. "
-            "Rejected for binary."
-        ),
+        help=("Multitask only: run a single task index instead of sweeping all. Rejected for binary."),
     )
     parser.add_argument(
         "--mimic_labitems_path",
@@ -386,7 +380,7 @@ def _parse_args() -> argparse.Namespace:
         help=(
             "Cap on number of API calls. Applies PER TASK in multitask mode "
             "(so a 25-task sweep at default --n_patients=100 caps at "
-            "100 × 25 = 2500). Lower --n_patients or raise the cap if the "
+            "100 x 25 = 2500). Lower --n_patients or raise the cap if the "
             "per-task pair count exceeds it."
         ),
     )
@@ -490,26 +484,31 @@ def _select_target_task(
         )
     else:
         task_label = _humanize_meds_code(task_code, lab_lookup)
-        task_description = _auto_task_description(
-            task_code, lab_lookup, horizon_days, anchor_offset_hours
-        )
+        task_description = _auto_task_description(task_code, lab_lookup, horizon_days, anchor_offset_hours)
 
-    return labels, valid_indices, {
-        "target_task": target_task,
-        "task_code": task_code,
-        "task_label": task_label,
-        "task_description": task_description,
-        "n_valid": int(labels.size),
-        "n_pos": n_pos,
-        "n_neg": n_neg,
-        "horizon_days": horizon_days,
-        "anchor_offset_hours": anchor_offset_hours,
-    }
+    return (
+        labels,
+        valid_indices,
+        {
+            "target_task": target_task,
+            "task_code": task_code,
+            "task_label": task_label,
+            "task_description": task_description,
+            "n_valid": int(labels.size),
+            "n_pos": n_pos,
+            "n_neg": n_neg,
+            "horizon_days": horizon_days,
+            "anchor_offset_hours": anchor_offset_hours,
+        },
+    )
 
 
 def _check_out_dir_empty(out_dir: Path, *, overwrite: bool) -> bool:
-    """Return True if ``out_dir`` is OK to write into. Prints stderr and returns
-    False if it exists, is non-empty, and ``--overwrite`` was not passed."""
+    """Return True if ``out_dir`` is OK to write into.
+
+    Prints stderr and returns
+    False if it exists, is non-empty, and ``--overwrite`` was not passed.
+    """
     if not out_dir.exists():
         return True
     if overwrite:
@@ -518,8 +517,7 @@ def _check_out_dir_empty(out_dir: Path, *, overwrite: bool) -> bool:
     if not contents:
         return True
     print(
-        f"Note: {out_dir} is not empty; skipping (pass --overwrite to redo). "
-        f"Contents: {contents[:5]}",
+        f"Note: {out_dir} is not empty; skipping (pass --overwrite to redo). Contents: {contents[:5]}",
         file=sys.stderr,
     )
     return False
@@ -527,15 +525,15 @@ def _check_out_dir_empty(out_dir: Path, *, overwrite: bool) -> bool:
 
 def _run_one_task(
     *,
-    task_label_for_log: str,           # human-friendly: "Heparin (start)" or e.g. "binary"
+    task_label_for_log: str,  # human-friendly: "Heparin (start)" or e.g. "binary"
     task_description: str,
-    target_task: int | None,           # multitask task idx, or None for binary
-    task_code: str | None,             # raw MEDS code for multitask, or None
+    target_task: int | None,  # multitask task idx, or None for binary
+    task_code: str | None,  # raw MEDS code for multitask, or None
     horizon_days: float | None,
     anchor_offset_hours: float | None,
-    labels: np.ndarray,                # 1-D int
-    artifacts_np: dict,                # ALREADY ROW-ALIGNED to labels
-    val_schema: pl.DataFrame,          # ALREADY ROW-ALIGNED to labels
+    labels: np.ndarray,  # 1-D int
+    artifacts_np: dict,  # ALREADY ROW-ALIGNED to labels
+    val_schema: pl.DataFrame,  # ALREADY ROW-ALIGNED to labels
     retrieval_ds,
     doc_id_to_row: dict,
     corpus_size: int,
@@ -550,7 +548,9 @@ def _run_one_task(
     save_sample_prompt_to: Path | None,
     show_sample_prompt: bool,
 ) -> dict | None:
-    """Run the per-task LLM-judge pipeline. Returns a per-task summary row for
+    """Run the per-task LLM-judge pipeline.
+
+    Returns a per-task summary row for
     the cross-task aggregator, or ``None`` if the task was skipped.
     """
     n_pos = int((labels == 1).sum())
@@ -568,10 +568,7 @@ def _run_one_task(
     if not _check_out_dir_empty(out_dir, overwrite=args.overwrite or args.dry_run):
         return None
 
-    print(
-        f"\n=== [{task_label_for_log}] n_valid={labels.size} "
-        f"(pos={n_pos}, neg={n_neg}) ==="
-    )
+    print(f"\n=== [{task_label_for_log}] n_valid={labels.size} (pos={n_pos}, neg={n_neg}) ===")
     print(f"task_description: {task_description}")
 
     # --- Build pairs for this task --------------------------------------
@@ -605,7 +602,7 @@ def _run_one_task(
             f"[{task_label_for_log}] ERROR: {len(pairs)} pairs exceeds "
             f"effective cap {effective_cap} (--max_total_calls_cap="
             f"{args.max_total_calls_cap}"
-            f"{f' × k_docs={k_docs}' if args.rank_sweep else ''}); "
+            f"{f' x k_docs={k_docs}' if args.rank_sweep else ''}); "
             "lower --n_patients or raise --max_total_calls_cap.",
             file=sys.stderr,
         )
@@ -616,16 +613,11 @@ def _run_one_task(
 
     # --- Sample timeline + cost estimate --------------------------------
     anchor_sid_sample = pairs[0].anchor_subject_id
-    pred_t = (
-        val_schema.filter(pl.col("subject_id") == anchor_sid_sample)["prediction_time"]
-        .to_list()[0]
-    )
+    pred_t = val_schema.filter(pl.col("subject_id") == anchor_sid_sample)["prediction_time"].to_list()[0]
     if int(anchor_sid_sample) in clinical_summaries_cache:
         sample_summary = clinical_summaries_cache[int(anchor_sid_sample)]
     else:
-        sample_summary = compute_patient_clinical_summary(
-            int(anchor_sid_sample), pred_t, args.meds_cohort
-        )
+        sample_summary = compute_patient_clinical_summary(int(anchor_sid_sample), pred_t, args.meds_cohort)
         clinical_summaries_cache[int(anchor_sid_sample)] = sample_summary
     if int(anchor_sid_sample) in timelines_cache:
         sample_timeline = timelines_cache[int(anchor_sid_sample)]
@@ -897,8 +889,7 @@ def _write_cross_task_summary(
         "n_tasks_completed": len(completed),
         "n_tasks_skipped": n_tasks_attempted - len(completed),
         "skipped_task_idx": [
-            t["target_task"] for t in per_task
-            if t.get("dry_run") is False and t.get("summary_df") is None
+            t["target_task"] for t in per_task if t.get("dry_run") is False and t.get("summary_df") is None
         ],
         "model": args.model,
         "seed": args.seed,
@@ -912,7 +903,7 @@ def _write_cross_task_summary(
     print(f"Wrote {out_root / 'sweep_config.json'}")
 
 
-def main() -> None:  # noqa: C901 - CLI orchestration, branches are linear
+def main() -> None:
     args = _parse_args()
 
     run_dir: Path = args.run_dir
@@ -956,8 +947,7 @@ def main() -> None:  # noqa: C901 - CLI orchestration, branches are linear
     codes_parquet = tensorized_cohort_dir / "metadata" / "codes.parquet"
     if not codes_parquet.is_file():
         print(
-            f"Error: codes.parquet not found at {codes_parquet} — required for "
-            f"patient-timeline annotation.",
+            f"Error: codes.parquet not found at {codes_parquet} — required for patient-timeline annotation.",
             file=sys.stderr,
         )
         sys.exit(3)
@@ -985,8 +975,7 @@ def main() -> None:  # noqa: C901 - CLI orchestration, branches are linear
         binary_task_description = _resolve_task_description(args)
         if binary_task_description is None:
             print(
-                "Error: --task_description (or --task_description_file) is required for "
-                "binary runs.",
+                "Error: --task_description (or --task_description_file) is required for binary runs.",
                 file=sys.stderr,
             )
             sys.exit(2)
@@ -994,16 +983,14 @@ def main() -> None:  # noqa: C901 - CLI orchestration, branches are linear
         unique_labels = set(np.unique(labels).tolist())
         if not {0, 1}.issubset(unique_labels):
             print(
-                f"ERROR: expected both classes {{0, 1}} in binary targets; saw "
-                f"{unique_labels}.",
+                f"ERROR: expected both classes {{0, 1}} in binary targets; saw {unique_labels}.",
                 file=sys.stderr,
             )
             sys.exit(2)
     else:  # overall or multitask
         if raw_targets.ndim != 2:
             print(
-                f"Error: --task_mode {task_mode} requires 2-D targets; got shape "
-                f"{raw_targets.shape}.",
+                f"Error: --task_mode {task_mode} requires 2-D targets; got shape {raw_targets.shape}.",
                 file=sys.stderr,
             )
             sys.exit(2)
@@ -1212,8 +1199,7 @@ def main() -> None:  # noqa: C901 - CLI orchestration, branches are linear
 
     if args.target_rank is not None and args.target_rank >= k_docs:
         print(
-            f"Error: --target_rank={args.target_rank} >= k_docs={k_docs}; "
-            f"valid range is [0, {k_docs}).",
+            f"Error: --target_rank={args.target_rank} >= k_docs={k_docs}; valid range is [0, {k_docs}).",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -1227,7 +1213,7 @@ def main() -> None:  # noqa: C901 - CLI orchestration, branches are linear
 
     print(f"\nMultitask sweep: {len(tasks_to_run)} task(s) → {out_root}")
     if user_override_description is not None:
-        print(f"NOTE: --task_description overrides auto-generated descriptions for ALL tasks.")
+        print("NOTE: --task_description overrides auto-generated descriptions for ALL tasks.")
 
     per_task_results: list[dict] = []
     for i, task_idx in enumerate(tasks_to_run):

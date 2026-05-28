@@ -214,8 +214,15 @@ def extract_artifacts(
         >>> with tempfile.TemporaryDirectory() as tmpdir:
         ...     path = extract_artifacts(module, dl, trainer, output_dir=tmpdir)
         ...     artifacts = torch.load(path, weights_only=True)
-        ...     sorted(artifacts.keys())
-        ['differentiable_doc_scores', 'doc_ids', 'doc_key_embeddings', 'doc_scores', 'logits', 'query_embeddings', 'targets']
+        ...     for k in sorted(artifacts.keys()):
+        ...         print(k)
+        differentiable_doc_scores
+        doc_ids
+        doc_key_embeddings
+        doc_scores
+        logits
+        query_embeddings
+        targets
     """
     out = Path(output_dir)
     artifact_path = out / "extraction_artifacts.pt"

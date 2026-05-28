@@ -521,19 +521,13 @@ def _accumulate_demographic_bin_mass(
     if doc_ids.ndim != 2:
         raise ValueError(f"doc_ids must be (N, K); got {doc_ids.shape}")
     if diff_scores.shape != doc_ids.shape:
-        raise ValueError(
-            f"diff_scores shape {diff_scores.shape} must match doc_ids {doc_ids.shape}"
-        )
+        raise ValueError(f"diff_scores shape {diff_scores.shape} must match doc_ids {doc_ids.shape}")
     if len(demographic_labels) != doc_ids.shape[0]:
-        raise ValueError(
-            f"demographic_labels length {len(demographic_labels)} != N={doc_ids.shape[0]}"
-        )
+        raise ValueError(f"demographic_labels length {len(demographic_labels)} != N={doc_ids.shape[0]}")
 
     weights = _softmax(diff_scores, axis=-1)
 
-    bin_to_keyword_mass: dict[str, defaultdict[str, float]] = defaultdict(
-        lambda: defaultdict(float)
-    )
+    bin_to_keyword_mass: dict[str, defaultdict[str, float]] = defaultdict(lambda: defaultdict(float))
     bin_counts: defaultdict[str, int] = defaultdict(int)
     pop_keyword_mass: defaultdict[str, float] = defaultdict(float)
 
@@ -584,26 +578,18 @@ def _accumulate_comorbidity_bin_mass(
     if doc_ids.ndim != 2:
         raise ValueError(f"doc_ids must be (N, K); got {doc_ids.shape}")
     if diff_scores.shape != doc_ids.shape:
-        raise ValueError(
-            f"diff_scores shape {diff_scores.shape} must match doc_ids {doc_ids.shape}"
-        )
+        raise ValueError(f"diff_scores shape {diff_scores.shape} must match doc_ids {doc_ids.shape}")
     mask = np.asarray(comorbidity_mask, dtype=bool)
     if mask.ndim != 2:
         raise ValueError(f"comorbidity_mask must be (N, C); got {mask.shape}")
     if mask.shape[0] != doc_ids.shape[0]:
-        raise ValueError(
-            f"comorbidity_mask N={mask.shape[0]} != doc_ids N={doc_ids.shape[0]}"
-        )
+        raise ValueError(f"comorbidity_mask N={mask.shape[0]} != doc_ids N={doc_ids.shape[0]}")
     if mask.shape[1] != len(category_names):
-        raise ValueError(
-            f"comorbidity_mask C={mask.shape[1]} != len(category_names)={len(category_names)}"
-        )
+        raise ValueError(f"comorbidity_mask C={mask.shape[1]} != len(category_names)={len(category_names)}")
 
     weights = _softmax(diff_scores, axis=-1)
 
-    bin_to_keyword_mass: dict[str, defaultdict[str, float]] = defaultdict(
-        lambda: defaultdict(float)
-    )
+    bin_to_keyword_mass: dict[str, defaultdict[str, float]] = defaultdict(lambda: defaultdict(float))
     bin_counts: defaultdict[str, int] = defaultdict(int)
     pop_keyword_mass: defaultdict[str, float] = defaultdict(float)
 
@@ -708,11 +694,7 @@ def build_keyword_demographic_table(
         for kw, m in masses.items():
             keyword_total[kw] += m
     ordered = sorted(keyword_total, key=lambda kw: -keyword_total[kw])
-    top_keywords = (
-        ordered
-        if top_n_keywords is None or top_n_keywords <= 0
-        else ordered[:top_n_keywords]
-    )
+    top_keywords = ordered if top_n_keywords is None or top_n_keywords <= 0 else ordered[:top_n_keywords]
 
     table = np.zeros((len(bin_labels), len(top_keywords)), dtype=np.float64)
     for i, b in enumerate(bin_labels):
@@ -763,26 +745,18 @@ def build_comorbidity_keyword_table(
     if doc_ids.ndim != 2:
         raise ValueError(f"doc_ids must be (N, K); got {doc_ids.shape}")
     if diff_scores.shape != doc_ids.shape:
-        raise ValueError(
-            f"diff_scores shape {diff_scores.shape} must match doc_ids {doc_ids.shape}"
-        )
+        raise ValueError(f"diff_scores shape {diff_scores.shape} must match doc_ids {doc_ids.shape}")
     mask = np.asarray(comorbidity_mask, dtype=bool)
     if mask.ndim != 2:
         raise ValueError(f"comorbidity_mask must be (N, C); got {mask.shape}")
     if mask.shape[0] != doc_ids.shape[0]:
-        raise ValueError(
-            f"comorbidity_mask N={mask.shape[0]} != doc_ids N={doc_ids.shape[0]}"
-        )
+        raise ValueError(f"comorbidity_mask N={mask.shape[0]} != doc_ids N={doc_ids.shape[0]}")
     if mask.shape[1] != len(category_names):
-        raise ValueError(
-            f"comorbidity_mask C={mask.shape[1]} != len(category_names)={len(category_names)}"
-        )
+        raise ValueError(f"comorbidity_mask C={mask.shape[1]} != len(category_names)={len(category_names)}")
 
     weights = _softmax(diff_scores, axis=-1)  # (N, K)
 
-    bin_to_keyword_mass: dict[str, defaultdict[str, float]] = defaultdict(
-        lambda: defaultdict(float)
-    )
+    bin_to_keyword_mass: dict[str, defaultdict[str, float]] = defaultdict(lambda: defaultdict(float))
     bin_counts: defaultdict[str, int] = defaultdict(int)
 
     n, k_docs = doc_ids.shape
@@ -825,11 +799,7 @@ def build_comorbidity_keyword_table(
         for keyword, m in masses.items():
             keyword_total[keyword] += m
     ordered = sorted(keyword_total, key=lambda kw: -keyword_total[kw])
-    top_keywords = (
-        ordered
-        if top_n_keywords is None or top_n_keywords <= 0
-        else ordered[:top_n_keywords]
-    )
+    top_keywords = ordered if top_n_keywords is None or top_n_keywords <= 0 else ordered[:top_n_keywords]
 
     table = np.zeros((len(bin_labels), len(top_keywords)), dtype=np.float64)
     for i, b in enumerate(bin_labels):
@@ -927,9 +897,7 @@ def write_residual_csv(result: dict, output_path: Path) -> None:
                     if not np.isfinite(z):
                         continue
                     raw_val = float(raw[i, j])
-                    writer.writerow(
-                        [axis, b, kw, f"{raw_val:.6f}", f"{z:.6f}"]
-                    )
+                    writer.writerow([axis, b, kw, f"{raw_val:.6f}", f"{z:.6f}"])
     print(f"Residuals CSV saved to {output_path}")
 
 
@@ -945,7 +913,7 @@ def render_demographic_heatmaps(
     output_dir: Path,
     *,
     top_n_keywords: int | None = None,
-    comorbidity_frame: "pl.DataFrame | None" = None,
+    comorbidity_frame: pl.DataFrame | None = None,
     comorbidity_categories: Sequence[str] | None = None,
 ) -> dict:
     """Render demographic and optional chronic-comorbidity heatmaps.
@@ -1021,9 +989,8 @@ def render_demographic_heatmaps(
         bin_counts: dict[str, int],
         bin_order_hint: Sequence[str] | None,
     ) -> tuple[list[str], list[str]]:
-        """Apply the same row ordering + top-N keyword selection used by
-        ``build_keyword_demographic_table`` so raw and residual heatmaps
-        share their axes."""
+        """Apply the same row ordering + top-N keyword selection used by ``build_keyword_demographic_table``
+        so raw and residual heatmaps share their axes."""
         if bin_order_hint is not None:
             bin_labels = [b for b in bin_order_hint if b in bin_counts]
         else:
@@ -1033,11 +1000,7 @@ def render_demographic_heatmaps(
             for kw, m in masses.items():
                 keyword_total[kw] += m
         ordered = sorted(keyword_total, key=lambda kw: -keyword_total[kw])
-        top_keywords = (
-            ordered
-            if top_n_keywords is None or top_n_keywords <= 0
-            else ordered[:top_n_keywords]
-        )
+        top_keywords = ordered if top_n_keywords is None or top_n_keywords <= 0 else ordered[:top_n_keywords]
         return bin_labels, top_keywords
 
     def _normalize_table(
@@ -1073,14 +1036,16 @@ def render_demographic_heatmaps(
             or (np.isnan(table).all() if table.size else False)
         )
         title_label = (
-            f"Retrieval keyword residuals — {title}"
-            if diverging
-            else f"Retrieval keyword mass — {title}"
+            f"Retrieval keyword residuals — {title}" if diverging else f"Retrieval keyword mass — {title}"
         )
         if no_data:
             ax.text(
-                0.5, 0.5, f"No data for {title}",
-                ha="center", va="center", transform=ax.transAxes,
+                0.5,
+                0.5,
+                f"No data for {title}",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
             )
             ax.set_title(title_label)
             ax.set_axis_off()
@@ -1099,7 +1064,10 @@ def render_demographic_heatmaps(
             ax.set_yticklabels(bins, fontsize=9)
             ax.set_title(title_label)
             fig.colorbar(
-                im, ax=ax, fraction=0.04, pad=0.02,
+                im,
+                ax=ax,
+                fraction=0.04,
+                pad=0.02,
                 label="Pearson residual (z-score)",
             )
             # Mark cells with |z| > 2 (the conventional ~95% significance line) with
@@ -1110,8 +1078,12 @@ def render_demographic_heatmaps(
                     if np.isfinite(val) and abs(val) > 2.0:
                         ax.add_patch(
                             plt.Rectangle(
-                                (j - 0.5, i - 0.5), 1, 1,
-                                fill=False, edgecolor="black", linewidth=1.2,
+                                (j - 0.5, i - 0.5),
+                                1,
+                                1,
+                                fill=False,
+                                edgecolor="black",
+                                linewidth=1.2,
                             )
                         )
         else:
@@ -1145,9 +1117,7 @@ def render_demographic_heatmaps(
         "show all" — sizes the figure correctly). ``height`` overrides the
         default 5 in for axes with many rows (e.g. Charlson 17 rows).
         """
-        bin_labels, top_keywords = _pick_bins_and_keywords(
-            bin_to_kw_mass, bin_counts, bin_order_hint
-        )
+        bin_labels, top_keywords = _pick_bins_and_keywords(bin_to_kw_mass, bin_counts, bin_order_hint)
         raw = _normalize_table(bin_to_kw_mass, bin_counts, bin_labels, top_keywords)
         residual = build_pearson_residual_table(
             bin_to_kw_mass,
@@ -1161,14 +1131,22 @@ def render_demographic_heatmaps(
         fig_width = max(10.0, 0.5 * n_kws + 4.0)
         figsize = (fig_width, height if height is not None else 5.0)
         _render_one(
-            raw, bin_labels, top_keywords, title,
+            raw,
+            bin_labels,
+            top_keywords,
+            title,
             output_dir / f"keyword_demographic_{axis_key}.pdf",
-            figsize=figsize, diverging=False,
+            figsize=figsize,
+            diverging=False,
         )
         _render_one(
-            residual, bin_labels, top_keywords, title,
+            residual,
+            bin_labels,
+            top_keywords,
+            title,
             output_dir / f"keyword_demographic_{axis_key}_residual.pdf",
-            figsize=figsize, diverging=True,
+            figsize=figsize,
+            diverging=True,
         )
         return {
             "table": raw,
@@ -1185,12 +1163,8 @@ def render_demographic_heatmaps(
     race_acc = _accumulate_demographic_bin_mass(doc_ids, diff_scores, race_labels, provider)
     result["race"] = _render_pair(*race_acc, RACE_BIN_ORDER, "Race/Ethnicity", "race")
 
-    gender_acc = _accumulate_demographic_bin_mass(
-        doc_ids, diff_scores, gender_labels, provider
-    )
-    result["gender"] = _render_pair(
-        *gender_acc, sorted(set(gender_labels)), "Gender", "gender"
-    )
+    gender_acc = _accumulate_demographic_bin_mass(doc_ids, diff_scores, gender_labels, provider)
+    result["gender"] = _render_pair(*gender_acc, sorted(set(gender_labels)), "Gender", "gender")
 
     # Optional 4th panel: chronic comorbidities (multi-membership rows).
     if comorbidity_frame is not None and comorbidity_categories:
@@ -1201,9 +1175,7 @@ def render_demographic_heatmaps(
             )
         missing_cols = [c for c in comorbidity_categories if c not in comorbidity_frame.columns]
         if missing_cols:
-            raise ValueError(
-                f"comorbidity_frame is missing columns for categories: {missing_cols}"
-            )
+            raise ValueError(f"comorbidity_frame is missing columns for categories: {missing_cols}")
         comorbidity_mask = np.column_stack(
             [comorbidity_frame[cat].to_numpy().astype(bool) for cat in comorbidity_categories]
         )

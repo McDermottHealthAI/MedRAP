@@ -43,8 +43,8 @@ _families_require_both_classes = run_llm_judge._families_require_both_classes
 
 
 def test_families_require_both_classes_F1_only_is_false() -> None:
-    """F1 (random corpus doc) ignores labels, so a dummy-zeros label vector
-    should not trip the both-classes-present guardrail in ``_run_one_task``."""
+    """F1 (random corpus doc) ignores labels, so a dummy-zeros label vector should not trip the both-classes-
+    present guardrail in ``_run_one_task``."""
     assert _families_require_both_classes(("F1",)) is False
 
 
@@ -76,9 +76,11 @@ def test_families_require_both_classes_empty_is_false() -> None:
 
 
 def test_resolve_task_mode_auto_maps_2d_targets_to_multitask() -> None:
-    """Default behavior on a multitask checkpoint is the per-task 25-task
-    sweep. The single overall-pool sweep is reachable explicitly via
-    ``--task_mode overall``."""
+    """Default behavior on a multitask checkpoint is the per-task 25-task sweep.
+
+    The single overall-pool sweep is reachable explicitly via
+    ``--task_mode overall``.
+    """
     two_d = np.zeros((4, 25), dtype=float)
     assert _resolve_task_mode("auto", two_d) == "multitask"
 
@@ -120,11 +122,11 @@ def test_select_target_task_filters_nan_and_returns_aligned_arrays() -> None:
     nan = float("nan")
     raw = np.array(
         [
-            [1.0, 0.0, nan],   # row 0
-            [0.0, nan, 1.0],   # row 1
-            [1.0, 1.0, 1.0],   # row 2
-            [nan, 1.0, 0.0],   # row 3
-            [0.0, 0.0, nan],   # row 4
+            [1.0, 0.0, nan],  # row 0
+            [0.0, nan, 1.0],  # row 1
+            [1.0, 1.0, 1.0],  # row 2
+            [nan, 1.0, 0.0],  # row 3
+            [0.0, 0.0, nan],  # row 4
         ],
         dtype=float,
     )
@@ -152,8 +154,8 @@ def test_select_target_task_filters_nan_and_returns_aligned_arrays() -> None:
 
 
 def test_select_target_task_handles_no_task_code() -> None:
-    """When ``task_codes`` is None or missing the index, we still return a
-    plain numbered label rather than crashing."""
+    """When ``task_codes`` is None or missing the index, we still return a plain numbered label rather than
+    crashing."""
     raw = np.array([[1.0], [0.0]], dtype=float)
     labels, valid_indices, meta = _select_target_task(
         raw,
@@ -202,7 +204,9 @@ def test_select_target_task_rejects_1d_targets() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _natural_language_invariants(description: str, *, horizon_days: float, anchor_offset_hours: float) -> None:
+def _natural_language_invariants(
+    description: str, *, horizon_days: float, anchor_offset_hours: float
+) -> None:
     """Properties every auto-generated task description must satisfy."""
     # Hard requirement: no raw `//`-delimited MEDS codes leak into the prompt.
     assert "//" not in description, f"raw code leaked: {description!r}"
@@ -232,9 +236,7 @@ def _natural_language_invariants(description: str, *, horizon_days: float, ancho
     ],
 )
 def test_auto_task_description_known_prefixes(code: str, expected_phrases: list[str]) -> None:
-    description = _auto_task_description(
-        code, lab_lookup=None, horizon_days=7.0, anchor_offset_hours=24.0
-    )
+    description = _auto_task_description(code, lab_lookup=None, horizon_days=7.0, anchor_offset_hours=24.0)
     _natural_language_invariants(description, horizon_days=7.0, anchor_offset_hours=24.0)
     for phrase in expected_phrases:
         assert phrase.lower() in description.lower(), (phrase, description)

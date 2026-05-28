@@ -8,11 +8,12 @@ Charlson Comorbidity Index (Charlson 1987, Quan 2005 ICD mapping).
 from __future__ import annotations
 
 from datetime import datetime
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import polars as pl
-import pytest
 
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Lookup loading
@@ -101,9 +102,7 @@ def test_load_charlson_lookup_unknown_icd_returns_empty() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _write_synthetic_meds_shard(
-    shard_path: Path, events: list[tuple[int, datetime, str]]
-) -> None:
+def _write_synthetic_meds_shard(shard_path: Path, events: list[tuple[int, datetime, str]]) -> None:
     shard_path.parent.mkdir(parents=True, exist_ok=True)
     df = pl.DataFrame(
         {
@@ -118,8 +117,8 @@ def _write_synthetic_meds_shard(
 def test_assign_patient_charlson_multi_membership_and_filter_by_pred_time(
     tmp_path: Path,
 ) -> None:
-    """One patient with two pre-prediction Charlson diagnoses gets both
-    flags; a post-prediction diagnosis is excluded (no label leakage)."""
+    """One patient with two pre-prediction Charlson diagnoses gets both flags; a post-prediction diagnosis is
+    excluded (no label leakage)."""
     from medrap.comorbidity import (
         CHARLSON_CATEGORIES,
         assign_patient_charlson,
@@ -194,9 +193,7 @@ def test_assign_patient_charlson_hierarchy_dedups_diabetes(tmp_path: Path) -> No
             (1, datetime(2020, 1, 2), "DIAGNOSIS//ICD//10//E114"),  # complicated
         ],
     )
-    val_schema = pl.DataFrame(
-        {"subject_id": [1], "prediction_time": [datetime(2021, 1, 1)]}
-    )
+    val_schema = pl.DataFrame({"subject_id": [1], "prediction_time": [datetime(2021, 1, 1)]})
     result = assign_patient_charlson(cohort, val_schema, lookup=load_charlson_lookup())
     row = result.row(0, named=True)
     assert row["Diabetes with chronic complications"] is True
@@ -213,13 +210,11 @@ def test_assign_patient_charlson_hierarchy_dedups_cancer(tmp_path: Path) -> None
     _write_synthetic_meds_shard(
         cohort / "data" / "train" / "shard0.parquet",
         events=[
-            (1, datetime(2020, 1, 1), "DIAGNOSIS//ICD//10//C50"),   # breast cancer
+            (1, datetime(2020, 1, 1), "DIAGNOSIS//ICD//10//C50"),  # breast cancer
             (1, datetime(2020, 1, 2), "DIAGNOSIS//ICD//10//C780"),  # metastatic
         ],
     )
-    val_schema = pl.DataFrame(
-        {"subject_id": [1], "prediction_time": [datetime(2021, 1, 1)]}
-    )
+    val_schema = pl.DataFrame({"subject_id": [1], "prediction_time": [datetime(2021, 1, 1)]})
     result = assign_patient_charlson(cohort, val_schema, lookup=load_charlson_lookup())
     row = result.row(0, named=True)
     assert row["Metastatic solid tumor"] is True
@@ -235,13 +230,11 @@ def test_assign_patient_charlson_hierarchy_dedups_liver(tmp_path: Path) -> None:
     _write_synthetic_meds_shard(
         cohort / "data" / "train" / "shard0.parquet",
         events=[
-            (1, datetime(2020, 1, 1), "DIAGNOSIS//ICD//10//K74"),   # cirrhosis (mild)
+            (1, datetime(2020, 1, 1), "DIAGNOSIS//ICD//10//K74"),  # cirrhosis (mild)
             (1, datetime(2020, 1, 2), "DIAGNOSIS//ICD//10//K721"),  # chronic hepatic failure (mod-severe)
         ],
     )
-    val_schema = pl.DataFrame(
-        {"subject_id": [1], "prediction_time": [datetime(2021, 1, 1)]}
-    )
+    val_schema = pl.DataFrame({"subject_id": [1], "prediction_time": [datetime(2021, 1, 1)]})
     result = assign_patient_charlson(cohort, val_schema, lookup=load_charlson_lookup())
     row = result.row(0, named=True)
     assert row["Moderate or severe liver disease"] is True
@@ -262,9 +255,7 @@ def test_assign_patient_charlson_handles_icd9_codes(tmp_path: Path) -> None:
             (7, datetime(2010, 5, 2), "DIAGNOSIS//ICD//9//4100"),
         ],
     )
-    val_schema = pl.DataFrame(
-        {"subject_id": [7], "prediction_time": [datetime(2010, 6, 1)]}
-    )
+    val_schema = pl.DataFrame({"subject_id": [7], "prediction_time": [datetime(2010, 6, 1)]})
     result = assign_patient_charlson(cohort, val_schema, lookup=load_charlson_lookup())
     row = result.row(0, named=True)
     assert row["Congestive heart failure"] is True
@@ -273,8 +264,8 @@ def test_assign_patient_charlson_handles_icd9_codes(tmp_path: Path) -> None:
 
 
 def test_assign_patient_charlson_preserves_val_schema_row_order(tmp_path: Path) -> None:
-    """Output row order must match val_schema row order so the result aligns
-    1:1 with the extraction artifacts."""
+    """Output row order must match val_schema row order so the result aligns 1:1 with the extraction
+    artifacts."""
     from medrap.comorbidity import assign_patient_charlson, load_charlson_lookup
 
     cohort = tmp_path / "MEDS_cohort"

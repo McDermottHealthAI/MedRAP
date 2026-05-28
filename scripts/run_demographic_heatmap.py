@@ -84,10 +84,7 @@ def _print_top_residuals_per_axis(result: dict, *, k: int = 10) -> None:
         flat.sort(key=lambda x: -abs(x[2]))
         top = flat[:k]
         n_significant = sum(1 for _, _, z in flat if abs(z) > 2.0)
-        print(
-            f"\n  [{axis}] {n_significant}/{len(flat)} cells |z|>2;"
-            f" top {len(top)} by |z|:"
-        )
+        print(f"\n  [{axis}] {n_significant}/{len(flat)} cells |z|>2; top {len(top)} by |z|:")
         for b, kw, z in top:
             sign = "+" if z >= 0 else "-"
             kw_display = kw if len(kw) <= 60 else kw[:57] + "..."
@@ -212,9 +209,7 @@ def main() -> None:
     # val_schema by construction.
     print("Computing per-patient Charlson comorbidities from MEDS diagnoses...")
     charlson_lookup = load_charlson_lookup()
-    comorbidity_frame = assign_patient_charlson(
-        args.meds_cohort, val_schema, lookup=charlson_lookup
-    )
+    comorbidity_frame = assign_patient_charlson(args.meds_cohort, val_schema, lookup=charlson_lookup)
     if comorbidity_frame.height != patient_frame.height:
         print(
             f"ERROR: comorbidity_frame rows ({comorbidity_frame.height}) != "
@@ -306,7 +301,6 @@ def main() -> None:
         if max_diff == 0.0:
             print("    *** VALUES ARE EXACTLY IDENTICAL — likely a bug ***")
         # Print first 3 keyword columns for each bin.
-        kws = info["keywords"][:3]
         for i, b in enumerate(bins):
             vals = ", ".join(f"{tbl[i, j]:.6f}" for j in range(min(3, tbl.shape[1])))
             print(f"    {b}: [{vals}]")

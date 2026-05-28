@@ -170,9 +170,7 @@ def test_predict_step_values_match_pipeline_stages() -> None:
     result = module.predict_step(batch, batch_idx=0)
 
     assert torch.equal(result["logits"], ref_full.logits.detach().cpu())
-    assert torch.equal(
-        result["query_embeddings"], ref_query_out.query_embeddings.detach().cpu()
-    )
+    assert torch.equal(result["query_embeddings"], ref_query_out.query_embeddings.detach().cpu())
     assert torch.equal(result["doc_ids"], ref_retriever_out.doc_ids.detach().cpu())
     assert torch.equal(result["doc_scores"], ref_retriever_out.doc_scores.detach().cpu())
     assert torch.equal(
@@ -211,9 +209,9 @@ def test_predict_step_values_match_pipeline_stages_marginalized() -> None:
 
         b, k_docs, d_mem = ref_fusion_out.fused_state.shape
         num_classes = module.model.head.linear.out_features
-        ref_per_doc_logits = module.model.head(
-            ref_fusion_out.fused_state.reshape(-1, d_mem)
-        ).view(b, k_docs, num_classes)
+        ref_per_doc_logits = module.model.head(ref_fusion_out.fused_state.reshape(-1, d_mem)).view(
+            b, k_docs, num_classes
+        )
         ref_diff_scores = differentiable_retrieval_scores(
             ref_query_out.query_embeddings,
             ref_retriever_out.doc_key_embeddings,
@@ -223,9 +221,7 @@ def test_predict_step_values_match_pipeline_stages_marginalized() -> None:
     result = module.predict_step(batch, batch_idx=0)
 
     assert torch.equal(result["logits"], ref_full.logits.detach().cpu())
-    assert torch.equal(
-        result["query_embeddings"], ref_query_out.query_embeddings.detach().cpu()
-    )
+    assert torch.equal(result["query_embeddings"], ref_query_out.query_embeddings.detach().cpu())
     assert torch.equal(result["doc_ids"], ref_retriever_out.doc_ids.detach().cpu())
     assert torch.equal(result["doc_scores"], ref_retriever_out.doc_scores.detach().cpu())
     assert torch.equal(
@@ -233,21 +229,16 @@ def test_predict_step_values_match_pipeline_stages_marginalized() -> None:
         ref_retriever_out.doc_key_embeddings.detach().cpu(),
     )
     assert torch.equal(result["targets"], batch.boolean_value.float().detach().cpu())
-    assert torch.equal(
-        result["per_doc_logits"], ref_per_doc_logits.detach().cpu()
-    )
-    assert torch.equal(
-        result["differentiable_doc_scores"], ref_diff_scores.detach().cpu()
-    )
+    assert torch.equal(result["per_doc_logits"], ref_per_doc_logits.detach().cpu())
+    assert torch.equal(result["differentiable_doc_scores"], ref_diff_scores.detach().cpu())
 
 
 def test_extract_artifacts_fills_differentiable_doc_scores_for_non_marginalized(tmp_path) -> None:
     """Non-marginalized runs must get differentiable_doc_scores computed post-hoc.
 
-    Cross-attention / replace-fusion runs without marginalized retrieval don't
-    produce differentiable_doc_scores natively, but downstream diagnostics
-    (keyword_demographic_heatmap, doc-score plots) need them. Since both
-    query_embeddings and doc_key_embeddings are saved, we can compute it.
+    Cross-attention / replace-fusion runs without marginalized retrieval don't produce
+    differentiable_doc_scores natively, but downstream diagnostics (keyword_demographic_heatmap, doc-score
+    plots) need them. Since both query_embeddings and doc_key_embeddings are saved, we can compute it.
     """
     module = _make_module()  # non-marginalized
     batch = make_supervised_batch()

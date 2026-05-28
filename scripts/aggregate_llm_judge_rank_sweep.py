@@ -64,7 +64,7 @@ def _collect_long_rows(judge_dir: Path) -> list[dict]:
 
         try:
             df = pl.read_csv(csv_path)
-        except Exception as exc:  # noqa: BLE001 - protect against malformed CSVs
+        except Exception as exc:
             print(
                 f"WARN: skipping {cell_dir.name}: could not parse family_winrates.csv ({exc}).",
                 file=sys.stderr,
@@ -104,7 +104,7 @@ def aggregate(run_dir: Path) -> Path:
     long_df = pl.DataFrame(long_rows)
     out_path = judge_dir / "all_task_winrates.csv"
     long_df.write_csv(out_path)
-    print(f"Wrote {out_path} ({long_df.height} rows from {len(set(r['task_idx'] for r in long_rows))} tasks)")
+    print(f"Wrote {out_path} ({long_df.height} rows from {len({r['task_idx'] for r in long_rows})} tasks)")
 
     # Surface missing cells: expect every task_idx to appear once per
     # target_rank value observed across the data.
@@ -125,9 +125,7 @@ def aggregate(run_dir: Path) -> Path:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Aggregate per-(task, rank) LLM-judge results into one CSV."
-    )
+    parser = argparse.ArgumentParser(description="Aggregate per-(task, rank) LLM-judge results into one CSV.")
     parser.add_argument(
         "--run_dir",
         type=Path,

@@ -1,7 +1,6 @@
 """Unit tests for the resolver helper in ``scripts/run_extraction_pipeline.py``.
 
-The wrapper itself is mostly subprocess wiring; only the retrieval-db resolver
-has logic worth covering.
+The wrapper itself is mostly subprocess wiring; only the retrieval-db resolver has logic worth covering.
 """
 
 from __future__ import annotations

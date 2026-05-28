@@ -641,9 +641,7 @@ def test_render_demographic_heatmaps_writes_three_pngs_and_returns_tables(tmp_pa
         }
     )
 
-    result = render_demographic_heatmaps(
-        artifacts, provider, patient_frame, output_dir=tmp_path
-    )
+    result = render_demographic_heatmaps(artifacts, provider, patient_frame, output_dir=tmp_path)
 
     for axis in ("age", "race", "gender"):
         assert (tmp_path / f"keyword_demographic_{axis}.pdf").is_file(), axis
@@ -694,9 +692,8 @@ def test_render_demographic_heatmaps_rejects_row_count_mismatch(tmp_path: Path) 
 
 
 def test_render_demographic_heatmaps_displays_placeholder_when_tables_are_empty(tmp_path: Path) -> None:
-    """Exercises the ``if table.size == 0`` placeholder branch: each per-axis
-    PNG is still written (with the placeholder text) even when no rows are
-    available."""
+    """Exercises the ``if table.size == 0`` placeholder branch: each per-axis PNG is still written (with the
+    placeholder text) even when no rows are available."""
     import torch
 
     artifacts = {
@@ -729,17 +726,15 @@ def test_render_demographic_heatmaps_displays_placeholder_when_tables_are_empty(
 
 
 def test_build_comorbidity_keyword_table_multi_membership_sums_correctly() -> None:
-    """A patient flagged for multiple categories contributes to every one of
-    those rows; a patient flagged for none lands in the optional 'None'
-    bucket. Each row is L1-normalized like the demographic version."""
+    """A patient flagged for multiple categories contributes to every one of those rows; a patient flagged for
+    none lands in the optional 'None' bucket.
+
+    Each row is L1-normalized like the demographic version.
+    """
     doc_ids = np.array([[0, 1], [0, 1], [1, 0]], dtype=np.int64)
-    diff_scores = np.array(
-        [[1.0, 0.0], [0.0, 1.0], [1.0, 0.0]], dtype=np.float64
-    )
+    diff_scores = np.array([[1.0, 0.0], [0.0, 1.0], [1.0, 0.0]], dtype=np.float64)
     # Patient 0: both categories. Patient 1: cat_A only. Patient 2: neither.
-    mask = np.array(
-        [[True, True], [True, False], [False, False]], dtype=bool
-    )
+    mask = np.array([[True, True], [True, False], [False, False]], dtype=bool)
     provider = StaticMappingProvider([[("a", 1.0)], [("b", 1.0)]])
 
     table, bin_labels, kw_labels = build_comorbidity_keyword_table(
@@ -780,8 +775,8 @@ def test_build_comorbidity_keyword_table_multi_membership_sums_correctly() -> No
 def test_render_demographic_heatmaps_writes_chronic_png_when_comorbidity_frame_provided(
     tmp_path: Path,
 ) -> None:
-    """When ``comorbidity_frame`` + ``comorbidity_categories`` are passed, the
-    4th PNG appears and the return dict gains a ``'chronic'`` key."""
+    """When ``comorbidity_frame`` + ``comorbidity_categories`` are passed, the 4th PNG appears and the return
+    dict gains a ``'chronic'`` key."""
     import torch
 
     artifacts = {
@@ -830,8 +825,8 @@ def test_render_demographic_heatmaps_writes_chronic_png_when_comorbidity_frame_p
 
 
 def test_pearson_residual_table_zero_when_bin_matches_population() -> None:
-    """When every bin's distribution equals the population's, all residuals
-    should be ~0 (no over/under-representation)."""
+    """When every bin's distribution equals the population's, all residuals should be ~0 (no over/under-
+    representation)."""
     bin_to_keyword_mass = {
         "A": {"k1": 1.0, "k2": 0.5},
         "B": {"k1": 1.0, "k2": 0.5},
@@ -854,8 +849,8 @@ def test_pearson_residual_table_zero_when_bin_matches_population() -> None:
 
 
 def test_pearson_residual_table_positive_when_bin_over_represents_topic() -> None:
-    """A bin retrieving topic k1 disproportionately gets a large positive
-    residual at (bin, k1) and large negative at (bin, k2)."""
+    """A bin retrieving topic k1 disproportionately gets a large positive residual at (bin, k1) and large
+    negative at (bin, k2)."""
     # Two bins, 50 patients each, K=2 keywords. Bin A heavily favors k1,
     # bin B heavily favors k2. With these magnitudes the residuals should
     # comfortably exceed the |z| > 2 significance threshold.
@@ -887,8 +882,7 @@ def test_pearson_residual_table_positive_when_bin_over_represents_topic() -> Non
 
 
 def test_pearson_residual_table_handles_empty_bin_with_nan() -> None:
-    """A bin with zero patients gets an all-NaN row (no division-by-zero
-    explosion, no crash)."""
+    """A bin with zero patients gets an all-NaN row (no division-by-zero explosion, no crash)."""
     bin_to_keyword_mass = {
         "A": {"k1": 10.0, "k2": 5.0},
         "C": {"k1": 0.0, "k2": 0.0},  # empty bin
@@ -912,8 +906,8 @@ def test_pearson_residual_table_handles_empty_bin_with_nan() -> None:
 
 
 def test_pearson_residual_table_zero_for_zero_expected_cells() -> None:
-    """A topic with zero population mass gives expected==0; the residual is
-    defined as 0 there (no nonzero observed minus zero expected to report)."""
+    """A topic with zero population mass gives expected==0; the residual is defined as 0 there (no nonzero
+    observed minus zero expected to report)."""
     bin_to_keyword_mass = {
         "A": {"k1": 5.0, "k_unused": 0.0},
     }
@@ -935,8 +929,8 @@ def test_pearson_residual_table_zero_for_zero_expected_cells() -> None:
 
 
 def test_render_demographic_heatmaps_writes_residuals_csv(tmp_path: Path) -> None:
-    """Renderer also dumps a long-format residuals CSV so per-cell z-scores
-    can be sorted / quoted in the paper without re-rendering PDFs."""
+    """Renderer also dumps a long-format residuals CSV so per-cell z-scores can be sorted / quoted in the
+    paper without re-rendering PDFs."""
     import csv as csv_mod
 
     import torch
@@ -973,8 +967,8 @@ def test_render_demographic_heatmaps_writes_residuals_csv(tmp_path: Path) -> Non
 def test_render_demographic_heatmaps_residuals_csv_includes_chronic_when_provided(
     tmp_path: Path,
 ) -> None:
-    """When ``comorbidity_frame`` is provided, the CSV also gets a ``chronic``
-    axis with one row per (category, keyword) cell."""
+    """When ``comorbidity_frame`` is provided, the CSV also gets a ``chronic`` axis with one row per
+    (category, keyword) cell."""
     import csv as csv_mod
 
     import torch
@@ -1019,9 +1013,12 @@ def test_render_demographic_heatmaps_residuals_csv_includes_chronic_when_provide
 def test_render_demographic_heatmaps_writes_residual_companion_for_each_axis(
     tmp_path: Path,
 ) -> None:
-    """Every demographic axis emitted by ``render_demographic_heatmaps`` must
-    also have a ``_residual.png`` sibling using a diverging colormap. The
-    return dict's per-axis sub-dict gains a ``residual`` key."""
+    """Every demographic axis emitted by ``render_demographic_heatmaps`` must also have a ``_residual.png``
+    sibling using a diverging colormap.
+
+    The
+    return dict's per-axis sub-dict gains a ``residual`` key.
+    """
     import torch
 
     artifacts = {
@@ -1096,9 +1093,7 @@ def provider_inputs(
     else:
         dataset_path = tmp_path / "lda_db"
         _build_lda_corpus(dataset_path)
-        provider = LDATopicProvider(
-            dataset_path, n_topics=2, n_top_words=3, min_topic_weight=0.01
-        )
+        provider = LDATopicProvider(dataset_path, n_topics=2, n_top_words=3, min_topic_weight=0.01)
         # LDA corpus has 12 docs; remap to the first 5 rows.
         doc_ids = np.array(
             [
@@ -1116,7 +1111,7 @@ def provider_inputs(
 def test_total_keyword_mass_per_patient_equals_one(
     provider_inputs: tuple[np.ndarray, np.ndarray, list[str], object],
 ) -> None:
-    """Σ_k Σ_kw softmax_weight × keyword_weight = 1 for every patient."""
+    """Σ_k Σ_kw softmax_weight x keyword_weight = 1 for every patient."""
     doc_ids, diff_scores, _, provider = provider_inputs
 
     weights = _softmax(diff_scores, axis=-1)
@@ -1165,8 +1160,7 @@ def test_demographic_table_row_sums_leq_one_when_truncated(
     row_sums = table.sum(axis=1)
     assert (row_sums <= 1.0 + 1e-9).all()
     assert (row_sums < 1.0 - 1e-9).any(), (
-        "Expected truncation to remove mass from at least one bin; "
-        f"got row sums {row_sums}"
+        f"Expected truncation to remove mass from at least one bin; got row sums {row_sums}"
     )
 
 

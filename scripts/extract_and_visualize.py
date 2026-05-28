@@ -16,7 +16,7 @@ Multitask runs (``targets`` shape ``(N, T)``, NaN-masked) produce the same
 
 - ``query_embeddings_task{K}_{pca,tsne,umap}.pdf`` for each task ``K`` —
   scatter colored by whether task ``K`` is positive (NaN treated as
-  not-positive). The 2-D projection is computed once per method and re-used
+  not-positive). The 2-D projection is computed once per method and reused
   across tasks.
 - ``performance.pdf`` — per-task AUROC bar chart with a horizontal red
   dashed line at the mean over tasks where both classes are present.
@@ -39,13 +39,6 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-# Default location of MIMIC-IV's d_labitems on this cluster. Used to translate
-# `LAB//<itemid>//<unit>` MEDS codes into readable test names (e.g.
-# "Glucose [Urine]"). Override with `--mimic_labitems_path`.
-_DEFAULT_LABITEMS_PATH = Path(
-    "/groups/mm6677_gp/data/MIMIC_MEDS/raw_input/hosp/d_labitems.csv.gz"
-)
-
 import lightning
 import numpy as np
 import pandas as pd
@@ -56,6 +49,11 @@ from torch import Tensor
 
 if TYPE_CHECKING:
     from torch.utils.data import DataLoader
+
+# Default location of MIMIC-IV's d_labitems on this cluster. Used to translate
+# `LAB//<itemid>//<unit>` MEDS codes into readable test names (e.g.
+# "Glucose [Urine]"). Override with `--mimic_labitems_path`.
+_DEFAULT_LABITEMS_PATH = Path("/groups/mm6677_gp/data/MIMIC_MEDS/raw_input/hosp/d_labitems.csv.gz")
 
 # Ensure the project is importable when run from the repo root.
 _repo_root = Path(__file__).resolve().parent.parent
@@ -123,9 +121,7 @@ def run_extraction(run_dir: Path) -> tuple[dict[str, Tensor], Path, Path | None]
 
     extract_dir = run_dir / "extraction"
     cache_existed = (extract_dir / "extraction_artifacts.pt").is_file()
-    artifact_path = extract_artifacts(
-        module, dataloader, trainer, output_dir=extract_dir, use_cache=True
-    )
+    artifact_path = extract_artifacts(module, dataloader, trainer, output_dir=extract_dir, use_cache=True)
     if cache_existed:
         print(f"Using cached artifacts at {artifact_path}; skipped trainer.predict.")
     artifacts = torch.load(artifact_path, weights_only=True)
@@ -206,9 +202,7 @@ def _load_lab_label_lookup(path: Path) -> dict[int, tuple[str, str]] | None:
         return None
 
 
-def _humanize_meds_code(
-    code: str, lab_lookup: dict[int, tuple[str, str]] | None = None
-) -> str:
+def _humanize_meds_code(code: str, lab_lookup: dict[int, tuple[str, str]] | None = None) -> str:
     """Convert a MEDS code into a readable label for figure titles / ticks.
 
     Examples:
@@ -290,7 +284,10 @@ def _short_task_label(task_idx: int, task_names: dict[int, str] | None, *, max_c
 
 
 def _pca_2d(x: np.ndarray) -> np.ndarray:
-    """Project rows of *x* to 2D via PCA (mean-centered SVD).  No sklearn dep."""
+    """Project rows of *x* to 2D via PCA (mean-centered SVD).
+
+    No sklearn dep.
+    """
     x_centered = x - x.mean(axis=0, keepdims=True)
     _, _, vt = np.linalg.svd(x_centered, full_matrices=False)
     return x_centered @ vt[:2].T
@@ -587,9 +584,7 @@ def write_top_retrieved_docs(
     """
     doc_ids_tensor = artifacts["doc_ids"]  # (N, R, K)
     if doc_ids_tensor.ndim != 3 or doc_ids_tensor.shape[1] != 1:
-        raise ValueError(
-            f"Expected doc_ids with shape (N, 1, K); got {tuple(doc_ids_tensor.shape)}."
-        )
+        raise ValueError(f"Expected doc_ids with shape (N, 1, K); got {tuple(doc_ids_tensor.shape)}.")
     doc_ids = doc_ids_tensor[:, 0, :].cpu().numpy().astype(np.int64)  # (N, K)
     n_patients, k_docs = doc_ids.shape
 
@@ -663,8 +658,8 @@ def _render_query_embedding_plots(
 ) -> None:
     """Render query-embedding scatter PDFs for all methods, looped over tasks for multitask.
 
-    The 2-D projection is computed once per method and reused across tasks so
-    t-SNE / UMAP cost is paid 3× total, not 75× for a 25-task run.
+    The 2-D projection is computed once per method and reused across tasks so t-SNE / UMAP cost is paid 3x
+    total, not 75x for a 25-task run.
     """
     projections: dict[str, np.ndarray] = {}
     for method in _METHODS:
@@ -672,8 +667,7 @@ def _render_query_embedding_plots(
             projections[method] = _reduce_2d(query_emb, method)
         except ImportError as exc:
             print(
-                f"Skipping {method} projection: {exc}. "
-                f"Install the missing package to enable it.",
+                f"Skipping {method} projection: {exc}. Install the missing package to enable it.",
                 file=sys.stderr,
             )
 

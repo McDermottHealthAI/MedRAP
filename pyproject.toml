@@ -136,4 +136,4 @@ select = [
 "test_*" = ["DTZ001"]
 
 [tool.ruff.lint.pep8-naming]
-extend-ignore-names = ["*MEDS*", "*NRT*", "D"]
+extend-ignore-names = ["*MEDS*", "*NRT*", "D", "*F1*", "*F2*", "*F3*", "*F4*", "*F5*"]

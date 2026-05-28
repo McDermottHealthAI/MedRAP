@@ -357,8 +357,8 @@ _NULL_UNIT_VALUES = frozenset({"UNK", "N/A", "NA", "NONE", "NULL", "-"})
 
 
 def _unit_from_code(code: str) -> str | None:
-    """Extract the unit slot (third ``//`` segment), or ``None`` when it is
-    missing / a sentinel for "unknown" / a bare numeric ID.
+    """Extract the unit slot (third ``//`` segment), or ``None`` when it is missing / a sentinel for "unknown"
+    / a bare numeric ID.
 
     The third slot is a true unit only for LAB-style codes (``LAB//item//mg/dL``).
     For codes like ``PROCEDURE//END//225459`` the third slot is an item ID,
@@ -476,25 +476,17 @@ def _render_patient_narrative(
         n_icu = int(clinical_summary.get("n_icu_admissions", 0) or 0)
         n_ed = int(clinical_summary.get("n_ed_visits", 0) or 0)
         if n_hosp:
-            util_bits.append(
-                f"{n_hosp} hospital admission" + ("s" if n_hosp != 1 else "")
-            )
+            util_bits.append(f"{n_hosp} hospital admission" + ("s" if n_hosp != 1 else ""))
         if n_icu:
-            util_bits.append(
-                f"{n_icu} ICU stay" + ("s" if n_icu != 1 else "")
-            )
+            util_bits.append(f"{n_icu} ICU stay" + ("s" if n_icu != 1 else ""))
         if n_ed:
-            util_bits.append(
-                f"{n_ed} ED visit" + ("s" if n_ed != 1 else "")
-            )
+            util_bits.append(f"{n_ed} ED visit" + ("s" if n_ed != 1 else ""))
         if util_bits:
             sentences.append("Prior utilization: " + ", ".join(util_bits) + ".")
 
         conditions = clinical_summary.get("chronic_conditions") or []
         if conditions:
-            sentences.append(
-                "History notable for " + ", ".join(conditions) + "."
-            )
+            sentences.append("History notable for " + ", ".join(conditions) + ".")
         else:
             sentences.append("No chronic conditions detected on ICD-10 history.")
 
@@ -568,12 +560,29 @@ _CHRONIC_CONDITION_ICD10_PREFIXES: dict[str, tuple[str, ...]] = {
     "Ischemic heart disease / MI": ("I20", "I21", "I22", "I23", "I24", "I25"),
     "Congestive heart failure": ("I50", "I110", "I130", "I132", "I43"),
     "Cerebrovascular disease": (
-        "I60", "I61", "I62", "I63", "I64", "I65", "I66", "I67", "I68", "I69",
-        "G45", "G46",
+        "I60",
+        "I61",
+        "I62",
+        "I63",
+        "I64",
+        "I65",
+        "I66",
+        "I67",
+        "I68",
+        "I69",
+        "G45",
+        "G46",
     ),
     "Peripheral vascular disease": ("I70", "I71", "I72", "I73", "I74", "I77", "I79"),
     "Chronic pulmonary disease / COPD": (
-        "J40", "J41", "J42", "J43", "J44", "J45", "J46", "J47",
+        "J40",
+        "J41",
+        "J42",
+        "J43",
+        "J44",
+        "J45",
+        "J46",
+        "J47",
     ),
     "Diabetes mellitus": ("E10", "E11", "E12", "E13", "E14"),
     "Chronic kidney disease": ("N18", "N19"),
@@ -629,7 +638,7 @@ def compute_patient_clinical_summary(
         elif code.startswith("TRANSFER_TO//ED"):
             n_ed += 1
         elif code.startswith(_DIAGNOSIS_ICD10_PREFIX):
-            icd = code[len(_DIAGNOSIS_ICD10_PREFIX):]
+            icd = code[len(_DIAGNOSIS_ICD10_PREFIX) :]
             for cond_name, prefixes in _CHRONIC_CONDITION_ICD10_PREFIXES.items():
                 if cond_name in conditions:
                     continue
@@ -709,9 +718,9 @@ class PatientTimelineRenderer:
                 f"Refusing to load an event-level or ambiguous metadata file."
             )
 
-        self._code_to_description: dict[str, str | None] = {
-            c: d for c, d in zip(df["code"].to_list(), df["description"].to_list(), strict=True)
-        }
+        self._code_to_description: dict[str, str | None] = dict(
+            zip(df["code"].to_list(), df["description"].to_list(), strict=True)
+        )
 
     def render(
         self,
@@ -755,8 +764,12 @@ class PatientTimelineRenderer:
 
             value_part = ""
             value = row.get("numeric_value") if "numeric_value" in row else None
-            if value is not None and isinstance(value, (int, float)) and not (
-                isinstance(value, float) and value != value  # NaN
+            if (
+                value is not None
+                and isinstance(value, int | float)
+                and not (
+                    isinstance(value, float) and value != value  # NaN
+                )
             ):
                 formatted = _format_numeric(float(value))
                 if formatted:
@@ -790,9 +803,7 @@ class PatientTimelineRenderer:
         if clinical_summary is not None:
             blocks.append(_format_clinical_summary(clinical_summary))
         if tail:
-            blocks.append(
-                f"TIMELINE (most recent {len(tail)} described events before prediction):"
-            )
+            blocks.append(f"TIMELINE (most recent {len(tail)} described events before prediction):")
             blocks.extend(tail)
         return "\n".join(blocks)
 
@@ -816,7 +827,7 @@ class PatientTimelineRenderer:
         ``RECENT LABS`` — each deduped by description (latest instance wins
         for labs, so the most recent numeric value appears). Admission/transfer
         codes are skipped because they already appear in the
-        ``CLINICAL SUMMARY`` block. Typically ~3-5× shorter than ``render()``.
+        ``CLINICAL SUMMARY`` block. Typically ~3-5x shorter than ``render()``.
         """
         parquet_glob = str(Path(meds_cohort_dir) / "data" / "*" / "*.parquet")
         lf = pl.scan_parquet(parquet_glob).filter(
@@ -871,8 +882,10 @@ class PatientTimelineRenderer:
                 unit = _unit_from_code(code)
                 value = row.get("numeric_value") if "numeric_value" in row else None
                 value_part = ""
-                if value is not None and isinstance(value, (int, float)) and not (
-                    isinstance(value, float) and value != value
+                if (
+                    value is not None
+                    and isinstance(value, int | float)
+                    and not (isinstance(value, float) and value != value)
                 ):
                     formatted = _format_numeric(float(value))
                     if formatted:
@@ -895,9 +908,7 @@ class PatientTimelineRenderer:
         ]
 
         blocks: list[str] = []
-        narrative = _render_patient_narrative(
-            demographics, prediction_time, clinical_summary
-        )
+        narrative = _render_patient_narrative(demographics, prediction_time, clinical_summary)
         if narrative is not None:
             blocks.append(narrative)
         for title, items in sections:
@@ -967,9 +978,7 @@ class JudgePromptBuilder:
             self._n_rows = 0
 
     def _doc_text(self, doc_id: int) -> str:
-        row = _resolve_doc_row(
-            doc_id, doc_id_to_row=self.doc_id_to_row, n_rows=self._n_rows
-        )
+        row = _resolve_doc_row(doc_id, doc_id_to_row=self.doc_id_to_row, n_rows=self._n_rows)
         if row is None:
             return f"[document id={doc_id} not available]"
         text = self.retrieval_ds[int(row)][self.doc_text_column]
@@ -1001,9 +1010,7 @@ class JudgePromptBuilder:
 # ---------------------------------------------------------------------------
 
 
-def _stratified_anchor_sample(
-    labels: np.ndarray, n_patients: int, rng: np.random.Generator
-) -> np.ndarray:
+def _stratified_anchor_sample(labels: np.ndarray, n_patients: int, rng: np.random.Generator) -> np.ndarray:
     """50/50-by-label anchor selection, clamped to what's available."""
     pos_pool = np.where(labels == 1)[0]
     neg_pool = np.where(labels == 0)[0]
@@ -1047,7 +1054,10 @@ def build_pairs(
     anchors = _stratified_anchor_sample(labels, n_patients, rng)
 
     def _sample_other_row(pool: np.ndarray, target_doc: int) -> tuple[int, int] | None:
-        """Pick a row from pool whose top-1 != target_doc. None if dedupe fails."""
+        """Pick a row from pool whose top-1 != target_doc.
+
+        None if dedupe fails.
+        """
         if len(pool) == 0:
             return None
         for _ in range(10):
@@ -1300,9 +1310,7 @@ def summarize_winrates(
     if df.height == 0:
         unique_groups: list[dict[str, Any]] = []
     else:
-        unique_groups = (
-            df.select(group_keys).unique().sort(group_keys).to_dicts()
-        )
+        unique_groups = df.select(group_keys).unique().sort(group_keys).to_dicts()
 
     results: list[dict[str, Any]] = []
     for group_vals in unique_groups:
@@ -1315,12 +1323,8 @@ def summarize_winrates(
         n_invalid = fam_df.filter(pl.col("target_won").is_null()).height
 
         invalid_rows = fam_df.filter(pl.col("target_won").is_null())
-        winners = (
-            invalid_rows["winner_position"].to_list() if has_winner else [None] * invalid_rows.height
-        )
-        rationales = (
-            invalid_rows["rationale"].to_list() if has_rationale else [None] * invalid_rows.height
-        )
+        winners = invalid_rows["winner_position"].to_list() if has_winner else [None] * invalid_rows.height
+        rationales = invalid_rows["rationale"].to_list() if has_rationale else [None] * invalid_rows.height
         counts = {
             "tie": 0,
             "api_error": 0,
@@ -1328,7 +1332,7 @@ def summarize_winrates(
             "client_init_error": 0,
             "other_invalid": 0,
         }
-        for w, r in zip(winners, rationales):
+        for w, r in zip(winners, rationales, strict=False):
             label = _classify_invalid_row(w, r)
             if label == "valid":
                 # Shouldn't happen (target_won is null only when winner is tie/invalid),
@@ -1342,9 +1346,7 @@ def summarize_winrates(
         elif invalid_policy == "count_as_loss":
             working = fam_df.with_columns(pl.col("target_won").fill_null(False))
         else:  # half_credit_ties
-            working = fam_df.with_columns(
-                pl.col("target_won").cast(pl.Float64).fill_null(0.5)
-            )
+            working = fam_df.with_columns(pl.col("target_won").cast(pl.Float64).fill_null(0.5))
 
         if working.height == 0:
             results.append(
@@ -1573,9 +1575,7 @@ def build_per_patient_rollup(
             row[f"target_doc_{c}"] = target_fields["meta"][c]
 
         for fam in families:
-            group = verdicts.filter(
-                (pl.col("anchor_subject_id") == anchor_sid) & (pl.col("family") == fam)
-            )
+            group = verdicts.filter((pl.col("anchor_subject_id") == anchor_sid) & (pl.col("family") == fam))
             if group.height == 0:
                 row[f"{fam}_target_won"] = None
                 row[f"{fam}_winner_position"] = None
@@ -1593,9 +1593,7 @@ def build_per_patient_rollup(
 
             first = group.row(0, named=True)
             valid_tw = group["target_won"].drop_nulls()
-            row[f"{fam}_target_won"] = (
-                float(valid_tw.cast(pl.Float64).mean()) if valid_tw.len() > 0 else None
-            )
+            row[f"{fam}_target_won"] = float(valid_tw.cast(pl.Float64).mean()) if valid_tw.len() > 0 else None
             row[f"{fam}_winner_position"] = first.get("winner_position")
             conf = group["confidence"].drop_nulls()
             row[f"{fam}_confidence"] = float(conf.mean()) if conf.len() > 0 else None
@@ -1653,10 +1651,9 @@ def build_human_validation_subset(
     else:
         remaining = target_n - sum(floors.values())
         props: dict[str, float] = {
-            f: (family_sizes[f] - floors[f]) / max(total - sum(floors.values()), 1)
-            for f in families
+            f: (family_sizes[f] - floors[f]) / max(total - sum(floors.values()), 1) for f in families
         }
-        extras = {f: int(round(remaining * props[f])) for f in families}
+        extras = {f: round(remaining * props[f]) for f in families}
         alloc = {f: min(floors[f] + extras[f], family_sizes[f]) for f in families}
 
     sampled_frames: list[pl.DataFrame] = []
@@ -1682,7 +1679,7 @@ def build_human_validation_subset(
         n_rows = 0
 
     def _doc_fields(doc_id: int | None) -> dict[str, Any]:
-        out: dict[str, Any] = {"text": "", "meta": {c: None for c in available_meta}}
+        out: dict[str, Any] = {"text": "", "meta": dict.fromkeys(available_meta)}
         row = _resolve_doc_row(doc_id, doc_id_to_row=doc_id_to_row, n_rows=n_rows)
         if row is None:
             return out

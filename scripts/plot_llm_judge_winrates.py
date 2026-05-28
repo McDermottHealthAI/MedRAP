@@ -35,10 +35,9 @@ from pathlib import Path
 import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
-import polars as pl  # noqa: E402
-
+import matplotlib.pyplot as plt
+import numpy as np
+import polars as pl
 
 _HIGH_TIE_THRESHOLD = 0.95
 
@@ -111,9 +110,7 @@ def _plot_family(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Plot per-task LLM-judge win-rate with bootstrap SE bars."
-    )
+    parser = argparse.ArgumentParser(description="Plot per-task LLM-judge win-rate with bootstrap SE bars.")
     parser.add_argument(
         "--run_dir",
         type=Path,
@@ -161,8 +158,7 @@ def main() -> int:
     if fam_df.height == 0:
         available = sorted(df["family"].unique().to_list())
         print(
-            f"Error: no rows for family={args.family!r} in {csv_path}. "
-            f"Available families: {available}.",
+            f"Error: no rows for family={args.family!r} in {csv_path}. Available families: {available}.",
             file=sys.stderr,
         )
         return 2
@@ -179,11 +175,7 @@ def main() -> int:
         ranks = sorted({int(r) for r in fam_df["target_rank"].to_list()})
         for rank in ranks:
             rank_df = fam_df.filter(pl.col("target_rank") == rank)
-            output_path = (
-                args.run_dir
-                / "llm_judge"
-                / f"winrates_per_task_{args.family}_rank{rank + 1}.pdf"
-            )
+            output_path = args.run_dir / "llm_judge" / f"winrates_per_task_{args.family}_rank{rank + 1}.pdf"
             _plot_family(
                 rank_df,
                 family=args.family,
@@ -192,10 +184,7 @@ def main() -> int:
             )
         return 0
 
-    output_path = (
-        args.output_path
-        or args.run_dir / "llm_judge" / f"winrates_per_task_{args.family}.pdf"
-    )
+    output_path = args.output_path or args.run_dir / "llm_judge" / f"winrates_per_task_{args.family}.pdf"
     _plot_family(fam_df, family=args.family, output_path=output_path)
     return 0
 

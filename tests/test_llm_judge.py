@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import math
 from datetime import datetime
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
 import pytest
 from datasets import Dataset
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 from medrap.llm_judge import (
     FakeJudge,
@@ -34,7 +37,6 @@ from medrap.llm_judge import (
     summarize_winrates,
     write_results_workbook,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -118,9 +120,7 @@ def _make_meds_cohort(
                 val = None
             else:
                 t, code, val = ev
-            rows.append(
-                {"subject_id": sid, "time": t, "code": code, "numeric_value": val}
-            )
+            rows.append({"subject_id": sid, "time": t, "code": code, "numeric_value": val})
     pl.DataFrame(
         rows,
         schema={
@@ -134,7 +134,7 @@ def _make_meds_cohort(
 
 
 # ---------------------------------------------------------------------------
-# T1–T8: build_pairs
+# T1-T8: build_pairs
 # ---------------------------------------------------------------------------
 
 
@@ -272,17 +272,17 @@ def test_build_pairs_deduplicates_identical_target_and_other_doc() -> None:
 def test_build_pairs_is_deterministic_with_seed() -> None:
     artifacts = _make_artifacts(n_patients=20, k=5, labels=[0] * 10 + [1] * 10)
     schema = _make_val_schema(list(range(20)))
-    kwargs = dict(
-        artifacts=artifacts,
-        val_schema=schema,
-        labels=artifacts["targets"].astype(int),
-        families=("F1", "F2", "F3", "F4"),
-        n_patients=8,
-        pairs_per_patient_per_family=1,
-        corpus_size=10_000,
-        k=5,
-        seed=123,
-    )
+    kwargs = {
+        "artifacts": artifacts,
+        "val_schema": schema,
+        "labels": artifacts["targets"].astype(int),
+        "families": ("F1", "F2", "F3", "F4"),
+        "n_patients": 8,
+        "pairs_per_patient_per_family": 1,
+        "corpus_size": 10_000,
+        "k": 5,
+        "seed": 123,
+    }
     a = build_pairs(**kwargs)
     b = build_pairs(**kwargs)
     assert [p.pair_id for p in a] == [p.pair_id for p in b]
@@ -347,8 +347,8 @@ def test_build_pairs_f1_default_keeps_rank_zero() -> None:
 
 
 def test_build_pairs_f1_rank_sweep_emits_one_pair_per_rank_per_patient() -> None:
-    """``f1_rank_sweep=True`` iterates over ranks 0..k-1; each pair tags its
-    rank and uses the rank-k retrieved doc as the target."""
+    """``f1_rank_sweep=True`` iterates over ranks 0..k-1; each pair tags its rank and uses the rank-k
+    retrieved doc as the target."""
     artifacts = _make_artifacts(n_patients=4, k=3, labels=[0, 1, 0, 1])
     schema = _make_val_schema(list(range(4)))
     pairs = build_pairs(
@@ -393,8 +393,8 @@ def test_build_pairs_f1_target_rank_restricts_to_single_rank() -> None:
 
 
 def test_build_pairs_f1_target_rank_overrides_rank_sweep() -> None:
-    """If both ``f1_target_rank`` and ``f1_rank_sweep`` are set, the explicit
-    target wins (single rank emitted)."""
+    """If both ``f1_target_rank`` and ``f1_rank_sweep`` are set, the explicit target wins (single rank
+    emitted)."""
     artifacts = _make_artifacts(n_patients=4, k=3, labels=[0, 1, 0, 1])
     schema = _make_val_schema(list(range(4)))
     pairs = build_pairs(
@@ -415,17 +415,45 @@ def test_build_pairs_f1_target_rank_overrides_rank_sweep() -> None:
 
 
 def test_summarize_winrates_extra_group_cols_breaks_out_per_rank() -> None:
-    """``extra_group_cols=('target_rank',)`` produces one summary row per
-    (family, target_rank) instead of collapsing to one row per family."""
+    """``extra_group_cols=('target_rank',)`` produces one summary row per (family, target_rank) instead of
+    collapsing to one row per family."""
     rows = [
-        {"pair_id": "p1", "family": "F1", "anchor_subject_id": 1, "anchor_label": 0,
-         "target_won": True, "target_rank": 0, "winner_position": "A"},
-        {"pair_id": "p2", "family": "F1", "anchor_subject_id": 2, "anchor_label": 0,
-         "target_won": True, "target_rank": 0, "winner_position": "A"},
-        {"pair_id": "p3", "family": "F1", "anchor_subject_id": 3, "anchor_label": 0,
-         "target_won": False, "target_rank": 1, "winner_position": "B"},
-        {"pair_id": "p4", "family": "F1", "anchor_subject_id": 4, "anchor_label": 0,
-         "target_won": False, "target_rank": 1, "winner_position": "B"},
+        {
+            "pair_id": "p1",
+            "family": "F1",
+            "anchor_subject_id": 1,
+            "anchor_label": 0,
+            "target_won": True,
+            "target_rank": 0,
+            "winner_position": "A",
+        },
+        {
+            "pair_id": "p2",
+            "family": "F1",
+            "anchor_subject_id": 2,
+            "anchor_label": 0,
+            "target_won": True,
+            "target_rank": 0,
+            "winner_position": "A",
+        },
+        {
+            "pair_id": "p3",
+            "family": "F1",
+            "anchor_subject_id": 3,
+            "anchor_label": 0,
+            "target_won": False,
+            "target_rank": 1,
+            "winner_position": "B",
+        },
+        {
+            "pair_id": "p4",
+            "family": "F1",
+            "anchor_subject_id": 4,
+            "anchor_label": 0,
+            "target_won": False,
+            "target_rank": 1,
+            "winner_position": "B",
+        },
     ]
     df = _verdicts_df(rows)
     summary = summarize_winrates(
@@ -446,10 +474,24 @@ def test_summarize_winrates_extra_group_cols_breaks_out_per_rank() -> None:
 def test_summarize_winrates_without_extra_group_cols_unchanged() -> None:
     """Default behavior (no ``extra_group_cols``) stays one row per family."""
     rows = [
-        {"pair_id": "p1", "family": "F1", "anchor_subject_id": 1, "anchor_label": 0,
-         "target_won": True, "target_rank": 0, "winner_position": "A"},
-        {"pair_id": "p2", "family": "F1", "anchor_subject_id": 2, "anchor_label": 0,
-         "target_won": False, "target_rank": 1, "winner_position": "B"},
+        {
+            "pair_id": "p1",
+            "family": "F1",
+            "anchor_subject_id": 1,
+            "anchor_label": 0,
+            "target_won": True,
+            "target_rank": 0,
+            "winner_position": "A",
+        },
+        {
+            "pair_id": "p2",
+            "family": "F1",
+            "anchor_subject_id": 2,
+            "anchor_label": 0,
+            "target_won": False,
+            "target_rank": 1,
+            "winner_position": "B",
+        },
     ]
     df = _verdicts_df(rows)
     summary = summarize_winrates(df, n_bootstrap=0, invalid_policy="drop")
@@ -477,7 +519,7 @@ def test_stratified_patient_sample_respects_label_balance() -> None:
 
 
 # ---------------------------------------------------------------------------
-# T10–T11: run_judge
+# T10-T11: run_judge
 # ---------------------------------------------------------------------------
 
 
@@ -524,7 +566,7 @@ def test_run_judge_roundtrips_fake_verdicts_to_dataframe(tmp_path: Path) -> None
     judge = FakeJudge.always_A()
     df = run_judge(pairs, judge=judge, prompt_builder=builder, max_workers=1, progress=False)
     assert isinstance(df, pl.DataFrame)
-    assert set(["pair_id", "family", "target_won", "winner_position"]).issubset(df.columns)
+    assert {"pair_id", "family", "target_won", "winner_position"}.issubset(df.columns)
     assert df.height == len(pairs)
 
 
@@ -562,7 +604,7 @@ def test_run_judge_marks_target_won_based_on_target_position(tmp_path: Path) -> 
 
 
 # ---------------------------------------------------------------------------
-# T12–T13: prompt builder
+# T12-T13: prompt builder
 # ---------------------------------------------------------------------------
 
 
@@ -580,12 +622,24 @@ def test_prompt_builder_places_target_according_to_position(tmp_path: Path) -> N
     )
 
     pair_a = JudgePair(
-        pair_id="p1", family="F1", anchor_row_idx=0, anchor_subject_id=1, anchor_label=1,
-        target_doc_id=100, other_doc_id=101, target_position="A",
+        pair_id="p1",
+        family="F1",
+        anchor_row_idx=0,
+        anchor_subject_id=1,
+        anchor_label=1,
+        target_doc_id=100,
+        other_doc_id=101,
+        target_position="A",
     )
     pair_b = JudgePair(
-        pair_id="p2", family="F1", anchor_row_idx=0, anchor_subject_id=1, anchor_label=1,
-        target_doc_id=100, other_doc_id=101, target_position="B",
+        pair_id="p2",
+        family="F1",
+        anchor_row_idx=0,
+        anchor_subject_id=1,
+        anchor_label=1,
+        target_doc_id=100,
+        other_doc_id=101,
+        target_position="B",
     )
     _, up_a = builder.build(pair_a, patient_timeline="EV1\nEV2")
     _, up_b = builder.build(pair_b, patient_timeline="EV1\nEV2")
@@ -606,13 +660,27 @@ def test_prompt_builder_uses_xml_delimited_sections_and_rubric(tmp_path: Path) -
         doc_id_to_row={100: 0, 101: 1},
     )
     pair = JudgePair(
-        pair_id="p1", family="F1", anchor_row_idx=0, anchor_subject_id=1, anchor_label=1,
-        target_doc_id=100, other_doc_id=101, target_position="A",
+        pair_id="p1",
+        family="F1",
+        anchor_row_idx=0,
+        anchor_subject_id=1,
+        anchor_label=1,
+        target_doc_id=100,
+        other_doc_id=101,
+        target_position="A",
     )
     sys_p, user_p = builder.build(pair, patient_timeline="PATIENT: 50yo M")
     # XML-delimited sections in the user prompt.
-    for tag in ("<task>", "</task>", "<patient>", "</patient>",
-                "<document_a>", "</document_a>", "<document_b>", "</document_b>"):
+    for tag in (
+        "<task>",
+        "</task>",
+        "<patient>",
+        "</patient>",
+        "<document_a>",
+        "</document_a>",
+        "<document_b>",
+        "</document_b>",
+    ):
         assert tag in user_p, f"missing tag {tag}"
     # Section order: task → patient → doc A → doc B.
     assert (
@@ -645,8 +713,14 @@ def test_prompt_builder_truncates_doc_texts_to_max_chars(tmp_path: Path) -> None
         max_doc_chars=100,
     )
     pair = JudgePair(
-        pair_id="p1", family="F1", anchor_row_idx=0, anchor_subject_id=1, anchor_label=1,
-        target_doc_id=42, other_doc_id=42, target_position="A",
+        pair_id="p1",
+        family="F1",
+        anchor_row_idx=0,
+        anchor_subject_id=1,
+        anchor_label=1,
+        target_doc_id=42,
+        other_doc_id=42,
+        target_position="A",
     )
     _, user_prompt = builder.build(pair, patient_timeline="")
     assert "x" * 101 not in user_prompt
@@ -654,7 +728,7 @@ def test_prompt_builder_truncates_doc_texts_to_max_chars(tmp_path: Path) -> None
 
 
 # ---------------------------------------------------------------------------
-# T14–T15a: timeline renderer
+# T14-T15a: timeline renderer
 # ---------------------------------------------------------------------------
 
 
@@ -684,8 +758,8 @@ def test_timeline_renderer_returns_last_n_events_before_prediction_time(tmp_path
 
 
 def test_timeline_drops_null_description_events(tmp_path: Path) -> None:
-    """Events whose code has a null description in codes.parquet are noise
-    (raw MIMIC itemids like ``LAB//227944//UNK``) and must be dropped."""
+    """Events whose code has a null description in codes.parquet are noise (raw MIMIC itemids like
+    ``LAB//227944//UNK``) and must be dropped."""
     codes_fp = _save_codes_parquet(
         tmp_path,
         ["LAB//GOOD", "LAB//BAD//UNK", "DIAGNOSIS//ICD10//I509"],
@@ -717,10 +791,7 @@ def test_timeline_collapses_consecutive_duplicates(tmp_path: Path) -> None:
         ["LAB//LACTATE//mmol/L"],
         ["Lactate in Blood"],
     )
-    events = [
-        (datetime(2024, 1, 1, h, 0), "LAB//LACTATE//mmol/L", 2.0 + 0.1 * h)
-        for h in range(6)
-    ]
+    events = [(datetime(2024, 1, 1, h, 0), "LAB//LACTATE//mmol/L", 2.0 + 0.1 * h) for h in range(6)]
     cohort = _make_meds_cohort(tmp_path, {7: events})
     renderer = PatientTimelineRenderer(codes_parquet=codes_fp, max_events=20)
     text = renderer.render(7, datetime(2025, 1, 1), cohort)
@@ -732,8 +803,8 @@ def test_timeline_collapses_consecutive_duplicates(tmp_path: Path) -> None:
 
 
 def test_timeline_prepends_demographic_block(tmp_path: Path) -> None:
-    """A demographic header should be rendered even when the static
-    demographic codes themselves fell outside the last-N event window."""
+    """A demographic header should be rendered even when the static demographic codes themselves fell outside
+    the last-N event window."""
     codes_fp = _save_codes_parquet(tmp_path, ["LAB//X"], ["Glucose"])
     cohort = _make_meds_cohort(
         tmp_path,
@@ -780,9 +851,11 @@ def test_timeline_includes_numeric_values_with_units(tmp_path: Path) -> None:
 
 
 def test_timeline_collapses_multiline_descriptions(tmp_path: Path) -> None:
-    """Some MIMIC codes (e.g. INFUSION_START itemids) have descriptions that
-    span multiple preparations joined by '\\n'. The renderer must collapse
-    them so later lines don't orphan without a type prefix."""
+    """Some MIMIC codes (e.g. INFUSION_START itemids) have descriptions that span multiple preparations joined
+    by '\\n'.
+
+    The renderer must collapse them so later lines don't orphan without a type prefix.
+    """
     codes_fp = _save_codes_parquet(
         tmp_path,
         ["INFUSION_START//225798"],
@@ -803,8 +876,8 @@ def test_timeline_collapses_multiline_descriptions(tmp_path: Path) -> None:
 
 
 def test_timeline_respects_max_events_after_filtering(tmp_path: Path) -> None:
-    """``max_events`` caps the number of rendered events *after* filtering
-    null-description events and deduplicating consecutive duplicates."""
+    """``max_events`` caps the number of rendered events *after* filtering null-description events and
+    deduplicating consecutive duplicates."""
     codes_fp = _save_codes_parquet(
         tmp_path,
         ["LAB//NOISE//UNK", "LAB//KEEP"] + [f"LAB//E{i}" for i in range(5)],
@@ -867,9 +940,9 @@ def test_compute_patient_clinical_summary_flags_chronic_conditions_from_icd10(
         {
             7: [
                 (datetime(2023, 1, 1), "DIAGNOSIS//ICD//10//E1165"),  # diabetes
-                (datetime(2023, 1, 2), "DIAGNOSIS//ICD//10//N183"),   # CKD
-                (datetime(2023, 1, 3), "DIAGNOSIS//ICD//10//I509"),   # CHF
-                (datetime(2023, 1, 4), "DIAGNOSIS//ICD//10//J449"),   # COPD
+                (datetime(2023, 1, 2), "DIAGNOSIS//ICD//10//N183"),  # CKD
+                (datetime(2023, 1, 3), "DIAGNOSIS//ICD//10//I509"),  # CHF
+                (datetime(2023, 1, 4), "DIAGNOSIS//ICD//10//J449"),  # COPD
                 (datetime(2023, 1, 5), "DIAGNOSIS//ICD//10//Z5189"),  # non-Charlson
             ]
         },
@@ -900,7 +973,10 @@ def test_timeline_renderer_includes_clinical_summary_when_provided(tmp_path: Pat
         "chronic_condition_count": 2,
     }
     text = renderer.render(
-        9, datetime(2024, 1, 2), cohort, clinical_summary=summary,
+        9,
+        datetime(2024, 1, 2),
+        cohort,
+        clinical_summary=summary,
     )
     assert "CLINICAL SUMMARY:" in text
     assert "3 hospital admission(s)" in text
@@ -1052,15 +1128,11 @@ def test_categorical_renderer_caps_per_category(tmp_path: Path) -> None:
     cohort = _make_meds_cohort(
         tmp_path,
         {
-            3: [
-                (datetime(2024, 1, 1, 0, i), f"DIAGNOSIS//ICD//10//D{i}") for i in range(10)
-            ],
+            3: [(datetime(2024, 1, 1, 0, i), f"DIAGNOSIS//ICD//10//D{i}") for i in range(10)],
         },
     )
     renderer = PatientTimelineRenderer(codes_parquet=codes_fp, max_events=100)
-    text = renderer.render_categorical(
-        3, datetime(2024, 1, 2), cohort, max_diagnoses=3
-    )
+    text = renderer.render_categorical(3, datetime(2024, 1, 2), cohort, max_diagnoses=3)
     # Cap retains the last 3 (most recent) only.
     assert "Diagnosis 9" in text
     assert "Diagnosis 7" in text
@@ -1069,7 +1141,7 @@ def test_categorical_renderer_caps_per_category(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# T16–T19, T24: aggregation / bootstrap
+# T16-T19, T24: aggregation / bootstrap
 # ---------------------------------------------------------------------------
 
 
@@ -1126,7 +1198,13 @@ def test_summarize_winrates_point_estimate_matches_hand_computed() -> None:
 def test_summarize_winrates_bootstrap_ci_covers_point_estimate() -> None:
     df = _verdicts_df(
         [
-            {"pair_id": f"p{i}", "family": "F1", "anchor_subject_id": i, "anchor_label": 0, "target_won": bool(i % 2)}
+            {
+                "pair_id": f"p{i}",
+                "family": "F1",
+                "anchor_subject_id": i,
+                "anchor_label": 0,
+                "target_won": bool(i % 2),
+            }
             for i in range(1, 21)
         ]
     )
@@ -1138,29 +1216,46 @@ def test_summarize_winrates_bootstrap_ci_covers_point_estimate() -> None:
 def test_summarize_winrates_half_credit_ties_matches_hand_computed() -> None:
     """Each tie counts as 0.5 of a win, ie rate = (wins + 0.5*ties) / n_pairs.
 
-    With 3 wins, 6 losses, 91 ties across distinct anchors (one pair per
-    patient, so the per-patient mean equals the per-pair value), the
-    headline rate must equal (3 + 0.5 * 91) / 100 = 0.485.
+    With 3 wins, 6 losses, 91 ties across distinct anchors (one pair per patient, so the per-patient mean
+    equals the per-pair value), the headline rate must equal (3 + 0.5 * 91) / 100 = 0.485.
     """
     rows: list[dict] = []
     anchor = 1
     for _ in range(3):  # wins
-        rows.append({
-            "pair_id": f"p{anchor}", "family": "F1", "anchor_subject_id": anchor,
-            "anchor_label": 0, "target_won": True, "winner_position": "A",
-        })
+        rows.append(
+            {
+                "pair_id": f"p{anchor}",
+                "family": "F1",
+                "anchor_subject_id": anchor,
+                "anchor_label": 0,
+                "target_won": True,
+                "winner_position": "A",
+            }
+        )
         anchor += 1
     for _ in range(6):  # losses
-        rows.append({
-            "pair_id": f"p{anchor}", "family": "F1", "anchor_subject_id": anchor,
-            "anchor_label": 0, "target_won": False, "winner_position": "B",
-        })
+        rows.append(
+            {
+                "pair_id": f"p{anchor}",
+                "family": "F1",
+                "anchor_subject_id": anchor,
+                "anchor_label": 0,
+                "target_won": False,
+                "winner_position": "B",
+            }
+        )
         anchor += 1
     for _ in range(91):  # ties
-        rows.append({
-            "pair_id": f"p{anchor}", "family": "F1", "anchor_subject_id": anchor,
-            "anchor_label": 0, "target_won": None, "winner_position": "tie",
-        })
+        rows.append(
+            {
+                "pair_id": f"p{anchor}",
+                "family": "F1",
+                "anchor_subject_id": anchor,
+                "anchor_label": 0,
+                "target_won": None,
+                "winner_position": "tie",
+            }
+        )
         anchor += 1
     df = _verdicts_df(rows)
 
@@ -1189,10 +1284,22 @@ def test_summarize_winrates_half_credit_ties_matches_hand_computed() -> None:
 def test_summarize_winrates_drop_vs_count_as_loss_policy() -> None:
     df = _verdicts_df(
         [
-            {"pair_id": "p1", "family": "F1", "anchor_subject_id": 1, "anchor_label": 0, "target_won": True,
-             "winner_position": "A"},
-            {"pair_id": "p2", "family": "F1", "anchor_subject_id": 2, "anchor_label": 0, "target_won": None,
-             "winner_position": "tie"},
+            {
+                "pair_id": "p1",
+                "family": "F1",
+                "anchor_subject_id": 1,
+                "anchor_label": 0,
+                "target_won": True,
+                "winner_position": "A",
+            },
+            {
+                "pair_id": "p2",
+                "family": "F1",
+                "anchor_subject_id": 2,
+                "anchor_label": 0,
+                "target_won": None,
+                "winner_position": "tie",
+            },
         ]
     )
     drop = summarize_winrates(df, n_bootstrap=50, seed=0, invalid_policy="drop")
@@ -1216,19 +1323,60 @@ def test_summarize_winrates_splits_invalid_into_labeled_error_columns() -> None:
     # One of each failure mode, plus one valid row. target_won=None for invalids.
     df = _verdicts_df(
         [
-            {"pair_id": "valid", "family": "F1", "anchor_subject_id": 1, "anchor_label": 0,
-             "target_won": True, "winner_position": "A", "rationale": "ok"},
-            {"pair_id": "tie", "family": "F1", "anchor_subject_id": 2, "anchor_label": 0,
-             "target_won": None, "winner_position": "tie", "rationale": "equally relevant"},
-            {"pair_id": "api", "family": "F1", "anchor_subject_id": 3, "anchor_label": 0,
-             "target_won": None, "winner_position": "invalid", "rationale": "api error: 500 server error"},
-            {"pair_id": "parse", "family": "F1", "anchor_subject_id": 4, "anchor_label": 0,
-             "target_won": None, "winner_position": "invalid", "rationale": "parse error: bad JSON"},
-            {"pair_id": "init", "family": "F1", "anchor_subject_id": 5, "anchor_label": 0,
-             "target_won": None, "winner_position": "invalid",
-             "rationale": "openai client init failed: missing OPENAI_API_KEY"},
-            {"pair_id": "other", "family": "F1", "anchor_subject_id": 6, "anchor_label": 0,
-             "target_won": None, "winner_position": "invalid", "rationale": "something else"},
+            {
+                "pair_id": "valid",
+                "family": "F1",
+                "anchor_subject_id": 1,
+                "anchor_label": 0,
+                "target_won": True,
+                "winner_position": "A",
+                "rationale": "ok",
+            },
+            {
+                "pair_id": "tie",
+                "family": "F1",
+                "anchor_subject_id": 2,
+                "anchor_label": 0,
+                "target_won": None,
+                "winner_position": "tie",
+                "rationale": "equally relevant",
+            },
+            {
+                "pair_id": "api",
+                "family": "F1",
+                "anchor_subject_id": 3,
+                "anchor_label": 0,
+                "target_won": None,
+                "winner_position": "invalid",
+                "rationale": "api error: 500 server error",
+            },
+            {
+                "pair_id": "parse",
+                "family": "F1",
+                "anchor_subject_id": 4,
+                "anchor_label": 0,
+                "target_won": None,
+                "winner_position": "invalid",
+                "rationale": "parse error: bad JSON",
+            },
+            {
+                "pair_id": "init",
+                "family": "F1",
+                "anchor_subject_id": 5,
+                "anchor_label": 0,
+                "target_won": None,
+                "winner_position": "invalid",
+                "rationale": "openai client init failed: missing OPENAI_API_KEY",
+            },
+            {
+                "pair_id": "other",
+                "family": "F1",
+                "anchor_subject_id": 6,
+                "anchor_label": 0,
+                "target_won": None,
+                "winner_position": "invalid",
+                "rationale": "something else",
+            },
         ]
     )
     summary = summarize_winrates(df, n_bootstrap=50, seed=0)
@@ -1254,7 +1402,13 @@ def test_summarize_winrates_standard_error_matches_bootstrap_std() -> None:
     # With identical per-patient values, bootstrap variance must be 0.
     df = _verdicts_df(
         [
-            {"pair_id": f"p{i}", "family": "F1", "anchor_subject_id": i, "anchor_label": 0, "target_won": True}
+            {
+                "pair_id": f"p{i}",
+                "family": "F1",
+                "anchor_subject_id": i,
+                "anchor_label": 0,
+                "target_won": True,
+            }
             for i in range(1, 11)
         ]
     )
@@ -1265,7 +1419,7 @@ def test_summarize_winrates_standard_error_matches_bootstrap_std() -> None:
 
 
 # ---------------------------------------------------------------------------
-# T20–T21, T31: human validation subset
+# T20-T21, T31: human validation subset
 # ---------------------------------------------------------------------------
 
 
@@ -1276,8 +1430,16 @@ def test_human_validation_subset_strips_target_and_position_columns(tmp_path: Pa
     ds = load_from_disk(str(ds_path))
     df = _verdicts_df(
         [
-            {"pair_id": f"p{i}", "family": "F1", "anchor_subject_id": i, "anchor_label": 0,
-             "target_won": True, "target_doc_id": 100, "other_doc_id": 101, "target_position": "A"}
+            {
+                "pair_id": f"p{i}",
+                "family": "F1",
+                "anchor_subject_id": i,
+                "anchor_label": 0,
+                "target_won": True,
+                "target_doc_id": 100,
+                "other_doc_id": 101,
+                "target_position": "A",
+            }
             for i in range(1, 11)
         ]
     )
@@ -1295,9 +1457,16 @@ def test_human_validation_subset_preserves_pair_id_for_rejoining(tmp_path: Path)
     ds = load_from_disk(str(ds_path))
     df = _verdicts_df(
         [
-            {"pair_id": f"p{i}", "family": "F1", "anchor_subject_id": i, "anchor_label": 0,
-             "target_won": True, "target_doc_id": 100 + (i % 5), "other_doc_id": 100 + ((i + 1) % 5),
-             "target_position": "A"}
+            {
+                "pair_id": f"p{i}",
+                "family": "F1",
+                "anchor_subject_id": i,
+                "anchor_label": 0,
+                "target_won": True,
+                "target_doc_id": 100 + (i % 5),
+                "other_doc_id": 100 + ((i + 1) % 5),
+                "target_position": "A",
+            }
             for i in range(1, 11)
         ]
     )
@@ -1317,9 +1486,17 @@ def test_human_validation_subset_keeps_doc_titles_and_timeline_but_not_target_po
     ds = load_from_disk(str(ds_path))
     df = _verdicts_df(
         [
-            {"pair_id": f"p{i}", "family": "F1", "anchor_subject_id": i, "anchor_label": 0,
-             "target_won": True, "target_doc_id": 100 + (i % 5), "other_doc_id": 100 + ((i + 1) % 5),
-             "target_position": "A", "patient_timeline": f"timeline-{i}"}
+            {
+                "pair_id": f"p{i}",
+                "family": "F1",
+                "anchor_subject_id": i,
+                "anchor_label": 0,
+                "target_won": True,
+                "target_doc_id": 100 + (i % 5),
+                "other_doc_id": 100 + ((i + 1) % 5),
+                "target_position": "A",
+                "patient_timeline": f"timeline-{i}",
+            }
             for i in range(1, 11)
         ]
     )
@@ -1361,7 +1538,7 @@ def test_fake_judge_implements_judge_protocol() -> None:
 
 
 # ---------------------------------------------------------------------------
-# T25–T30: per-patient rollup
+# T25-T30: per-patient rollup
 # ---------------------------------------------------------------------------
 
 
@@ -1369,31 +1546,43 @@ def _rollup_inputs(tmp_path: Path, with_title: bool = True, with_race: bool = Tr
     artifacts = _make_artifacts(n_patients=4, k=3, labels=[0, 1, 0, 1], top1_doc_ids=[100, 101, 102, 103])
     schema = _make_val_schema([10, 20, 30, 40])
     pairs = [
-        JudgePair(pair_id=f"p{fam}-{i}", family=fam, anchor_row_idx=i,
-                  anchor_subject_id=int(schema["subject_id"][i]), anchor_label=int(artifacts["targets"][i]),
-                  target_doc_id=int(artifacts["doc_ids"][i, 0, 0]),
-                  other_doc_id=int(artifacts["doc_ids"][i, 0, 0]) + 1,
-                  target_position="A", other_rank=(2 if fam == "F2" else None))
+        JudgePair(
+            pair_id=f"p{fam}-{i}",
+            family=fam,
+            anchor_row_idx=i,
+            anchor_subject_id=int(schema["subject_id"][i]),
+            anchor_label=int(artifacts["targets"][i]),
+            target_doc_id=int(artifacts["doc_ids"][i, 0, 0]),
+            other_doc_id=int(artifacts["doc_ids"][i, 0, 0]) + 1,
+            target_position="A",
+            other_rank=(2 if fam == "F2" else None),
+        )
         for i in range(4)
         for fam in ("F1", "F2", "F3", "F4")
     ]
     verdicts = _verdicts_df(
         [
-            {"pair_id": p.pair_id, "family": p.family, "anchor_subject_id": p.anchor_subject_id,
-             "anchor_label": p.anchor_label, "target_won": True,
-             "target_doc_id": p.target_doc_id, "other_doc_id": p.other_doc_id,
-             "target_position": "A", "other_rank": p.other_rank, "anchor_row_idx": p.anchor_row_idx,
-             "confidence": 0.9, "rationale": "because", "winner_position": "A"}
+            {
+                "pair_id": p.pair_id,
+                "family": p.family,
+                "anchor_subject_id": p.anchor_subject_id,
+                "anchor_label": p.anchor_label,
+                "target_won": True,
+                "target_doc_id": p.target_doc_id,
+                "other_doc_id": p.other_doc_id,
+                "target_position": "A",
+                "other_rank": p.other_rank,
+                "anchor_row_idx": p.anchor_row_idx,
+                "confidence": 0.9,
+                "rationale": "because",
+                "winner_position": "A",
+            }
             for p in pairs
         ]
     )
 
     titles = [f"book-{i}" for i in range(200)]
-    extra = {}
-    if with_title:
-        ds_cols = {"title": titles}
-    else:
-        ds_cols = {"other_col": titles}
+    ds_cols = {"title": titles} if with_title else {"other_col": titles}
     ds_path = tmp_path / "retrieval_db"
     Dataset.from_dict(
         {**ds_cols, "doc_text": [f"body-{i}" for i in range(200)], "doc_ids": list(range(100, 300))}
@@ -1404,24 +1593,27 @@ def _rollup_inputs(tmp_path: Path, with_title: bool = True, with_race: bool = Tr
     doc_id_to_row = {100 + i: i for i in range(200)}
     codes_fp = _save_codes_parquet(tmp_path, ["E1"], ["desc"])
 
-    dem_cols = {"subject_id": [10, 20, 30, 40], "gender": ["M", "F", "M", "F"],
-                "birth_time": [datetime(1950, 1, 1)] * 4}
+    dem_cols = {
+        "subject_id": [10, 20, 30, 40],
+        "gender": ["M", "F", "M", "F"],
+        "birth_time": [datetime(1950, 1, 1)] * 4,
+    }
     if with_race:
         dem_cols["race"] = ["WHITE", "BLACK/AFRICAN AMERICAN", "ASIAN", "HISPANIC/LATINO"]
     demographics = pl.DataFrame(dem_cols)
 
-    return dict(
-        pairs=pairs,
-        verdicts=verdicts,
-        logits=artifacts["logits"],
-        targets=artifacts["targets"],
-        artifacts=artifacts,
-        timeline_renderer=PatientTimelineRenderer(codes_parquet=codes_fp),
-        val_schema=schema,
-        demographics=demographics,
-        retrieval_ds=ds,
-        doc_id_to_row=doc_id_to_row,
-    )
+    return {
+        "pairs": pairs,
+        "verdicts": verdicts,
+        "logits": artifacts["logits"],
+        "targets": artifacts["targets"],
+        "artifacts": artifacts,
+        "timeline_renderer": PatientTimelineRenderer(codes_parquet=codes_fp),
+        "val_schema": schema,
+        "demographics": demographics,
+        "retrieval_ds": ds,
+        "doc_id_to_row": doc_id_to_row,
+    }
 
 
 def test_build_per_patient_rollup_one_row_per_patient_with_all_families(tmp_path: Path) -> None:
@@ -1435,18 +1627,30 @@ def test_build_per_patient_rollup_one_row_per_patient_with_all_families(tmp_path
 def test_build_per_patient_rollup_merges_multiple_pairs_into_mean_target_won(tmp_path: Path) -> None:
     inputs = _rollup_inputs(tmp_path)
     # Duplicate pairs for F1 with mixed outcomes to test within-patient mean.
-    extra = inputs["verdicts"].filter(pl.col("family") == "F1").with_columns(
-        pl.lit(False).alias("target_won"),
-        pl.col("pair_id") + "-dup",
+    extra = (
+        inputs["verdicts"]
+        .filter(pl.col("family") == "F1")
+        .with_columns(
+            pl.lit(False).alias("target_won"),
+            pl.col("pair_id") + "-dup",
+        )
     )
     inputs["verdicts"] = pl.concat([inputs["verdicts"], extra])
     # Extend pairs list similarly.
     inputs["pairs"] = list(inputs["pairs"]) + [
-        JudgePair(pair_id=p.pair_id + "-dup", family=p.family, anchor_row_idx=p.anchor_row_idx,
-                  anchor_subject_id=p.anchor_subject_id, anchor_label=p.anchor_label,
-                  target_doc_id=p.target_doc_id, other_doc_id=p.other_doc_id,
-                  target_position=p.target_position, other_rank=p.other_rank)
-        for p in inputs["pairs"] if p.family == "F1"
+        JudgePair(
+            pair_id=p.pair_id + "-dup",
+            family=p.family,
+            anchor_row_idx=p.anchor_row_idx,
+            anchor_subject_id=p.anchor_subject_id,
+            anchor_label=p.anchor_label,
+            target_doc_id=p.target_doc_id,
+            other_doc_id=p.other_doc_id,
+            target_position=p.target_position,
+            other_rank=p.other_rank,
+        )
+        for p in inputs["pairs"]
+        if p.family == "F1"
     ]
     df = build_per_patient_rollup(**inputs)
     # Each patient had (T, F) for F1 → mean should be 0.5.
@@ -1481,10 +1685,20 @@ def test_per_patient_rollup_skips_missing_doc_metadata_columns(tmp_path: Path) -
 def test_per_patient_rollup_includes_clinical_summary_columns(tmp_path: Path) -> None:
     inputs = _rollup_inputs(tmp_path)
     summaries = {
-        10: {"n_hospital_admissions": 2, "n_icu_admissions": 1, "n_ed_visits": 0,
-             "chronic_conditions": ["Diabetes mellitus"], "chronic_condition_count": 1},
-        20: {"n_hospital_admissions": 5, "n_icu_admissions": 2, "n_ed_visits": 3,
-             "chronic_conditions": [], "chronic_condition_count": 0},
+        10: {
+            "n_hospital_admissions": 2,
+            "n_icu_admissions": 1,
+            "n_ed_visits": 0,
+            "chronic_conditions": ["Diabetes mellitus"],
+            "chronic_condition_count": 1,
+        },
+        20: {
+            "n_hospital_admissions": 5,
+            "n_icu_admissions": 2,
+            "n_ed_visits": 3,
+            "chronic_conditions": [],
+            "chronic_condition_count": 0,
+        },
     }
     df = build_per_patient_rollup(**inputs, clinical_summaries_by_subject_id=summaries)
     by_sid = {r["anchor_subject_id"]: r for r in df.iter_rows(named=True)}
@@ -1517,4 +1731,9 @@ def test_write_results_workbook_produces_all_four_sheets(tmp_path: Path) -> None
     )
     assert path.is_file()
     wb = openpyxl.load_workbook(path)
-    assert set(wb.sheetnames) == {"family_winrates", "per_patient_results", "pairs_verdicts", "human_validation"}
+    assert set(wb.sheetnames) == {
+        "family_winrates",
+        "per_patient_results",
+        "pairs_verdicts",
+        "human_validation",
+    }
