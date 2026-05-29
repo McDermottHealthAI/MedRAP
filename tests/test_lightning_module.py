@@ -507,8 +507,8 @@ def test_predict_step_captures_marginalized_tensors_from_metadata(
 
 
 def test_end_of_fit_val_auroc_callback_skips_when_single_class_targets() -> None:
-    """All-same-class targets should trigger the early-return at line 452 of
-    ``src/medrap/callbacks.py`` (``unique.numel() < 2``)."""
+    """All-same-class targets should trigger the early-return at line 452 of ``src/medrap/callbacks.py``
+    (``unique.numel() < 2``)."""
     from types import SimpleNamespace
     from unittest.mock import MagicMock
 
@@ -545,9 +545,7 @@ def test_end_of_fit_val_auroc_callback_skips_when_single_class_targets() -> None
             loggers=[logger],
             datamodule=None,
             # Both batches have the same label ``False`` → unique.numel() < 2 → return.
-            val_dataloaders=DataLoader(
-                [_auroc_batch(False), _auroc_batch(False)], batch_size=None
-            ),
+            val_dataloaders=DataLoader([_auroc_batch(False), _auroc_batch(False)], batch_size=None),
         ),
         plm,
     )

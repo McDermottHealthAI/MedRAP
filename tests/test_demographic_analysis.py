@@ -1303,25 +1303,20 @@ def test_build_keyword_demographic_table_raises_when_labels_length_mismatch() ->
 def test_accumulate_demographic_bin_mass_raises_on_each_private_shape_guard() -> None:
     """Guards at lines 522, 524, 526 in the *private* _accumulate_demographic_bin_mass.
 
-    These duplicate the public guards (660/662/664 in build_keyword_demographic_table)
-    so the public-API tests fire the public ones first and never reach these. Cover
-    them by importing the private function directly.
+    These duplicate the public guards (660/662/664 in build_keyword_demographic_table) so the public-API tests
+    fire the public ones first and never reach these. Cover them by importing the private function directly.
     """
     from medrap.demographic_analysis import _accumulate_demographic_bin_mass
 
     provider = _provider2()
     with pytest.raises(ValueError, match=r"doc_ids must be \(N, K\)"):
-        _accumulate_demographic_bin_mass(
-            np.zeros(5, dtype=int), np.zeros((5, 2)), ["a"] * 5, provider
-        )
+        _accumulate_demographic_bin_mass(np.zeros(5, dtype=int), np.zeros((5, 2)), ["a"] * 5, provider)
     with pytest.raises(ValueError, match=r"diff_scores shape"):
         _accumulate_demographic_bin_mass(
             np.zeros((3, 2), dtype=int), np.zeros((3, 3)), ["a", "b", "a"], provider
         )
     with pytest.raises(ValueError, match=r"demographic_labels length"):
-        _accumulate_demographic_bin_mass(
-            np.zeros((3, 2), dtype=int), np.zeros((3, 2)), ["a", "b"], provider
-        )
+        _accumulate_demographic_bin_mass(np.zeros((3, 2), dtype=int), np.zeros((3, 2)), ["a", "b"], provider)
 
 
 def test_build_comorbidity_keyword_table_raises_on_each_public_shape_guard() -> None:
@@ -1336,9 +1331,7 @@ def test_build_comorbidity_keyword_table_raises_on_each_public_shape_guard() -> 
             np.zeros(5, dtype=int), good_scores, good_mask, good_cats, _provider2()
         )
     with pytest.raises(ValueError, match=r"diff_scores shape"):
-        build_comorbidity_keyword_table(
-            good_doc_ids, np.zeros((3, 3)), good_mask, good_cats, _provider2()
-        )
+        build_comorbidity_keyword_table(good_doc_ids, np.zeros((3, 3)), good_mask, good_cats, _provider2())
     with pytest.raises(ValueError, match=r"comorbidity_mask must be \(N, C\)"):
         build_comorbidity_keyword_table(
             good_doc_ids, good_scores, np.zeros(3, dtype=bool), good_cats, _provider2()
@@ -1364,13 +1357,9 @@ def test_accumulate_comorbidity_bin_mass_raises_on_each_private_shape_guard() ->
     provider = _provider2()
 
     with pytest.raises(ValueError, match=r"doc_ids must be \(N, K\)"):
-        _accumulate_comorbidity_bin_mass(
-            np.zeros(5, dtype=int), good_scores, good_mask, good_cats, provider
-        )
+        _accumulate_comorbidity_bin_mass(np.zeros(5, dtype=int), good_scores, good_mask, good_cats, provider)
     with pytest.raises(ValueError, match=r"diff_scores shape"):
-        _accumulate_comorbidity_bin_mass(
-            good_doc_ids, np.zeros((3, 3)), good_mask, good_cats, provider
-        )
+        _accumulate_comorbidity_bin_mass(good_doc_ids, np.zeros((3, 3)), good_mask, good_cats, provider)
     with pytest.raises(ValueError, match=r"comorbidity_mask must be \(N, C\)"):
         _accumulate_comorbidity_bin_mass(
             good_doc_ids, good_scores, np.zeros(3, dtype=bool), good_cats, provider
@@ -1437,9 +1426,7 @@ def test_render_demographic_heatmaps_rejects_comorbidity_frame_with_wrong_row_co
 
     artifacts = {
         "doc_ids": torch.tensor([[[0, 1]], [[0, 1]], [[0, 1]]], dtype=torch.long),
-        "differentiable_doc_scores": torch.tensor(
-            [[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]], dtype=torch.float32
-        ),
+        "differentiable_doc_scores": torch.tensor([[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
     }
     patient_frame = pl.DataFrame(
         {
@@ -1467,9 +1454,7 @@ def test_render_demographic_heatmaps_rejects_comorbidity_frame_missing_columns(t
 
     artifacts = {
         "doc_ids": torch.tensor([[[0, 1]], [[0, 1]], [[0, 1]]], dtype=torch.long),
-        "differentiable_doc_scores": torch.tensor(
-            [[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]], dtype=torch.float32
-        ),
+        "differentiable_doc_scores": torch.tensor([[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
     }
     patient_frame = pl.DataFrame(
         {

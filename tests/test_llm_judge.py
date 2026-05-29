@@ -1886,8 +1886,8 @@ def test_openai_judge_parse_error_returns_invalid_verdict_with_token_counts() ->
 
 
 def test_openai_judge_client_init_failure_returns_invalid_verdict(monkeypatch) -> None:
-    """Lines 152-158 in OpenAIJudge.judge: ``from openai import OpenAI`` resolves to a function that
-    raises; the except branch returns an invalid verdict with 'client init failed' rationale."""
+    """Lines 152-158 in OpenAIJudge.judge: ``from openai import OpenAI`` resolves to a function that raises;
+    the except branch returns an invalid verdict with 'client init failed' rationale."""
     import openai
 
     def _boom(*a, **kw):
@@ -1901,8 +1901,8 @@ def test_openai_judge_client_init_failure_returns_invalid_verdict(monkeypatch) -
 
 
 def test_openai_judge_client_init_success_caches_and_calls_through(monkeypatch) -> None:
-    """Line 156 in OpenAIJudge.judge: successful ``OpenAI()`` import → ``self._client = client`` is set
-    and the call proceeds through the normal response path."""
+    """Line 156 in OpenAIJudge.judge: successful ``OpenAI()`` import → ``self._client = client`` is set and
+    the call proceeds through the normal response path."""
     import openai
 
     resp = _MakeResp('{"winner": "A", "confidence": 0.5, "rationale": "ok"}')
@@ -1996,9 +1996,7 @@ def test_judge_prompt_builder_returns_placeholder_when_doc_id_unresolved(tmp_pat
             return 5
 
     renderer = PatientTimelineRenderer(codes_parquet=_make_codes_parquet(tmp_path))
-    builder = JudgePromptBuilder(
-        task_description="t", timeline_renderer=renderer, retrieval_ds=_Ds()
-    )
+    builder = JudgePromptBuilder(task_description="t", timeline_renderer=renderer, retrieval_ds=_Ds())
     text = builder._doc_text(doc_id=9999)
     assert "not available" in text
 
@@ -2727,11 +2725,11 @@ def test_build_per_patient_rollup_tolerates_retrieval_ds_without_len(tmp_path: P
 def test_build_per_patient_rollup_doc_fields_catches_retrieval_ds_getitem_exception(
     tmp_path: Path,
 ) -> None:
-    """Lines 1496-1497 in build_per_patient_rollup._doc_fields: ``retrieval_ds[row]`` raises an
-    Exception → return the empty-default ``out`` dict."""
+    """Lines 1496-1497 in build_per_patient_rollup._doc_fields: ``retrieval_ds[row]`` raises an Exception →
+    return the empty-default ``out`` dict."""
 
     class _ExplodingDs:
-        column_names = ["title"]
+        column_names = ("title",)  # tuple, not list, so RUF012 doesn't flag it
 
         def __getitem__(self, i):
             raise RuntimeError("simulated retrieval failure")
@@ -2803,8 +2801,8 @@ def test_build_per_patient_rollup_doc_fields_catches_retrieval_ds_getitem_except
 def test_human_validation_subset_position_b_branch_and_no_len_retrieval_ds(tmp_path: Path) -> None:
     """Lines 1678-1679 + 1710 in build_human_validation_subset.
 
-    Single row with target_position='B' exercises the position-B branch where doc A is the 'other'
-    and doc B is the target. A retrieval_ds without __len__ falls back to n_rows=0.
+    Single row with target_position='B' exercises the position-B branch where doc A is the 'other' and doc B
+    is the target. A retrieval_ds without __len__ falls back to n_rows=0.
     """
 
     class _NoLenDs:
@@ -2847,11 +2845,11 @@ def test_human_validation_subset_position_b_branch_and_no_len_retrieval_ds(tmp_p
 
 
 def test_human_validation_subset_doc_fields_catches_retrieval_ds_getitem_exception() -> None:
-    """Lines 1688-1689 in build_human_validation_subset._doc_fields: ``retrieval_ds[row]`` raises an
-    Exception → return the empty-default ``out`` dict (text="" + None metadata)."""
+    """Lines 1688-1689 in build_human_validation_subset._doc_fields: ``retrieval_ds[row]`` raises an Exception
+    → return the empty-default ``out`` dict (text="" + None metadata)."""
 
     class _ExplodingDs:
-        column_names = ["title"]
+        column_names = ("title",)  # tuple, not list, so RUF012 doesn't flag it
 
         def __getitem__(self, i):
             raise RuntimeError("simulated retrieval failure")

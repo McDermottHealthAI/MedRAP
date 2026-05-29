@@ -381,9 +381,7 @@ class TestMultiTaskMEDSDatasetFullInit:
 
         monkeypatch.setattr(MEDSPytorchDataset, "__init__", fake_super_init)
 
-        ds = MultiTaskMEDSDataset(
-            config=object(), split="train", mt_labels_dir=tmp_path, num_tasks=2
-        )
+        ds = MultiTaskMEDSDataset(config=object(), split="train", mt_labels_dir=tmp_path, num_tasks=2)
         assert ds._num_tasks == 2
         assert (11, datetime.datetime(2020, 1, 1)) in ds._mt_lookup
         assert ds._mt_lookup[(11, datetime.datetime(2020, 1, 1))].tolist() == [1.0, 0.0]
@@ -418,9 +416,7 @@ class TestMultiTaskMEDSDatamodule:
 
         monkeypatch.setattr(mod, "MEDSLightningDatamodule", _FakeInner)
 
-        dm = MultiTaskMEDSDatamodule(
-            config=object(), mt_labels_dir="/tmp/labels", num_tasks=3, batch_size=4
-        )
+        dm = MultiTaskMEDSDatamodule(config=object(), mt_labels_dir="/tmp/labels", num_tasks=3, batch_size=4)
         # Dataloader forwarders (lines 129, 132, 135).
         assert dm.train_dataloader() == "TRAIN_DL"
         assert dm.val_dataloader() == "VAL_DL"
