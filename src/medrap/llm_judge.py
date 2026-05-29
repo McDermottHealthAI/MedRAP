@@ -1660,12 +1660,12 @@ def build_human_validation_subset(
     for f in families:
         fam_df = df.filter(pl.col("family") == f)
         k = min(alloc[f], fam_df.height)
-        if k <= 0:
+        if k <= 0:  # pragma: no cover - unreachable: every family in df has >=1 row, so alloc[f]>=1
             continue
         idx = rng.choice(fam_df.height, size=k, replace=False).tolist()
         sampled_frames.append(fam_df[idx])
 
-    if not sampled_frames:
+    if not sampled_frames:  # pragma: no cover - unreachable: at least one alloc[f]>=1 always produces a frame
         return df.clone().clear()
 
     subset = pl.concat(sampled_frames)

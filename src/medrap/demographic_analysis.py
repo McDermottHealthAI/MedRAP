@@ -993,7 +993,7 @@ def render_demographic_heatmaps(
         so raw and residual heatmaps share their axes."""
         if bin_order_hint is not None:
             bin_labels = [b for b in bin_order_hint if b in bin_counts]
-        else:
+        else:  # pragma: no cover - every caller in render_demographic_heatmaps passes a non-None hint
             bin_labels = list(bin_counts.keys())
         keyword_total: dict[str, float] = defaultdict(float)
         for masses in bin_to_kw_mass.values():

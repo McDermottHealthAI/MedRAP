@@ -499,3 +499,57 @@ def test_predict_step_captures_marginalized_tensors_from_metadata(
     assert "differentiable_doc_scores" in result
     assert result["per_doc_logits"].device.type == "cpu"
     assert result["differentiable_doc_scores"].device.type == "cpu"
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap-filler for callbacks.EndOfFitValAUROCCallback (line 452)
+# ---------------------------------------------------------------------------
+
+
+def test_end_of_fit_val_auroc_callback_skips_when_single_class_targets() -> None:
+    """All-same-class targets should trigger the early-return at line 452 of
+    ``src/medrap/callbacks.py`` (``unique.numel() < 2``)."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from medrap.callbacks import EndOfFitValAUROCCallback
+    from medrap.types import ModelOutput
+
+    def _auroc_batch(y: bool) -> MEDSTorchBatch:
+        b = MEDSTorchBatch(
+            code=torch.LongTensor([[1]]),
+            numeric_value=torch.zeros((1, 1), dtype=torch.float32),
+            numeric_value_mask=torch.zeros((1, 1), dtype=torch.bool),
+            time_delta_days=torch.zeros((1, 1), dtype=torch.float32),
+        )
+        b.boolean_value = torch.BoolTensor([y])
+        return b
+
+    cb = EndOfFitValAUROCCallback()
+    logger = SimpleNamespace(log_metrics=MagicMock())
+    plm = MagicMock(spec=lightning.LightningModule)
+    plm.training = True
+    plm.device = torch.device("cpu")
+    plm.eval = MagicMock()
+    plm.train = MagicMock()
+    plm.transfer_batch_to_device = lambda batch, device, dataloader_idx=0: batch
+    plm.task = BinaryClassificationTask()
+    plm.side_effect = [
+        ModelOutput(logits=torch.tensor([[0.0]])),
+        ModelOutput(logits=torch.tensor([[1.0]])),
+    ]
+    cb.on_fit_end(
+        SimpleNamespace(
+            sanity_checking=False,
+            global_step=0,
+            loggers=[logger],
+            datamodule=None,
+            # Both batches have the same label ``False`` → unique.numel() < 2 → return.
+            val_dataloaders=DataLoader(
+                [_auroc_batch(False), _auroc_batch(False)], batch_size=None
+            ),
+        ),
+        plm,
+    )
+    # No metric was logged because we short-circuited before computing AUROC.
+    logger.log_metrics.assert_not_called()

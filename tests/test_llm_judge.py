@@ -1737,3 +1737,1185 @@ def test_write_results_workbook_produces_all_four_sheets(tmp_path: Path) -> None
         "pairs_verdicts",
         "human_validation",
     }
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap-fillers
+# ---------------------------------------------------------------------------
+
+
+def _make_codes_parquet(tmp_path: Path) -> Path:
+    """Build a minimal one-row codes.parquet for use with PatientTimelineRenderer."""
+    fp = tmp_path / "codes.parquet"
+    pl.DataFrame({"code": ["X"], "description": ["x desc"]}).write_parquet(fp)
+    return fp
+
+
+def _write_meds_shard(
+    cohort_dir: Path,
+    events: list[tuple[int, datetime, str | None, float | None]],
+    split: str = "train",
+) -> None:
+    """Write a minimal MEDS data shard at ``<cohort>/data/<split>/shard0.parquet``."""
+    shard_path = cohort_dir / "data" / split / "shard0.parquet"
+    shard_path.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "subject_id": [e[0] for e in events],
+            "time": [e[1] for e in events],
+            "code": [e[2] for e in events],
+            "numeric_value": [e[3] for e in events],
+        },
+        schema={
+            "subject_id": pl.Int64,
+            "time": pl.Datetime("us"),
+            "code": pl.Utf8,
+            "numeric_value": pl.Float64,
+        },
+    ).write_parquet(shard_path)
+
+
+# ---- FakeJudge factory methods (lines 285-320) ----
+
+
+def test_fake_judge_always_target_returns_target_position_per_seed() -> None:
+    """``FakeJudge.always_target`` picks the verdict winner from a per-seed JudgePair lookup."""
+    pair = JudgePair(
+        pair_id="p1",
+        family="F1",
+        anchor_row_idx=0,
+        anchor_subject_id=1,
+        anchor_label=0,
+        target_doc_id=100,
+        other_doc_id=200,
+        target_position="B",
+    )
+    judge = FakeJudge.always_target({42: pair})
+    v = judge.judge("sys", "user", seed=42)
+    assert v.winner_position == "B"
+    assert v.pair_id == "p1"
+    assert v.confidence == 1.0
+    assert v.rationale == "always_target"
+    assert v.model == "fake"
+
+
+def test_fake_judge_flaky_returns_a_or_b_with_half_confidence() -> None:
+    """``FakeJudge.flaky`` returns a random A/B at confidence=0.5."""
+    judge = FakeJudge.flaky(seed=42)
+    seen = set()
+    for i in range(10):
+        v = judge.judge("sys", "user", seed=i)
+        assert v.winner_position in ("A", "B")
+        assert v.confidence == 0.5
+        assert v.rationale == "flaky"
+        assert v.model == "fake"
+        seen.add(v.winner_position)
+    # With seed=42 and 10 draws we expect both A and B to appear.
+    assert seen == {"A", "B"}
+
+
+# ---- OpenAIJudge happy + parse-error + init-failure paths (lines 152-236) ----
+
+
+class _MakeChoice:
+    def __init__(self, content: str) -> None:
+        class Msg:
+            def __init__(self, c: str) -> None:
+                self.content = c
+
+        self.message = Msg(content)
+
+
+class _MakeUsage:
+    def __init__(self, prompt: int, completion: int) -> None:
+        self.prompt_tokens = prompt
+        self.completion_tokens = completion
+
+
+class _MakeResp:
+    def __init__(self, content: str, prompt_tokens: int = 7, completion_tokens: int = 3) -> None:
+        self.choices = [_MakeChoice(content)]
+        self.usage = _MakeUsage(prompt_tokens, completion_tokens)
+
+
+def _client_returning(content: str, prompt_tokens: int = 7, completion_tokens: int = 3):
+    """Build a mock OpenAI client whose .chat.completions.create returns ``content``."""
+    resp = _MakeResp(content, prompt_tokens, completion_tokens)
+
+    class _Client:
+        class chat:  # noqa: N801 - matching openai surface
+            class completions:  # noqa: N801
+                @staticmethod
+                def create(**_kw):
+                    return resp
+
+    return _Client()
+
+
+def test_openai_judge_happy_path_parses_valid_response_and_counts_tokens() -> None:
+    """Lines 199-202 + the final return at 236+ in OpenAIJudge.judge."""
+    client = _client_returning('{"winner": "A", "confidence": 0.7, "rationale": "ok"}')
+    judge = OpenAIJudge(model="gpt-4o-mini", client=client)
+    v = judge.judge("sys", "user", seed=0)
+    assert v.winner_position == "A"
+    assert v.confidence == 0.7
+    assert v.rationale == "ok"
+    assert v.prompt_tokens == 7
+    assert v.completion_tokens == 3
+    assert v.model == "gpt-4o-mini"
+
+
+def test_openai_judge_normalizes_unknown_winner_to_invalid() -> None:
+    """Lines 218-220 in OpenAIJudge.judge: ``winner`` field outside {A, B, tie} becomes 'invalid'."""
+    client = _client_returning('{"winner": "Z", "confidence": 0.5, "rationale": "?"}')
+    judge = OpenAIJudge(model="gpt-4o-mini", client=client)
+    v = judge.judge("sys", "user", seed=0)
+    assert v.winner_position == "invalid"
+
+
+def test_openai_judge_parse_error_returns_invalid_verdict_with_token_counts() -> None:
+    """Lines 216-234 in OpenAIJudge.judge: malformed JSON content triggers parse-error path."""
+    client = _client_returning("not valid json", prompt_tokens=5, completion_tokens=2)
+    judge = OpenAIJudge(model="gpt-4o-mini", client=client)
+    v = judge.judge("sys", "user", seed=0)
+    assert v.winner_position == "invalid"
+    assert "parse error" in v.rationale.lower()
+    # Token counts are preserved even on parse error.
+    assert v.prompt_tokens == 5
+    assert v.completion_tokens == 2
+
+
+def test_openai_judge_client_init_failure_returns_invalid_verdict(monkeypatch) -> None:
+    """Lines 152-158 in OpenAIJudge.judge: ``from openai import OpenAI`` resolves to a function that
+    raises; the except branch returns an invalid verdict with 'client init failed' rationale."""
+    import openai
+
+    def _boom(*a, **kw):
+        raise RuntimeError("simulated init failure")
+
+    monkeypatch.setattr(openai, "OpenAI", _boom)
+    judge = OpenAIJudge(model="gpt-4o-mini", client=None)
+    v = judge.judge("sys", "user", seed=0)
+    assert v.winner_position == "invalid"
+    assert "openai client init failed" in v.rationale.lower()
+
+
+def test_openai_judge_client_init_success_caches_and_calls_through(monkeypatch) -> None:
+    """Line 156 in OpenAIJudge.judge: successful ``OpenAI()`` import → ``self._client = client`` is set
+    and the call proceeds through the normal response path."""
+    import openai
+
+    resp = _MakeResp('{"winner": "A", "confidence": 0.5, "rationale": "ok"}')
+
+    class _FakeClient:
+        class chat:  # noqa: N801
+            class completions:  # noqa: N801
+                @staticmethod
+                def create(**_kw):
+                    return resp
+
+    monkeypatch.setattr(openai, "OpenAI", lambda *a, **kw: _FakeClient())
+    judge = OpenAIJudge(model="gpt-4o-mini", client=None)
+    v = judge.judge("sys", "user", seed=0)
+    assert v.winner_position == "A"
+    # Client is cached on the instance for subsequent calls.
+    assert judge._client is not None
+
+
+# ---- _resolve_doc_row branches (lines 937, 943-944, 946, 949-950, 953) ----
+
+
+def test_resolve_doc_row_returns_none_for_none_doc_id() -> None:
+    """Line 937 in _resolve_doc_row."""
+    from medrap.llm_judge import _resolve_doc_row
+
+    assert _resolve_doc_row(None, doc_id_to_row={1: 0}, n_rows=10) is None
+
+
+def test_resolve_doc_row_via_int_fallback_in_mapping() -> None:
+    """Lines 941-946 in _resolve_doc_row: doc_id is a string that int-casts into the mapping."""
+    from medrap.llm_judge import _resolve_doc_row
+
+    assert _resolve_doc_row("7", doc_id_to_row={7: 3}, n_rows=10) == 3
+
+
+def test_resolve_doc_row_int_cast_raises_with_nonempty_mapping_then_returns_none() -> None:
+    """Lines 943-944 + 947-950 in _resolve_doc_row.
+
+    With a non-empty mapping AND a doc_id whose int() raises, the inner try/except sets
+    ``key_int=None`` (lines 943-944), the ``key_int in mapping`` check fails, then the outer
+    int-cast also raises and we fall through to ``return None``.
+    """
+    from medrap.llm_judge import _resolve_doc_row
+
+    assert _resolve_doc_row("not-an-int", doc_id_to_row={1: 0}, n_rows=10) is None
+
+
+def test_resolve_doc_row_returns_none_when_out_of_range() -> None:
+    """Lines 951-953 in _resolve_doc_row."""
+    from medrap.llm_judge import _resolve_doc_row
+
+    assert _resolve_doc_row(999, doc_id_to_row={}, n_rows=10) is None
+
+
+# ---- JudgePromptBuilder edge cases (lines 977-986) ----
+
+
+class _NoLenDataset:
+    """Indexed dataset whose ``len()`` raises TypeError, exercising the n_rows=0 fallback."""
+
+    def __init__(self, rows: list[dict]) -> None:
+        self._rows = rows
+
+    def __getitem__(self, i):
+        return self._rows[i]
+
+    def __len__(self):  # pragma: no cover - intentionally raises
+        raise TypeError("simulated")
+
+
+def test_judge_prompt_builder_n_rows_falls_back_when_len_unsupported(tmp_path: Path) -> None:
+    """Lines 977-978 in JudgePromptBuilder.__init__."""
+    renderer = PatientTimelineRenderer(codes_parquet=_make_codes_parquet(tmp_path))
+    builder = JudgePromptBuilder(
+        task_description="t",
+        timeline_renderer=renderer,
+        retrieval_ds=_NoLenDataset([]),
+    )
+    assert builder._n_rows == 0
+
+
+def test_judge_prompt_builder_returns_placeholder_when_doc_id_unresolved(tmp_path: Path) -> None:
+    """Line 983 in JudgePromptBuilder._doc_text: unresolved doc_id yields a placeholder string."""
+
+    class _Ds:
+        def __getitem__(self, i):
+            return {"doc_text": "irrelevant"}
+
+        def __len__(self):
+            return 5
+
+    renderer = PatientTimelineRenderer(codes_parquet=_make_codes_parquet(tmp_path))
+    builder = JudgePromptBuilder(
+        task_description="t", timeline_renderer=renderer, retrieval_ds=_Ds()
+    )
+    text = builder._doc_text(doc_id=9999)
+    assert "not available" in text
+
+
+def test_judge_prompt_builder_returns_empty_string_when_doc_text_is_none(tmp_path: Path) -> None:
+    """Lines 985-986 in JudgePromptBuilder._doc_text: ``None`` body becomes ``""``."""
+    from datasets import Dataset
+
+    ds_path = tmp_path / "ds"
+    Dataset.from_dict({"doc_text": [None]}).save_to_disk(str(ds_path))
+    from datasets import load_from_disk
+
+    ds = load_from_disk(str(ds_path))
+    renderer = PatientTimelineRenderer(codes_parquet=_make_codes_parquet(tmp_path))
+    builder = JudgePromptBuilder(
+        task_description="t",
+        timeline_renderer=renderer,
+        retrieval_ds=ds,
+        doc_id_to_row={0: 0},
+    )
+    assert builder._doc_text(0) == ""
+
+
+# ---- build_pairs edge cases (lines 1051, 1062, 1083, 1118, 1133, 1137, 1140) ----
+
+
+def test_build_pairs_rejects_2d_doc_ids() -> None:
+    """Line 1051 in build_pairs."""
+    from medrap.llm_judge import build_pairs
+
+    artifacts = {
+        "doc_ids": np.zeros((5, 3), dtype=int),  # 2-D not (N, R, K)
+        "targets": np.zeros(5, dtype=int),
+    }
+    schema = pl.DataFrame({"subject_id": list(range(5))})
+    with pytest.raises(ValueError, match=r"doc_ids must be \(N, R, K\)"):
+        build_pairs(
+            artifacts=artifacts,
+            val_schema=schema,
+            labels=np.zeros(5, dtype=int),
+            families=("F1",),
+            n_patients=2,
+            pairs_per_patient_per_family=1,
+            corpus_size=100,
+            k=3,
+            seed=0,
+        )
+
+
+def test_build_pairs_f2_requires_k_at_least_2() -> None:
+    """Line 1083 in build_pairs: F2 with k=1 raises (or is skipped via skip_missing_families)."""
+    from medrap.llm_judge import build_pairs
+
+    n = 6
+    artifacts = {
+        "doc_ids": np.arange(n, dtype=int).reshape(n, 1, 1),  # k=1
+        "targets": np.array([i % 2 for i in range(n)], dtype=int),
+    }
+    schema = pl.DataFrame({"subject_id": list(range(n))})
+    with pytest.raises(ValueError, match=r"F2 requires k >= 2"):
+        build_pairs(
+            artifacts=artifacts,
+            val_schema=schema,
+            labels=artifacts["targets"],
+            families=("F2",),
+            n_patients=2,
+            pairs_per_patient_per_family=1,
+            corpus_size=1000,
+            k=1,
+            seed=0,
+            skip_missing_families=False,
+        )
+
+
+def test_build_pairs_rejects_unknown_family() -> None:
+    """Line 1137 in build_pairs."""
+    from medrap.llm_judge import build_pairs
+
+    n = 4
+    artifacts = {
+        "doc_ids": np.arange(n * 2, dtype=int).reshape(n, 1, 2),
+        "targets": np.array([0, 1, 0, 1], dtype=int),
+    }
+    schema = pl.DataFrame({"subject_id": list(range(n))})
+    with pytest.raises(ValueError, match=r"Unknown family"):
+        build_pairs(
+            artifacts=artifacts,
+            val_schema=schema,
+            labels=artifacts["targets"],
+            families=("X9",),  # bogus family code
+            n_patients=2,
+            pairs_per_patient_per_family=1,
+            corpus_size=1000,
+            k=2,
+            seed=0,
+        )
+
+
+def test_build_pairs_f1_skips_anchor_when_corpus_offers_no_non_target_candidate() -> None:
+    """Line 1140 in build_pairs: F1 with corpus_size=1 and dedupe leaves ``other_doc=None``,
+    triggering the ``if other_doc is None: continue`` at line 1140."""
+    from medrap.llm_judge import build_pairs
+
+    n = 4
+    # Every patient's top-1 is doc 0; with corpus_size=1 the only candidate is also 0,
+    # so dedupe never finds a non-target → other_doc stays None → continue.
+    artifacts = {
+        "doc_ids": np.zeros((n, 1, 1), dtype=int),
+        "targets": np.zeros(n, dtype=int),
+    }
+    schema = pl.DataFrame({"subject_id": list(range(n))})
+    pairs = build_pairs(
+        artifacts=artifacts,
+        val_schema=schema,
+        labels=artifacts["targets"],
+        families=("F1",),
+        n_patients=n,
+        pairs_per_patient_per_family=1,
+        corpus_size=1,
+        k=1,
+        seed=0,
+        dedupe_identical_docs=True,
+    )
+    assert pairs == []
+
+
+def test_build_pairs_f3_skips_anchor_when_no_other_same_label_patient_available() -> None:
+    """Lines 1131-1133 in build_pairs: F4 with empty opposite-label pool yields ``continue``.
+
+    Force F4 to find no opposite-label patient by making every patient label=0.
+    """
+    from medrap.llm_judge import build_pairs
+
+    n = 4
+    artifacts = {
+        "doc_ids": np.arange(n * 2, dtype=int).reshape(n, 1, 2),
+        "targets": np.zeros(n, dtype=int),  # all same label → F4 pool empty
+    }
+    schema = pl.DataFrame({"subject_id": list(range(n))})
+    pairs = build_pairs(
+        artifacts=artifacts,
+        val_schema=schema,
+        labels=artifacts["targets"],
+        families=("F4",),
+        n_patients=n,
+        pairs_per_patient_per_family=1,
+        corpus_size=1000,
+        k=2,
+        seed=0,
+        skip_missing_families=True,
+    )
+    assert pairs == []
+
+
+# ---- run_judge parallel path (lines 1199-1201) ----
+
+
+def test_run_judge_uses_thread_pool_when_multiple_workers_and_multiple_pairs(tmp_path: Path) -> None:
+    """Lines 1199-1201: max_workers>1 + len(pairs)>1 takes the ThreadPoolExecutor path."""
+    from datasets import Dataset
+
+    ds_path = tmp_path / "ds"
+    Dataset.from_dict({"doc_text": ["a", "b", "c"]}).save_to_disk(str(ds_path))
+    from datasets import load_from_disk
+
+    ds = load_from_disk(str(ds_path))
+    renderer = PatientTimelineRenderer(codes_parquet=_make_codes_parquet(tmp_path))
+    builder = JudgePromptBuilder(
+        task_description="t",
+        timeline_renderer=renderer,
+        retrieval_ds=ds,
+        doc_id_to_row={0: 0, 1: 1, 2: 2},
+    )
+    pairs = [
+        JudgePair(
+            pair_id=f"p{i}",
+            family="F1",
+            anchor_row_idx=i,
+            anchor_subject_id=i,
+            anchor_label=0,
+            target_doc_id=0,
+            other_doc_id=1,
+            target_position="A",
+        )
+        for i in range(3)
+    ]
+    judge = FakeJudge.always_A()
+    df = run_judge(pairs, judge=judge, prompt_builder=builder, max_workers=4, progress=False)
+    assert df.height == 3
+
+
+# ---- _compute_target_won None case (line 1173) ----
+
+
+def test_compute_target_won_returns_none_for_invalid_winner_position() -> None:
+    """Line 1173 in _compute_target_won."""
+    from medrap.llm_judge import _compute_target_won
+
+    assert _compute_target_won("tie", "A") is None
+    assert _compute_target_won("invalid", "B") is None
+
+
+# ---- _classify_invalid_row valid path (line 1254) ----
+
+
+def test_classify_invalid_row_valid_winner_returns_valid() -> None:
+    """Line 1254 in _classify_invalid_row."""
+    from medrap.llm_judge import _classify_invalid_row
+
+    assert _classify_invalid_row("A", None) == "valid"
+    assert _classify_invalid_row("B", "") == "valid"
+
+
+# ---- summarize_winrates edge branches (lines 1311, 1340, 1352-1370) ----
+
+
+def test_summarize_winrates_returns_empty_when_input_df_is_empty() -> None:
+    """Line 1311 in summarize_winrates: empty input → empty output (no groups iterated)."""
+    df = pl.DataFrame(
+        schema={
+            "family": pl.Utf8,
+            "anchor_subject_id": pl.Int64,
+            "target_won": pl.Boolean,
+            "winner_position": pl.Utf8,
+            "rationale": pl.Utf8,
+        }
+    )
+    out = summarize_winrates(df, n_bootstrap=10, seed=0)
+    assert out.height == 0
+
+
+def test_summarize_winrates_classifies_null_target_won_with_valid_winner_as_other_invalid() -> None:
+    """Line 1340 in summarize_winrates: defensive guard for rows where ``target_won is null`` but
+    ``winner_position`` is ``A``/``B`` (which the classifier maps to "valid"). The else-branch
+    treats them as ``other_invalid`` instead of crashing on the schema variation."""
+    df = pl.DataFrame(
+        {
+            "family": ["F1", "F1"],
+            "anchor_subject_id": [1, 2],
+            # target_won is null on both, but winner_position is "A" → _classify_invalid_row
+            # returns "valid" → line 1340 fires (counts["other_invalid"] += 1).
+            "target_won": [None, None],
+            "winner_position": ["A", "A"],
+            "rationale": ["", ""],
+        },
+        schema_overrides={"target_won": pl.Boolean},
+    )
+    out = summarize_winrates(df, n_bootstrap=10, seed=0, invalid_policy="drop")
+    row = out.row(0, named=True)
+    assert row["n_other_invalid"] == 2
+
+
+def test_summarize_winrates_drop_policy_with_all_invalid_yields_zero_pair_row() -> None:
+    """Lines 1339-1370 in summarize_winrates: under 'drop' policy, an all-invalid family produces a row
+    with n_patients=0 and NaN rate."""
+    df = pl.DataFrame(
+        {
+            "family": ["F1", "F1"],
+            "anchor_subject_id": [1, 2],
+            "target_won": [None, None],
+            "winner_position": ["invalid", "invalid"],
+            "rationale": ["api error: x", "parse error: y"],
+        },
+        schema_overrides={"target_won": pl.Boolean},
+    )
+    out = summarize_winrates(df, n_bootstrap=10, seed=0, invalid_policy="drop")
+    row = out.row(0, named=True)
+    assert row["n_patients"] == 0
+    assert row["n_pairs"] == 2
+    assert row["n_invalid"] == 2
+    assert math.isnan(row["target_preferred_rate"])
+    assert math.isnan(row["standard_error"])
+    assert math.isnan(row["ci_low"])
+    assert math.isnan(row["ci_high"])
+
+
+# ---- _age_bin and _softmax_positive_prob_and_pred 1-D path (lines 1430-1446) ----
+
+
+def test_age_bin_buckets_each_range_and_none_input() -> None:
+    """Lines 1435-1446 in _age_bin."""
+    from medrap.llm_judge import _age_bin
+
+    assert _age_bin(None) is None
+    assert _age_bin(25.0) == "<30"
+    assert _age_bin(40.0) == "30-49"
+    assert _age_bin(65.0) == "50-69"
+    assert _age_bin(75.0) == "70-89"
+    assert _age_bin(95.0) == "90+"
+
+
+def test_softmax_positive_prob_and_pred_handles_1d_logits() -> None:
+    """Lines 1430-1432 in _softmax_positive_prob_and_pred: 1-D logits → sigmoid branch."""
+    from medrap.llm_judge import _softmax_positive_prob_and_pred
+
+    logits = np.array([0.0, 1.0, -1.0])
+    probs, preds = _softmax_positive_prob_and_pred(logits)
+    assert probs.shape == (3,)
+    assert preds.shape == (3,)
+    # Predictions follow >=0.5 threshold on sigmoid.
+    np.testing.assert_array_equal(preds, np.array([1, 1, 0]))
+
+
+# ---- build_per_patient_rollup missing-family branch (lines 1580-1592) ----
+
+
+def test_build_per_patient_rollup_marks_missing_family_columns_as_none(tmp_path: Path) -> None:
+    """Lines 1577-1592 in build_per_patient_rollup: a patient with no pairs for some family gets all the
+    f'{fam}_*' columns populated with None."""
+    from datasets import Dataset, load_from_disk
+
+    artifacts = _make_artifacts(n_patients=2, k=3, labels=[0, 1])
+    schema = _make_val_schema([100, 200])
+    # Only F1 pairs for patient 100; patient 200 has no pairs at all.
+    pairs = [
+        JudgePair(
+            pair_id="p1",
+            family="F1",
+            anchor_row_idx=0,
+            anchor_subject_id=100,
+            anchor_label=0,
+            target_doc_id=int(artifacts["doc_ids"][0, 0, 0]),
+            other_doc_id=int(artifacts["doc_ids"][0, 0, 0]) + 1,
+            target_position="A",
+        ),
+    ]
+    verdicts = pl.DataFrame(
+        {
+            "pair_id": ["p1"],
+            "family": ["F1"],
+            "anchor_subject_id": [100],
+            "anchor_label": [0],
+            "anchor_row_idx": [0],
+            "target_won": [True],
+            "target_doc_id": [int(artifacts["doc_ids"][0, 0, 0])],
+            "other_doc_id": [int(artifacts["doc_ids"][0, 0, 0]) + 1],
+            "target_position": ["A"],
+            "other_rank": [None],
+            "confidence": [0.9],
+            "rationale": ["because"],
+            "winner_position": ["A"],
+        },
+        schema_overrides={"other_rank": pl.Int64},
+    )
+
+    ds_path = tmp_path / "ds"
+    titles = [f"book-{i}" for i in range(300)]
+    Dataset.from_dict(
+        {
+            "title": titles,
+            "doc_text": [f"text-{i}" for i in range(300)],
+            "doc_ids": list(range(100, 400)),
+        }
+    ).save_to_disk(str(ds_path))
+    ds = load_from_disk(str(ds_path))
+    doc_id_to_row = {100 + i: i for i in range(300)}
+
+    codes_fp = tmp_path / "codes.parquet"
+    pl.DataFrame({"code": ["X"], "description": ["x desc"]}).write_parquet(codes_fp)
+
+    demographics = pl.DataFrame(
+        {
+            "subject_id": [100],
+            "gender": ["M"],
+            "birth_time": [datetime(1950, 1, 1)],
+            "race": ["WHITE"],
+        }
+    )
+
+    df = build_per_patient_rollup(
+        pairs=pairs,
+        verdicts=verdicts,
+        logits=artifacts["logits"],
+        targets=artifacts["targets"],
+        artifacts=artifacts,
+        timeline_renderer=PatientTimelineRenderer(codes_parquet=codes_fp),
+        val_schema=schema,
+        demographics=demographics,
+        retrieval_ds=ds,
+        doc_id_to_row=doc_id_to_row,
+        families=("F1", "F2", "F3", "F4"),
+    )
+    assert df.height == 1  # only patient 100 appears (the one with a pair)
+    row = df.row(0, named=True)
+    # F1 was provided → populated.
+    assert row["F1_target_won"] is not None
+    # F2, F3, F4 had no pairs for this patient → all None.
+    for fam in ("F2", "F3", "F4"):
+        assert row[f"{fam}_target_won"] is None
+        assert row[f"{fam}_winner_position"] is None
+
+
+# ---- build_human_validation_subset edge cases (lines 1638, 1664, 1669) ----
+
+
+def test_human_validation_subset_empty_input_returns_empty_clone() -> None:
+    """Line 1638: empty df returned as-is."""
+    df = pl.DataFrame(schema={"family": pl.Utf8, "target_doc_id": pl.Int64})
+    out = build_human_validation_subset(df, retrieval_ds=None, doc_id_to_row={}, n=10, seed=0)
+    assert out.height == 0
+
+
+# NB: the "no frames sampled" branch (line 1669) is unreachable by construction:
+# every family in ``df`` has at least one row, so ``floors[f] >= 1``, ``alloc[f] >= 1``,
+# and ``sampled_frames`` always gets at least one append. Marked via ``# pragma: no cover``
+# at the source.
+
+
+# ---- write_results_workbook ImportError path (lines 1773-1779) ----
+
+
+def test_write_results_workbook_raises_helpful_error_when_xlsxwriter_missing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Lines 1773-1779 in write_results_workbook: missing xlsxwriter → ImportError with hint."""
+    import sys
+
+    # Block the xlsxwriter import.
+    real_modules = {k: v for k, v in sys.modules.items() if k == "xlsxwriter" or k.startswith("xlsxwriter.")}
+    for k in real_modules:
+        monkeypatch.delitem(sys.modules, k, raising=False)
+    # Stub a finder that raises ImportError on import xlsxwriter.
+    import builtins
+
+    real_import = builtins.__import__
+
+    def blocked_import(name, *a, **kw):
+        if name == "xlsxwriter":
+            raise ImportError("simulated missing xlsxwriter")
+        return real_import(name, *a, **kw)
+
+    monkeypatch.setattr(builtins, "__import__", blocked_import)
+
+    empty = pl.DataFrame({"col": [1]})
+    with pytest.raises(ImportError, match="xlsxwriter is required"):
+        write_results_workbook(
+            tmp_path / "no.xlsx",
+            family_winrates=empty,
+            per_patient=empty,
+            pairs_verdicts=empty,
+            human_validation=empty,
+        )
+
+
+# ---- _extract_lab_unit edge cases (lines 372, 376) ----
+
+
+def test_unit_from_code_returns_none_when_code_has_fewer_than_three_slash_parts() -> None:
+    """Lines 367-369 + 372 in _unit_from_code."""
+    from medrap.llm_judge import _unit_from_code
+
+    assert _unit_from_code("LAB//xyz") is None  # only two parts
+
+
+def test_unit_from_code_returns_none_for_sentinel_null_unit() -> None:
+    """Line 372 in _unit_from_code: the third slot is in the null-value sentinel set."""
+    from medrap.llm_judge import _unit_from_code
+
+    assert _unit_from_code("LAB//50920//UNK") is None
+
+
+def test_unit_from_code_returns_none_for_purely_numeric_unit_slot() -> None:
+    """Line 376 in _unit_from_code: a numeric-only third slot is rejected (looks like an item id)."""
+    from medrap.llm_judge import _unit_from_code
+
+    assert _unit_from_code("LAB//50920//1234") is None
+
+
+# ---- _format_numeric NaN + range branches (lines 501, 505) ----
+
+
+def test_format_numeric_returns_empty_string_for_nan() -> None:
+    """Line 501."""
+    from medrap.llm_judge import _format_numeric
+
+    assert _format_numeric(float("nan")) == ""
+
+
+def test_format_numeric_one_decimal_for_values_between_10_and_100() -> None:
+    """Line 505: abs(value) >= 10 path."""
+    from medrap.llm_judge import _format_numeric
+
+    assert _format_numeric(12.34) == "12.3"
+    assert _format_numeric(-15.6) == "-15.6"
+
+
+# ---- _render_patient_narrative + _render_demographic_block age exception (449-450, 525-526, 536-549) ----
+
+
+def test_render_patient_narrative_recovers_from_birth_time_arithmetic_failure() -> None:
+    """Lines 449-450: bad birth_time type → caught TypeError → narrative still rendered."""
+    narrative = _render_patient_narrative(
+        demographics={"birth_time": "not a datetime", "gender": "M", "race": "WHITE"},
+        prediction_time=datetime(2020, 1, 1),
+        clinical_summary=None,
+    )
+    # Even without an age, gender + race produce a valid narrative.
+    assert narrative is not None
+    assert "Man" in narrative or "man" in narrative
+
+
+def test_render_demographic_block_recovers_from_birth_time_arithmetic_failure() -> None:
+    """Lines 525-526 in _render_demographic_block: age exception path."""
+    from medrap.llm_judge import _render_demographic_block
+
+    block = _render_demographic_block(
+        {"birth_time": "bad", "gender": "F", "race": "ASIAN"},
+        prediction_time=datetime(2020, 1, 1),
+    )
+    assert block is not None
+    assert "female" in block
+
+
+def test_render_demographic_block_with_age_only_then_gender_only_then_empty() -> None:
+    """Lines 534-549 in _render_demographic_block: branch coverage for age-only, gender-only, race-only,
+    and the empty 'return None' tail."""
+    from medrap.llm_judge import _render_demographic_block
+
+    # Age only (no gender).
+    age_only = _render_demographic_block(
+        {"birth_time": datetime(1960, 1, 1), "gender": None},
+        prediction_time=datetime(2020, 1, 1),
+    )
+    assert age_only is not None
+    assert "year-old" in age_only
+
+    # Gender only (no birth_time).
+    gender_only = _render_demographic_block({"gender": "M"}, prediction_time=None)
+    assert gender_only is not None
+    assert "male" in gender_only
+
+    # All fields present but null: dict is truthy (so we pass the
+    # `if not demographics` early return), but no parts get appended, so
+    # the function reaches line 549 (`return None`).
+    assert _render_demographic_block({"gender": None, "race": None}, prediction_time=None) is None
+
+
+# ---- compute_patient_clinical_summary skip-None branch (line 633) ----
+
+
+def test_compute_patient_clinical_summary_skips_none_codes(tmp_path: Path) -> None:
+    """Line 633: ``code is None`` rows in the MEDS scan are skipped without counting."""
+    cohort = tmp_path / "MEDS_cohort"
+    _write_meds_shard(
+        cohort,
+        events=[
+            (1, datetime(2020, 1, 1), None, None),  # null code → continue at 633
+            (1, datetime(2020, 1, 2), "HOSPITAL_ADMISSION//ED", None),
+            (1, datetime(2020, 1, 3), "ICU_ADMISSION//MICU", None),
+        ],
+    )
+    summary = compute_patient_clinical_summary(
+        subject_id=1, prediction_time=datetime(2020, 6, 1), meds_cohort_dir=cohort
+    )
+    assert summary["n_hospital_admissions"] == 1
+    assert summary["n_icu_admissions"] == 1
+
+
+# ---- PatientTimelineRenderer code=None + no-blocks branches (853, 864, 913) ----
+
+
+def test_render_categorical_handles_null_codes_and_missing_descriptions(tmp_path: Path) -> None:
+    """Covers branches inside ``PatientTimelineRenderer.render_categorical``:
+
+    - line 852-853: null code in the per-event loop is skipped
+    - line 863-864: code present but missing description is skipped
+    - line 911-913: with demographics provided, the narrative is non-None and gets appended
+    """
+    codes_fp = tmp_path / "codes.parquet"
+    pl.DataFrame(
+        {
+            # Only DIAGNOSIS//KNOWN has a description; UNKNOWN_CODE has empty desc.
+            "code": ["DIAGNOSIS//KNOWN", "UNKNOWN_CODE"],
+            "description": ["A known diagnosis", ""],
+        }
+    ).write_parquet(codes_fp)
+    renderer = PatientTimelineRenderer(codes_parquet=codes_fp)
+
+    cohort = tmp_path / "MEDS_cohort"
+    _write_meds_shard(
+        cohort,
+        events=[
+            (1, datetime(2020, 1, 1), None, None),  # null code → line 853 continue
+            (1, datetime(2020, 1, 2), "HOSPITAL_ADMISSION//ED", None),  # admission skip
+            (1, datetime(2020, 1, 3), "UNKNOWN_CODE", None),  # missing desc → line 864 continue
+            (1, datetime(2020, 1, 4), "DIAGNOSIS//KNOWN", None),  # populates diagnoses
+        ],
+    )
+    text = renderer.render_categorical(
+        subject_id=1,
+        prediction_time=datetime(2020, 6, 1),
+        meds_cohort_dir=cohort,
+        demographics={"gender": "M"},  # narrative non-None → line 913 append
+    )
+    # Narrative was appended (line 913) — _render_patient_narrative emits "man" for M —
+    # and the only valid diagnosis appears.
+    assert "man" in text
+    assert "A known diagnosis" in text
+
+
+# ---- summarize_winrates invalid_policy=drop and count_as_loss branches (line 1340) ----
+
+
+def test_summarize_winrates_count_as_loss_policy_fills_invalid_as_false() -> None:
+    """Line 1346-1347: invalid_policy='count_as_loss' branch in summarize_winrates."""
+    df = pl.DataFrame(
+        {
+            "family": ["F1", "F1"],
+            "anchor_subject_id": [1, 2],
+            "target_won": [True, None],
+            "winner_position": ["A", "invalid"],
+            "rationale": ["", "api error: x"],
+        },
+        schema_overrides={"target_won": pl.Boolean},
+    )
+    out = summarize_winrates(df, n_bootstrap=10, seed=0, invalid_policy="count_as_loss")
+    row = out.row(0, named=True)
+    # The invalid row counts as a loss → rate = 1/2 = 0.5.
+    assert row["target_preferred_rate"] == pytest.approx(0.5)
+    assert row["n_pairs"] == 2
+
+
+# ---- F2 dedupe skip branch (line 1118) ----
+
+
+def test_build_pairs_f2_dedupe_skips_when_top1_equals_top_j() -> None:
+    """Line 1118 in build_pairs: F2 with dedupe and top-1 == top-j → continue (no pair emitted)."""
+    from medrap.llm_judge import build_pairs
+
+    n = 4
+    # Every patient's k=2 retrievals are the same doc, so top1 == top-j for j=1.
+    artifacts = {
+        "doc_ids": np.zeros((n, 1, 2), dtype=int),
+        "targets": np.zeros(n, dtype=int),
+    }
+    schema = pl.DataFrame({"subject_id": list(range(n))})
+    pairs = build_pairs(
+        artifacts=artifacts,
+        val_schema=schema,
+        labels=artifacts["targets"],
+        families=("F2",),
+        n_patients=n,
+        pairs_per_patient_per_family=1,
+        corpus_size=1000,
+        k=2,
+        seed=0,
+        dedupe_identical_docs=True,
+    )
+    assert pairs == []
+
+
+# ---- build_per_patient_rollup retrieval_ds without __len__ (lines 1486-1487) ----
+
+
+def test_build_per_patient_rollup_tolerates_retrieval_ds_without_len(tmp_path: Path) -> None:
+    """Lines 1486-1487 in build_per_patient_rollup: ``len(retrieval_ds)`` raises TypeError → n_rows=0
+    fallback. With n_rows=0 every doc resolves to None and _doc_fields hits the early-return path
+    (line 1492-1493)."""
+
+    class _NoLenDs:
+        def __init__(self) -> None:
+            self.column_names = []
+
+        def __getitem__(self, i):  # pragma: no cover - never resolved
+            return {"doc_text": "x"}
+
+        def __len__(self):
+            raise TypeError("simulated")
+
+    artifacts = _make_artifacts(n_patients=1, k=2, labels=[0])
+    schema = _make_val_schema([100])
+    pairs = [
+        JudgePair(
+            pair_id="p1",
+            family="F1",
+            anchor_row_idx=0,
+            anchor_subject_id=100,
+            anchor_label=0,
+            target_doc_id=int(artifacts["doc_ids"][0, 0, 0]),
+            other_doc_id=int(artifacts["doc_ids"][0, 0, 0]) + 1,
+            target_position="A",
+        ),
+    ]
+    verdicts = pl.DataFrame(
+        {
+            "pair_id": ["p1"],
+            "family": ["F1"],
+            "anchor_subject_id": [100],
+            "anchor_label": [0],
+            "anchor_row_idx": [0],
+            "target_won": [True],
+            "target_doc_id": [int(artifacts["doc_ids"][0, 0, 0])],
+            "other_doc_id": [int(artifacts["doc_ids"][0, 0, 0]) + 1],
+            "target_position": ["A"],
+            "other_rank": [None],
+            "confidence": [0.9],
+            "rationale": [""],
+            "winner_position": ["A"],
+        },
+        schema_overrides={"other_rank": pl.Int64},
+    )
+    demographics = pl.DataFrame(
+        {
+            "subject_id": [100],
+            "gender": ["M"],
+            "birth_time": [datetime(1950, 1, 1)],
+            "race": ["WHITE"],
+        }
+    )
+    df = build_per_patient_rollup(
+        pairs=pairs,
+        verdicts=verdicts,
+        logits=artifacts["logits"],
+        targets=artifacts["targets"],
+        artifacts=artifacts,
+        timeline_renderer=PatientTimelineRenderer(codes_parquet=_make_codes_parquet(tmp_path)),
+        val_schema=schema,
+        demographics=demographics,
+        retrieval_ds=_NoLenDs(),
+        doc_id_to_row={},
+        families=("F1",),
+    )
+    assert df.height == 1
+
+
+def test_build_per_patient_rollup_doc_fields_catches_retrieval_ds_getitem_exception(
+    tmp_path: Path,
+) -> None:
+    """Lines 1496-1497 in build_per_patient_rollup._doc_fields: ``retrieval_ds[row]`` raises an
+    Exception → return the empty-default ``out`` dict."""
+
+    class _ExplodingDs:
+        column_names = ["title"]
+
+        def __getitem__(self, i):
+            raise RuntimeError("simulated retrieval failure")
+
+        def __len__(self):
+            return 10  # so n_rows=10, doc resolution succeeds
+
+    artifacts = _make_artifacts(n_patients=1, k=2, labels=[0])
+    schema = _make_val_schema([100])
+    pairs = [
+        JudgePair(
+            pair_id="p1",
+            family="F1",
+            anchor_row_idx=0,
+            anchor_subject_id=100,
+            anchor_label=0,
+            target_doc_id=int(artifacts["doc_ids"][0, 0, 0]),
+            other_doc_id=int(artifacts["doc_ids"][0, 0, 0]) + 1,
+            target_position="A",
+        ),
+    ]
+    verdicts = pl.DataFrame(
+        {
+            "pair_id": ["p1"],
+            "family": ["F1"],
+            "anchor_subject_id": [100],
+            "anchor_label": [0],
+            "anchor_row_idx": [0],
+            "target_won": [True],
+            "target_doc_id": [int(artifacts["doc_ids"][0, 0, 0])],
+            "other_doc_id": [int(artifacts["doc_ids"][0, 0, 0]) + 1],
+            "target_position": ["A"],
+            "other_rank": [None],
+            "confidence": [0.9],
+            "rationale": [""],
+            "winner_position": ["A"],
+        },
+        schema_overrides={"other_rank": pl.Int64},
+    )
+    demographics = pl.DataFrame(
+        {
+            "subject_id": [100],
+            "gender": ["M"],
+            "birth_time": [datetime(1950, 1, 1)],
+            "race": ["WHITE"],
+        }
+    )
+    # doc_id_to_row resolves target_doc_id to row 0, then retrieval_ds[0] raises.
+    df = build_per_patient_rollup(
+        pairs=pairs,
+        verdicts=verdicts,
+        logits=artifacts["logits"],
+        targets=artifacts["targets"],
+        artifacts=artifacts,
+        timeline_renderer=PatientTimelineRenderer(codes_parquet=_make_codes_parquet(tmp_path)),
+        val_schema=schema,
+        demographics=demographics,
+        retrieval_ds=_ExplodingDs(),
+        doc_id_to_row={int(artifacts["doc_ids"][0, 0, 0]): 0},
+        families=("F1",),
+    )
+    # The exception was caught and an empty title was used.
+    assert df.height == 1
+
+
+# ---- human_validation_subset retrieval_ds without __len__ + position-B branch (1678-1679, 1710) ----
+
+
+def test_human_validation_subset_position_b_branch_and_no_len_retrieval_ds(tmp_path: Path) -> None:
+    """Lines 1678-1679 + 1710 in build_human_validation_subset.
+
+    Single row with target_position='B' exercises the position-B branch where doc A is the 'other'
+    and doc B is the target. A retrieval_ds without __len__ falls back to n_rows=0.
+    """
+
+    class _NoLenDs:
+        def __init__(self) -> None:
+            self.column_names = []
+
+        def __getitem__(self, i):  # pragma: no cover - never resolved
+            return {"doc_text": "x"}
+
+        def __len__(self):
+            raise TypeError("simulated")
+
+    df = pl.DataFrame(
+        {
+            "family": ["F1"],
+            "target_doc_id": [100],
+            "other_doc_id": [101],
+            "target_position": ["B"],
+            "target_won": [True],
+            "winner_position": ["B"],
+            "other_source_subject_id": [None],
+            "other_rank": [None],
+            "model": ["fake"],
+            "raw_response": [""],
+            "confidence": [0.8],
+            "rationale": [""],
+            "pair_id": ["p1"],
+        },
+        schema_overrides={
+            "other_source_subject_id": pl.Int64,
+            "other_rank": pl.Int64,
+            "target_won": pl.Boolean,
+        },
+    )
+    out = build_human_validation_subset(df, retrieval_ds=_NoLenDs(), doc_id_to_row={}, n=10, seed=0)
+    assert out.height == 1
+    # Banned target_* columns are stripped.
+    assert "target_doc_id" not in out.columns
+    assert "target_position" not in out.columns
+
+
+def test_human_validation_subset_doc_fields_catches_retrieval_ds_getitem_exception() -> None:
+    """Lines 1688-1689 in build_human_validation_subset._doc_fields: ``retrieval_ds[row]`` raises an
+    Exception → return the empty-default ``out`` dict (text="" + None metadata)."""
+
+    class _ExplodingDs:
+        column_names = ["title"]
+
+        def __getitem__(self, i):
+            raise RuntimeError("simulated retrieval failure")
+
+        def __len__(self):
+            return 10  # so n_rows=10, doc resolution succeeds
+
+    df = pl.DataFrame(
+        {
+            "family": ["F1"],
+            "target_doc_id": [100],
+            "other_doc_id": [101],
+            "target_position": ["A"],
+            "target_won": [True],
+            "winner_position": ["A"],
+            "other_source_subject_id": [None],
+            "other_rank": [None],
+            "model": ["fake"],
+            "raw_response": [""],
+            "confidence": [0.9],
+            "rationale": [""],
+            "pair_id": ["p1"],
+        },
+        schema_overrides={
+            "other_source_subject_id": pl.Int64,
+            "other_rank": pl.Int64,
+            "target_won": pl.Boolean,
+        },
+    )
+    out = build_human_validation_subset(
+        df, retrieval_ds=_ExplodingDs(), doc_id_to_row={100: 0, 101: 1}, n=10, seed=0
+    )
+    # Row is included but the doc text fields are empty (the exception was caught).
+    assert out.height == 1
+    assert "doc_a_text" in out.columns
+
+
+def test_human_validation_subset_floors_only_branch_when_floors_exceed_target() -> None:
+    """Lines 1648-1650 in build_human_validation_subset: when sum(floors) > target_n, alloc collapses to
+    the floors dict directly."""
+    # Each family has >= 5 rows so floors[f]=5; sum(floors)=10. target_n=min(2, total)=2 < 10
+    # → take the floors-only branch.
+    df = pl.DataFrame(
+        {
+            "family": (["F1"] * 6) + (["F2"] * 6),
+            "target_doc_id": list(range(12)),
+            "other_doc_id": list(range(100, 112)),
+            "target_position": ["A"] * 12,
+            "target_won": [True] * 12,
+            "winner_position": ["A"] * 12,
+            "other_source_subject_id": [None] * 12,
+            "other_rank": [None] * 12,
+            "model": ["fake"] * 12,
+            "raw_response": [""] * 12,
+            "confidence": [0.9] * 12,
+            "rationale": [""] * 12,
+            "pair_id": [f"p{i}" for i in range(12)],
+        },
+        schema_overrides={
+            "other_source_subject_id": pl.Int64,
+            "other_rank": pl.Int64,
+            "target_won": pl.Boolean,
+        },
+    )
+    out = build_human_validation_subset(df, retrieval_ds=None, doc_id_to_row={}, n=2, seed=0)
+    # floors[f]=5 each but each family only has 6 rows → alloc collapses to 5+5=10 rows total.
+    assert out.height == 10

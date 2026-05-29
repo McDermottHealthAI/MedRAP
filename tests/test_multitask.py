@@ -351,3 +351,83 @@ def test_passthrough_fusion_returns_patient_state():
     out = fusion.fuse(FusionInput(patient_state=patient_state, retrieval_memory=torch.randn(2, 1, 5, 6, 4)))
 
     assert out.fused_state is patient_state
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap-fillers for multitask_datamodule.py
+# ---------------------------------------------------------------------------
+
+
+class TestMultiTaskMEDSDatasetFullInit:
+    """Cover lines 46-49 in src/medrap/multitask_datamodule.py (__init__ body)."""
+
+    def test_full_init_calls_super_and_loads_mt_labels(self, monkeypatch, tmp_path):
+        import datetime
+
+        labels = pl.DataFrame(
+            {
+                "subject_id": [11],
+                "prediction_time": [datetime.datetime(2020, 1, 1)],
+                "task_0": [1.0],
+                "task_1": [0.0],
+            }
+        )
+        labels.write_parquet(tmp_path / "train.parquet")
+
+        # No-op the heavy MEDSPytorchDataset.__init__ so we exercise only the
+        # MultiTaskMEDSDataset wrapper's body.
+        def fake_super_init(self, config, split):
+            pass
+
+        monkeypatch.setattr(MEDSPytorchDataset, "__init__", fake_super_init)
+
+        ds = MultiTaskMEDSDataset(
+            config=object(), split="train", mt_labels_dir=tmp_path, num_tasks=2
+        )
+        assert ds._num_tasks == 2
+        assert (11, datetime.datetime(2020, 1, 1)) in ds._mt_lookup
+        assert ds._mt_lookup[(11, datetime.datetime(2020, 1, 1))].tolist() == [1.0, 0.0]
+
+
+class TestMultiTaskMEDSDatamodule:
+    """Cover lines 119-120 (init) + 128-155 (dataloader/dataset forwarders) in
+    src/medrap/multitask_datamodule.py."""
+
+    def test_datamodule_init_wires_inner_and_forwards_dataloaders_and_datasets(self, monkeypatch):
+        from medrap.multitask_datamodule import MultiTaskMEDSDatamodule
+
+        captured = {}
+
+        class _FakeInner:
+            def __init__(self, **kw):
+                captured.update(kw)
+                self.train_dataset = "TRAIN_DS"
+                self.val_dataset = "VAL_DS"
+                self.test_dataset = "TEST_DS"
+
+            def train_dataloader(self):
+                return "TRAIN_DL"
+
+            def val_dataloader(self):
+                return "VAL_DL"
+
+            def test_dataloader(self):
+                return "TEST_DL"
+
+        import medrap.multitask_datamodule as mod
+
+        monkeypatch.setattr(mod, "MEDSLightningDatamodule", _FakeInner)
+
+        dm = MultiTaskMEDSDatamodule(
+            config=object(), mt_labels_dir="/tmp/labels", num_tasks=3, batch_size=4
+        )
+        # Dataloader forwarders (lines 129, 132, 135).
+        assert dm.train_dataloader() == "TRAIN_DL"
+        assert dm.val_dataloader() == "VAL_DL"
+        assert dm.test_dataloader() == "TEST_DL"
+        # Property forwarders (lines 140, 150, 155).
+        assert dm.train_dataset == "TRAIN_DS"
+        assert dm.val_dataset == "VAL_DS"
+        assert dm.test_dataset == "TEST_DS"
+        # The inner constructor received the configured batch size.
+        assert captured["batch_size"] == 4

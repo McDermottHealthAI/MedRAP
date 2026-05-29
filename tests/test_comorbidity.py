@@ -263,6 +263,111 @@ def test_assign_patient_charlson_handles_icd9_codes(tmp_path: Path) -> None:
     assert row["n_categories"] == 2
 
 
+def test_load_charlson_lookup_from_csv_path_uses_supplied_mapping(tmp_path: Path) -> None:
+    """Coverage for the CSV-override path of load_charlson_lookup (lines 615-628)."""
+    from medrap.comorbidity import load_charlson_lookup, lookup_categories
+
+    csv_path = tmp_path / "custom_lookup.csv"
+    csv_path.write_text(
+        "category,icd_version,icd_prefix\n"
+        "Myocardial infarction,10,Z99\n"
+        "Renal disease,10,Z99\n"
+        "Dementia,9,888\n"
+    )
+    lookup = load_charlson_lookup(csv_path=str(csv_path))
+    # The default I21 prefix is NOT present (we replaced the whole mapping).
+    assert lookup_categories(lookup, 10, "I21") == frozenset()
+    # The custom Z99 prefix maps to both MI and Renal disease.
+    cats = lookup_categories(lookup, 10, "Z99XYZ")
+    assert "Myocardial infarction" in cats
+    assert "Renal disease" in cats
+    assert lookup_categories(lookup, 9, "8881") == frozenset({"Dementia"})
+
+
+def test_load_charlson_lookup_csv_skips_rows_missing_required_fields(tmp_path: Path) -> None:
+    """Rows without category or icd_prefix or with non-int icd_version are skipped."""
+    from medrap.comorbidity import load_charlson_lookup, lookup_categories
+
+    csv_path = tmp_path / "custom_lookup.csv"
+    csv_path.write_text(
+        "category,icd_version,icd_prefix\n"
+        ",10,I21\n"  # missing category
+        "Renal disease,10,\n"  # missing prefix
+        "Dementia,not_an_int,F00\n"  # non-int version
+        "Myocardial infarction,10,XX1\n"  # valid row, kept
+    )
+    lookup = load_charlson_lookup(csv_path=str(csv_path))
+    assert lookup_categories(lookup, 10, "XX1") == frozenset({"Myocardial infarction"})
+    # None of the skipped rows produced lookup entries.
+    assert lookup_categories(lookup, 10, "I21") == frozenset()
+    assert lookup_categories(lookup, 9, "F00") == frozenset()
+
+
+def test_lookup_categories_returns_empty_when_icd_code_is_none() -> None:
+    """Guard for line 645: None icd_code returns frozenset() without iterating."""
+    from medrap.comorbidity import load_charlson_lookup, lookup_categories
+
+    lookup = load_charlson_lookup()
+    assert lookup_categories(lookup, 10, None) == frozenset()  # type: ignore[arg-type]
+
+
+def test_assign_patient_charlson_defaults_to_load_charlson_lookup_when_none(tmp_path: Path) -> None:
+    """Coverage for the default-lookup branch (lines 698-699): omitting ``lookup`` triggers a fresh
+    ``load_charlson_lookup()`` call inside ``assign_patient_charlson``."""
+    from medrap.comorbidity import assign_patient_charlson
+
+    cohort = tmp_path / "MEDS_cohort"
+    _write_synthetic_meds_shard(
+        cohort / "data" / "train" / "shard0.parquet",
+        events=[(5, datetime(2020, 1, 1), "DIAGNOSIS//ICD//10//I50")],
+    )
+    val_schema = pl.DataFrame({"subject_id": [5], "prediction_time": [datetime(2021, 1, 1)]})
+    # Note: lookup=None (default) is the path under test.
+    result = assign_patient_charlson(cohort, val_schema)
+    assert result.row(0, named=True)["Congestive heart failure"] is True
+
+
+def test_assign_patient_charlson_skips_events_with_unparseable_icd_version(tmp_path: Path) -> None:
+    """Coverage for line 728-729: an event whose code matches DIAGNOSIS//ICD// but whose version isn't a
+    parseable int (e.g. ICD//abc//J45) gets skipped — no flags raised."""
+    from medrap.comorbidity import assign_patient_charlson, load_charlson_lookup
+
+    cohort = tmp_path / "MEDS_cohort"
+    _write_synthetic_meds_shard(
+        cohort / "data" / "train" / "shard0.parquet",
+        events=[
+            (1, datetime(2020, 1, 1), "DIAGNOSIS//ICD//abc//I50"),  # bad version
+            (1, datetime(2020, 1, 2), "DIAGNOSIS//ICD//10//I50"),  # good
+        ],
+    )
+    val_schema = pl.DataFrame({"subject_id": [1], "prediction_time": [datetime(2021, 1, 1)]})
+    result = assign_patient_charlson(cohort, val_schema, lookup=load_charlson_lookup())
+    # The good ICD-10 event flags CHF; the bad-version event is silently skipped.
+    assert result.row(0, named=True)["Congestive heart failure"] is True
+    assert result.row(0, named=True)["n_categories"] == 1
+
+
+def test_assign_patient_charlson_skips_events_with_null_event_time(tmp_path: Path) -> None:
+    """Coverage for lines 743-744: an event with time=None is skipped during pred-time filtering."""
+    from medrap.comorbidity import assign_patient_charlson, load_charlson_lookup
+
+    cohort = tmp_path / "MEDS_cohort"
+    shard_path = cohort / "data" / "train" / "shard0.parquet"
+    shard_path.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "subject_id": [1, 1],
+            "time": [datetime(2020, 1, 1), None],  # second event has null time
+            "code": ["DIAGNOSIS//ICD//10//I50", "DIAGNOSIS//ICD//10//N18"],
+        }
+    ).write_parquet(shard_path)
+    val_schema = pl.DataFrame({"subject_id": [1], "prediction_time": [datetime(2021, 1, 1)]})
+    result = assign_patient_charlson(cohort, val_schema, lookup=load_charlson_lookup())
+    # CHF flagged from the timed event; renal flag from the null-time event is skipped.
+    assert result.row(0, named=True)["Congestive heart failure"] is True
+    assert result.row(0, named=True)["Renal disease"] is False
+
+
 def test_assign_patient_charlson_preserves_val_schema_row_order(tmp_path: Path) -> None:
     """Output row order must match val_schema row order so the result aligns 1:1 with the extraction
     artifacts."""
