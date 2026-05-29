@@ -20,8 +20,10 @@ from medrap.demographic_analysis import (
     _softmax,
     aggregate_race,
     bin_age,
+    build_comorbidity_keyword_table,
     build_keyword_demographic_table,
     build_patient_demographic_frame,
+    build_pearson_residual_table,
     extract_val_schema,
     load_subject_demographics,
     render_demographic_heatmaps,
@@ -622,7 +624,8 @@ def test_load_subject_demographics_handles_missing_race_column(tmp_path: Path) -
 # ---------------------------------------------------------------------------
 
 
-def test_render_demographic_heatmaps_writes_png_and_returns_tables(tmp_path: Path) -> None:
+def test_render_demographic_heatmaps_writes_three_pngs_and_returns_tables(tmp_path: Path) -> None:
+    """Writes one PNG per demographic axis to ``output_dir`` and returns per-axis tables."""
     import torch
 
     artifacts = {
@@ -637,11 +640,16 @@ def test_render_demographic_heatmaps_writes_png_and_returns_tables(tmp_path: Pat
             "gender": ["M", "F", None],
         }
     )
-    output_path = tmp_path / "heatmap.png"
 
-    result = render_demographic_heatmaps(artifacts, provider, patient_frame, output_path)
+    result = render_demographic_heatmaps(artifacts, provider, patient_frame, output_dir=tmp_path)
 
-    assert output_path.is_file()
+    for axis in ("age", "race", "gender"):
+        assert (tmp_path / f"keyword_demographic_{axis}.pdf").is_file(), axis
+    # The legacy combined file is no longer produced.
+    assert not (tmp_path / "keyword_demographic_heatmap.pdf").exists()
+    # Chronic-comorbidity panel is opt-in; without ``comorbidity_frame`` it
+    # should not appear.
+    assert not (tmp_path / "keyword_demographic_chronic.pdf").exists()
     assert set(result.keys()) == {"age", "race", "gender"}
     for key in ("age", "race", "gender"):
         assert "table" in result[key]
@@ -655,7 +663,7 @@ def test_render_demographic_heatmaps_rejects_missing_artifact_keys(tmp_path: Pat
             {"unrelated": None},
             StaticMappingProvider([[("a", 1.0)]]),
             pl.DataFrame({"age_bin": ["0-18"], "race": ["WHITE"], "gender": ["M"]}),
-            tmp_path / "heatmap.png",
+            output_dir=tmp_path,
         )
 
 
@@ -679,12 +687,13 @@ def test_render_demographic_heatmaps_rejects_row_count_mismatch(tmp_path: Path) 
             artifacts,
             StaticMappingProvider([[("a", 1.0)], [("b", 1.0)]]),
             patient_frame,
-            tmp_path / "heatmap.png",
+            output_dir=tmp_path,
         )
 
 
 def test_render_demographic_heatmaps_displays_placeholder_when_tables_are_empty(tmp_path: Path) -> None:
-    """Exercises the ``if table.size == 0`` placeholder branch."""
+    """Exercises the ``if table.size == 0`` placeholder branch: each per-axis PNG is still written (with the
+    placeholder text) even when no rows are available."""
     import torch
 
     artifacts = {
@@ -698,15 +707,852 @@ def test_render_demographic_heatmaps_displays_placeholder_when_tables_are_empty(
             "gender": pl.Series([], dtype=pl.Utf8),
         }
     )
-    output_path = tmp_path / "empty.png"
 
     result = render_demographic_heatmaps(
         artifacts,
         StaticMappingProvider([[("x", 1.0)]]),
         patient_frame,
-        output_path,
+        output_dir=tmp_path,
     )
 
-    assert output_path.is_file()
     for axis in ("age", "race", "gender"):
+        assert (tmp_path / f"keyword_demographic_{axis}.pdf").is_file(), axis
         assert result[axis]["table"].size == 0
+
+
+# ---------------------------------------------------------------------------
+# build_comorbidity_keyword_table + chronic heatmap panel
+# ---------------------------------------------------------------------------
+
+
+def test_build_comorbidity_keyword_table_multi_membership_sums_correctly() -> None:
+    """A patient flagged for multiple categories contributes to every one of those rows; a patient flagged for
+    none lands in the optional 'None' bucket.
+
+    Each row is L1-normalized like the demographic version.
+    """
+    doc_ids = np.array([[0, 1], [0, 1], [1, 0]], dtype=np.int64)
+    diff_scores = np.array([[1.0, 0.0], [0.0, 1.0], [1.0, 0.0]], dtype=np.float64)
+    # Patient 0: both categories. Patient 1: cat_A only. Patient 2: neither.
+    mask = np.array([[True, True], [True, False], [False, False]], dtype=bool)
+    provider = StaticMappingProvider([[("a", 1.0)], [("b", 1.0)]])
+
+    table, bin_labels, kw_labels = build_comorbidity_keyword_table(
+        doc_ids,
+        diff_scores,
+        mask,
+        category_names=["cat_A", "cat_B"],
+        provider=provider,
+        top_n_keywords=20,
+        include_none=True,
+    )
+
+    # Row order: cat_A, cat_B, "None of the tracked".
+    assert bin_labels[0] == "cat_A"
+    assert bin_labels[1] == "cat_B"
+    assert "None" in bin_labels[2]
+    assert table.shape == (3, len(kw_labels))
+
+    # cat_A receives contributions from patients 0 and 1 (multi-membership):
+    # P0 softmax([1,0]) ≈ [0.731, 0.269] on (a, b)
+    # P1 softmax([0,1]) ≈ [0.269, 0.731] on (a, b)
+    # Pre-normalization sums on (a, b): (1.0, 1.0) → row normalizes to (0.5, 0.5)
+    cat_a_row = table[0]
+    np.testing.assert_allclose(cat_a_row, [0.5, 0.5], atol=1e-6)
+
+    # cat_B: only P0 contributes, so the row mirrors P0's softmax.
+    cat_b_row = table[1]
+    np.testing.assert_allclose(cat_b_row.sum(), 1.0, atol=1e-6)
+    assert cat_b_row[0] > cat_b_row[1]  # 'a' dominates
+
+    # None row: only P2 contributes; P2's softmax([1,0]) on doc_ids[1, 0] = [1, 0]
+    # → weight 0.731 on doc 1 (→ 'b') + 0.269 on doc 0 (→ 'a')
+    none_row = table[2]
+    np.testing.assert_allclose(none_row.sum(), 1.0, atol=1e-6)
+    assert none_row[1] > none_row[0]  # 'b' dominates
+
+
+def test_render_demographic_heatmaps_writes_chronic_png_when_comorbidity_frame_provided(
+    tmp_path: Path,
+) -> None:
+    """When ``comorbidity_frame`` + ``comorbidity_categories`` are passed, the 4th PNG appears and the return
+    dict gains a ``'chronic'`` key."""
+    import torch
+
+    artifacts = {
+        "doc_ids": torch.tensor([[[0, 1]], [[0, 2]], [[1, 2]]], dtype=torch.long),
+        "differentiable_doc_scores": torch.tensor([[1.0, 0.5], [0.5, 1.0], [0.2, 0.8]]),
+    }
+    provider = StaticMappingProvider([[("a", 1.0)], [("b", 1.0)], [("c", 1.0)]])
+    patient_frame = pl.DataFrame(
+        {
+            "age_bin": ["0-18", "18-30", "30-45"],
+            "race": ["WHITE", "BLACK/AFRICAN AMERICAN", None],
+            "gender": ["M", "F", None],
+        }
+    )
+    comorbidity_frame = pl.DataFrame(
+        {
+            "subject_id": [1, 2, 3],
+            "Diabetes without chronic complications": [True, False, False],
+            "Renal disease": [True, True, False],
+        }
+    )
+
+    result = render_demographic_heatmaps(
+        artifacts,
+        provider,
+        patient_frame,
+        output_dir=tmp_path,
+        comorbidity_frame=comorbidity_frame,
+        comorbidity_categories=(
+            "Diabetes without chronic complications",
+            "Renal disease",
+        ),
+    )
+
+    for axis in ("age", "race", "gender", "chronic"):
+        assert (tmp_path / f"keyword_demographic_{axis}.pdf").is_file(), axis
+    assert "chronic" in result
+    assert "table" in result["chronic"]
+    assert "bins" in result["chronic"]
+    assert "keywords" in result["chronic"]
+
+
+# ---------------------------------------------------------------------------
+# build_pearson_residual_table + residual companion heatmap
+# ---------------------------------------------------------------------------
+
+
+def test_pearson_residual_table_zero_when_bin_matches_population() -> None:
+    """When every bin's distribution equals the population's, all residuals should be ~0 (no over/under-
+    representation)."""
+    bin_to_keyword_mass = {
+        "A": {"k1": 1.0, "k2": 0.5},
+        "B": {"k1": 1.0, "k2": 0.5},
+    }
+    bin_counts = {"A": 2, "B": 2}
+    pop_keyword_mass = {"k1": 2.0, "k2": 1.0}
+    population_n = 4
+
+    residuals = build_pearson_residual_table(
+        bin_to_keyword_mass,
+        bin_counts,
+        pop_keyword_mass,
+        population_n,
+        bin_order=["A", "B"],
+        keyword_order=["k1", "k2"],
+    )
+
+    assert residuals.shape == (2, 2)
+    np.testing.assert_allclose(residuals, np.zeros((2, 2)), atol=1e-9)
+
+
+def test_pearson_residual_table_positive_when_bin_over_represents_topic() -> None:
+    """A bin retrieving topic k1 disproportionately gets a large positive residual at (bin, k1) and large
+    negative at (bin, k2)."""
+    # Two bins, 50 patients each, K=2 keywords. Bin A heavily favors k1,
+    # bin B heavily favors k2. With these magnitudes the residuals should
+    # comfortably exceed the |z| > 2 significance threshold.
+    bin_to_keyword_mass = {
+        "A": {"k1": 40.0, "k2": 10.0},
+        "B": {"k1": 10.0, "k2": 40.0},
+    }
+    bin_counts = {"A": 50, "B": 50}
+    pop_keyword_mass = {"k1": 50.0, "k2": 50.0}
+    population_n = 100
+
+    residuals = build_pearson_residual_table(
+        bin_to_keyword_mass,
+        bin_counts,
+        pop_keyword_mass,
+        population_n,
+        bin_order=["A", "B"],
+        keyword_order=["k1", "k2"],
+    )
+
+    # Expected mass for any cell = 50 * 50 / 100 = 25; sqrt(E) = 5
+    # residual(A, k1) = (40 - 25) / 5 = +3.0; (A, k2) = (10 - 25) / 5 = -3.0
+    np.testing.assert_allclose(residuals[0, 0], 3.0, atol=1e-9)
+    np.testing.assert_allclose(residuals[0, 1], -3.0, atol=1e-9)
+    np.testing.assert_allclose(residuals[1, 0], -3.0, atol=1e-9)
+    np.testing.assert_allclose(residuals[1, 1], 3.0, atol=1e-9)
+    # Cross above the conventional |z| > 2 significance threshold.
+    assert np.abs(residuals).max() > 2.0
+
+
+def test_pearson_residual_table_handles_empty_bin_with_nan() -> None:
+    """A bin with zero patients gets an all-NaN row (no division-by-zero explosion, no crash)."""
+    bin_to_keyword_mass = {
+        "A": {"k1": 10.0, "k2": 5.0},
+        "C": {"k1": 0.0, "k2": 0.0},  # empty bin
+    }
+    bin_counts = {"A": 15, "C": 0}
+    pop_keyword_mass = {"k1": 10.0, "k2": 5.0}
+    population_n = 15
+
+    residuals = build_pearson_residual_table(
+        bin_to_keyword_mass,
+        bin_counts,
+        pop_keyword_mass,
+        population_n,
+        bin_order=["A", "C"],
+        keyword_order=["k1", "k2"],
+    )
+
+    # Row "A" finite, row "C" all-NaN.
+    assert np.isfinite(residuals[0]).all()
+    assert np.isnan(residuals[1]).all()
+
+
+def test_pearson_residual_table_zero_for_zero_expected_cells() -> None:
+    """A topic with zero population mass gives expected==0; the residual is defined as 0 there (no nonzero
+    observed minus zero expected to report)."""
+    bin_to_keyword_mass = {
+        "A": {"k1": 5.0, "k_unused": 0.0},
+    }
+    bin_counts = {"A": 5}
+    pop_keyword_mass = {"k1": 5.0, "k_unused": 0.0}
+    population_n = 5
+
+    residuals = build_pearson_residual_table(
+        bin_to_keyword_mass,
+        bin_counts,
+        pop_keyword_mass,
+        population_n,
+        bin_order=["A"],
+        keyword_order=["k1", "k_unused"],
+    )
+
+    np.testing.assert_allclose(residuals[0, 0], 0.0, atol=1e-9)
+    np.testing.assert_allclose(residuals[0, 1], 0.0, atol=1e-9)
+
+
+def test_render_demographic_heatmaps_writes_residuals_csv(tmp_path: Path) -> None:
+    """Renderer also dumps a long-format residuals CSV so per-cell z-scores can be sorted / quoted in the
+    paper without re-rendering PDFs."""
+    import csv as csv_mod
+
+    import torch
+
+    artifacts = {
+        "doc_ids": torch.tensor([[[0, 1]], [[0, 2]], [[1, 2]]], dtype=torch.long),
+        "differentiable_doc_scores": torch.tensor([[1.0, 0.5], [0.5, 1.0], [0.2, 0.8]]),
+    }
+    provider = StaticMappingProvider([[("a", 1.0)], [("b", 1.0)], [("c", 1.0)]])
+    patient_frame = pl.DataFrame(
+        {
+            "age_bin": ["0-18", "18-30", "30-45"],
+            "race": ["WHITE", "BLACK/AFRICAN AMERICAN", None],
+            "gender": ["M", "F", None],
+        }
+    )
+
+    render_demographic_heatmaps(artifacts, provider, patient_frame, output_dir=tmp_path)
+
+    csv_path = tmp_path / "keyword_demographic_residuals.csv"
+    assert csv_path.is_file()
+    with open(csv_path) as f:
+        reader = csv_mod.DictReader(f)
+        assert reader.fieldnames is not None
+        assert {"axis", "bin", "keyword", "raw_mass", "z_score"}.issubset(reader.fieldnames)
+        rows = list(reader)
+    assert {r["axis"] for r in rows} == {"age", "race", "gender"}
+    # Every row's raw_mass and z_score should round-trip to a finite float.
+    for r in rows:
+        assert np.isfinite(float(r["raw_mass"]))
+        assert np.isfinite(float(r["z_score"]))
+
+
+def test_render_demographic_heatmaps_residuals_csv_includes_chronic_when_provided(
+    tmp_path: Path,
+) -> None:
+    """When ``comorbidity_frame`` is provided, the CSV also gets a ``chronic`` axis with one row per
+    (category, keyword) cell."""
+    import csv as csv_mod
+
+    import torch
+
+    artifacts = {
+        "doc_ids": torch.tensor([[[0, 1]], [[0, 2]], [[1, 2]]], dtype=torch.long),
+        "differentiable_doc_scores": torch.tensor([[1.0, 0.5], [0.5, 1.0], [0.2, 0.8]]),
+    }
+    provider = StaticMappingProvider([[("a", 1.0)], [("b", 1.0)], [("c", 1.0)]])
+    patient_frame = pl.DataFrame(
+        {
+            "age_bin": ["0-18", "18-30", "30-45"],
+            "race": ["WHITE", "BLACK/AFRICAN AMERICAN", None],
+            "gender": ["M", "F", None],
+        }
+    )
+    comorbidity_frame = pl.DataFrame(
+        {
+            "subject_id": [1, 2, 3],
+            "Diabetes without chronic complications": [True, False, False],
+            "Renal disease": [True, True, False],
+        }
+    )
+
+    render_demographic_heatmaps(
+        artifacts,
+        provider,
+        patient_frame,
+        output_dir=tmp_path,
+        comorbidity_frame=comorbidity_frame,
+        comorbidity_categories=("Diabetes without chronic complications", "Renal disease"),
+    )
+
+    csv_path = tmp_path / "keyword_demographic_residuals.csv"
+    assert csv_path.is_file()
+    with open(csv_path) as f:
+        reader = csv_mod.DictReader(f)
+        rows = list(reader)
+    assert {r["axis"] for r in rows} == {"age", "race", "gender", "chronic"}
+
+
+def test_render_demographic_heatmaps_writes_residual_companion_for_each_axis(
+    tmp_path: Path,
+) -> None:
+    """Every demographic axis emitted by ``render_demographic_heatmaps`` must also have a ``_residual.png``
+    sibling using a diverging colormap.
+
+    The
+    return dict's per-axis sub-dict gains a ``residual`` key.
+    """
+    import torch
+
+    artifacts = {
+        "doc_ids": torch.tensor([[[0, 1]], [[0, 2]], [[1, 2]]], dtype=torch.long),
+        "differentiable_doc_scores": torch.tensor([[1.0, 0.5], [0.5, 1.0], [0.2, 0.8]]),
+    }
+    provider = StaticMappingProvider([[("a", 1.0)], [("b", 1.0)], [("c", 1.0)]])
+    patient_frame = pl.DataFrame(
+        {
+            "age_bin": ["0-18", "18-30", "30-45"],
+            "race": ["WHITE", "BLACK/AFRICAN AMERICAN", None],
+            "gender": ["M", "F", None],
+        }
+    )
+
+    result = render_demographic_heatmaps(
+        artifacts,
+        provider,
+        patient_frame,
+        output_dir=tmp_path,
+    )
+
+    for axis in ("age", "race", "gender"):
+        assert (tmp_path / f"keyword_demographic_{axis}.pdf").is_file(), axis
+        assert (tmp_path / f"keyword_demographic_{axis}_residual.pdf").is_file(), axis
+        assert "residual" in result[axis], axis
+        assert result[axis]["residual"].shape == result[axis]["table"].shape
+
+
+# ---------------------------------------------------------------------------
+# Mass-conservation invariants
+#
+# The keyword-demographic pipeline composes two independently-normalized steps:
+# per-patient softmax over retrieved docs, and per-doc provider keyword weights.
+# Total keyword mass per patient must equal 1.0, and per-bin table rows must
+# equal 1.0 when the keyword axis is not truncated. These tests lock that
+# invariant across both shipped providers.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(params=["title", "lda"])
+def provider_inputs(
+    request: pytest.FixtureRequest, tmp_path: Path
+) -> tuple[np.ndarray, np.ndarray, list[str], object]:
+    """Return (doc_ids, diff_scores, labels, provider) for each shipped provider."""
+    doc_ids = np.array(
+        [
+            [0, 1, 2],
+            [2, 3, 4],
+            [0, 2, 4],
+            [1, 3, 0],
+        ],
+        dtype=np.int64,
+    )
+    diff_scores = np.array(
+        [
+            [1.0, 0.5, -0.5],
+            [2.0, 1.0, 0.0],
+            [0.3, 0.7, 0.1],
+            [-1.0, 0.5, 2.0],
+        ],
+        dtype=np.float64,
+    )
+    labels = ["A", "B", "A", "B"]
+
+    if request.param == "title":
+        dataset_path = tmp_path / "title_db"
+        Dataset.from_dict(
+            {"title": ["Cardiology", "Obstetrics", "Neurology", "Hematology", "Oncology"]}
+        ).save_to_disk(str(dataset_path))
+        provider = TitleKeywordProvider(dataset_path)
+    else:
+        dataset_path = tmp_path / "lda_db"
+        _build_lda_corpus(dataset_path)
+        provider = LDATopicProvider(dataset_path, n_topics=2, n_top_words=3, min_topic_weight=0.01)
+        # LDA corpus has 12 docs; remap to the first 5 rows.
+        doc_ids = np.array(
+            [
+                [0, 1, 2],
+                [2, 6, 7],
+                [0, 2, 8],
+                [1, 6, 0],
+            ],
+            dtype=np.int64,
+        )
+
+    return doc_ids, diff_scores, labels, provider
+
+
+def test_total_keyword_mass_per_patient_equals_one(
+    provider_inputs: tuple[np.ndarray, np.ndarray, list[str], object],
+) -> None:
+    """Σ_k Σ_kw softmax_weight x keyword_weight = 1 for every patient."""
+    doc_ids, diff_scores, _, provider = provider_inputs
+
+    weights = _softmax(diff_scores, axis=-1)
+    n_patients, k_docs = doc_ids.shape
+
+    totals = np.zeros(n_patients)
+    for i in range(n_patients):
+        for k in range(k_docs):
+            for _, kw_weight in provider.keywords_for(int(doc_ids[i, k])):
+                totals[i] += weights[i, k] * kw_weight
+
+    np.testing.assert_allclose(totals, 1.0, atol=1e-9)
+
+
+def test_demographic_table_row_sums_equal_one_when_not_truncated(
+    provider_inputs: tuple[np.ndarray, np.ndarray, list[str], object],
+) -> None:
+    """Per-bin rows sum to 1 when top_n_keywords covers the full active vocab."""
+    doc_ids, diff_scores, labels, provider = provider_inputs
+
+    table, _, _ = build_keyword_demographic_table(
+        doc_ids,
+        diff_scores,
+        labels,
+        provider,
+        top_n_keywords=max(1000, len(provider.vocab)),
+    )
+
+    np.testing.assert_allclose(table.sum(axis=1), 1.0, atol=1e-9)
+
+
+def test_demographic_table_row_sums_leq_one_when_truncated(
+    provider_inputs: tuple[np.ndarray, np.ndarray, list[str], object],
+) -> None:
+    """top_n_keywords=1 removes mass; every row sum ≤ 1, and at least one is strictly <1."""
+    doc_ids, diff_scores, labels, provider = provider_inputs
+
+    table, _, _ = build_keyword_demographic_table(
+        doc_ids,
+        diff_scores,
+        labels,
+        provider,
+        top_n_keywords=1,
+    )
+
+    row_sums = table.sum(axis=1)
+    assert (row_sums <= 1.0 + 1e-9).all()
+    assert (row_sums < 1.0 - 1e-9).any(), (
+        f"Expected truncation to remove mass from at least one bin; got row sums {row_sums}"
+    )
+
+
+def test_demographic_table_is_nonnegative_and_finite() -> None:
+    """Uneven bin sizes must not produce NaN, Inf, or negative entries."""
+    doc_ids = np.array(
+        [[0, 1], [0, 2], [1, 2], [0, 1], [2, 0], [1, 0]],
+        dtype=np.int64,
+    )
+    diff_scores = np.array(
+        [
+            [2.0, 0.0],
+            [1.0, 1.0],
+            [0.0, 5.0],
+            [3.0, 3.0],
+            [-2.0, 4.0],
+            [0.5, 0.5],
+        ],
+        dtype=np.float64,
+    )
+    # 5 patients in "A", 1 in "B" — exercises the denom=max(count,1) path.
+    labels = ["A", "A", "A", "A", "A", "B"]
+    provider = StaticMappingProvider(
+        [
+            [("cardio", 1.0)],
+            [("neuro", 0.6), ("onco", 0.4)],
+            [("onco", 1.0)],
+        ]
+    )
+
+    table, _, _ = build_keyword_demographic_table(doc_ids, diff_scores, labels, provider)
+
+    assert np.isfinite(table).all()
+    assert (table >= 0.0).all()
+
+
+def test_mass_conservation_with_extreme_diff_scores() -> None:
+    """Extreme diff_scores must not break softmax numerical stability."""
+    doc_ids = np.array([[0, 1, 2], [2, 1, 0]], dtype=np.int64)
+    diff_scores = np.array(
+        [
+            [1e6, -1e6, 0.0],
+            [-1e6, 1e6, 1e6],
+        ],
+        dtype=np.float64,
+    )
+    labels = ["A", "A"]
+    provider = StaticMappingProvider(
+        [
+            [("cardio", 0.7), ("neuro", 0.3)],
+            [("onco", 1.0)],
+            [("cardio", 0.5), ("onco", 0.5)],
+        ]
+    )
+
+    table, _, _ = build_keyword_demographic_table(
+        doc_ids,
+        diff_scores,
+        labels,
+        provider,
+        top_n_keywords=1000,
+    )
+
+    np.testing.assert_allclose(table.sum(axis=1), 1.0, atol=1e-9)
+
+
+def test_duplicate_doc_ids_preserve_mass() -> None:
+    """Retrieving the same doc K times must still conserve mass."""
+    doc_ids = np.array([[3, 3, 3], [2, 2, 2]], dtype=np.int64)
+    diff_scores = np.array(
+        [
+            [1.0, 2.0, 0.5],
+            [-1.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    labels = ["A", "B"]
+    provider = StaticMappingProvider(
+        [
+            [("a", 1.0)],
+            [("b", 1.0)],
+            [("c", 0.4), ("d", 0.6)],
+            [("e", 0.2), ("f", 0.8)],
+        ]
+    )
+
+    table, _, _ = build_keyword_demographic_table(
+        doc_ids,
+        diff_scores,
+        labels,
+        provider,
+        top_n_keywords=1000,
+    )
+
+    np.testing.assert_allclose(table.sum(axis=1), 1.0, atol=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap-fillers
+# ---------------------------------------------------------------------------
+
+
+def _provider2() -> StaticMappingProvider:
+    return StaticMappingProvider([[("kw0", 1.0)], [("kw1", 1.0)]])
+
+
+def test_build_keyword_demographic_table_raises_when_doc_ids_not_2d() -> None:
+    """Guard at line 522 in _accumulate_demographic_bin_mass."""
+    with pytest.raises(ValueError, match=r"doc_ids must be \(N, K\)"):
+        build_keyword_demographic_table(
+            np.zeros(5, dtype=int),
+            np.zeros((5, 2)),
+            ["a"] * 5,
+            _provider2(),
+        )
+
+
+def test_build_keyword_demographic_table_raises_when_diff_scores_shape_mismatch() -> None:
+    """Guard at line 524."""
+    with pytest.raises(ValueError, match=r"diff_scores shape"):
+        build_keyword_demographic_table(
+            np.zeros((3, 2), dtype=int),
+            np.zeros((3, 3)),
+            ["a", "b", "a"],
+            _provider2(),
+        )
+
+
+def test_build_keyword_demographic_table_raises_when_labels_length_mismatch() -> None:
+    """Guard at line 526."""
+    with pytest.raises(ValueError, match=r"demographic_labels length"):
+        build_keyword_demographic_table(
+            np.zeros((3, 2), dtype=int),
+            np.zeros((3, 2)),
+            ["a", "b"],
+            _provider2(),
+        )
+
+
+def test_accumulate_demographic_bin_mass_raises_on_each_private_shape_guard() -> None:
+    """Guards at lines 522, 524, 526 in the *private* _accumulate_demographic_bin_mass.
+
+    These duplicate the public guards (660/662/664 in build_keyword_demographic_table) so the public-API tests
+    fire the public ones first and never reach these. Cover them by importing the private function directly.
+    """
+    from medrap.demographic_analysis import _accumulate_demographic_bin_mass
+
+    provider = _provider2()
+    with pytest.raises(ValueError, match=r"doc_ids must be \(N, K\)"):
+        _accumulate_demographic_bin_mass(np.zeros(5, dtype=int), np.zeros((5, 2)), ["a"] * 5, provider)
+    with pytest.raises(ValueError, match=r"diff_scores shape"):
+        _accumulate_demographic_bin_mass(
+            np.zeros((3, 2), dtype=int), np.zeros((3, 3)), ["a", "b", "a"], provider
+        )
+    with pytest.raises(ValueError, match=r"demographic_labels length"):
+        _accumulate_demographic_bin_mass(np.zeros((3, 2), dtype=int), np.zeros((3, 2)), ["a", "b"], provider)
+
+
+def test_build_comorbidity_keyword_table_raises_on_each_public_shape_guard() -> None:
+    """Guards at lines 746, 748, 751, 753, 755 in build_comorbidity_keyword_table."""
+    good_doc_ids = np.zeros((3, 2), dtype=int)
+    good_scores = np.zeros((3, 2))
+    good_mask = np.zeros((3, 1), dtype=bool)
+    good_cats = ["cat0"]
+
+    with pytest.raises(ValueError, match=r"doc_ids must be \(N, K\)"):
+        build_comorbidity_keyword_table(
+            np.zeros(5, dtype=int), good_scores, good_mask, good_cats, _provider2()
+        )
+    with pytest.raises(ValueError, match=r"diff_scores shape"):
+        build_comorbidity_keyword_table(good_doc_ids, np.zeros((3, 3)), good_mask, good_cats, _provider2())
+    with pytest.raises(ValueError, match=r"comorbidity_mask must be \(N, C\)"):
+        build_comorbidity_keyword_table(
+            good_doc_ids, good_scores, np.zeros(3, dtype=bool), good_cats, _provider2()
+        )
+    with pytest.raises(ValueError, match=r"comorbidity_mask N="):
+        build_comorbidity_keyword_table(
+            good_doc_ids, good_scores, np.zeros((4, 1), dtype=bool), good_cats, _provider2()
+        )
+    with pytest.raises(ValueError, match=r"comorbidity_mask C="):
+        build_comorbidity_keyword_table(
+            good_doc_ids, good_scores, np.zeros((3, 2), dtype=bool), good_cats, _provider2()
+        )
+
+
+def test_accumulate_comorbidity_bin_mass_raises_on_each_private_shape_guard() -> None:
+    """Guards at lines 579, 581, 584, 586, 588 in _accumulate_comorbidity_bin_mass."""
+    from medrap.demographic_analysis import _accumulate_comorbidity_bin_mass
+
+    good_doc_ids = np.zeros((3, 2), dtype=int)
+    good_scores = np.zeros((3, 2))
+    good_mask = np.zeros((3, 1), dtype=bool)
+    good_cats = ["cat0"]
+    provider = _provider2()
+
+    with pytest.raises(ValueError, match=r"doc_ids must be \(N, K\)"):
+        _accumulate_comorbidity_bin_mass(np.zeros(5, dtype=int), good_scores, good_mask, good_cats, provider)
+    with pytest.raises(ValueError, match=r"diff_scores shape"):
+        _accumulate_comorbidity_bin_mass(good_doc_ids, np.zeros((3, 3)), good_mask, good_cats, provider)
+    with pytest.raises(ValueError, match=r"comorbidity_mask must be \(N, C\)"):
+        _accumulate_comorbidity_bin_mass(
+            good_doc_ids, good_scores, np.zeros(3, dtype=bool), good_cats, provider
+        )
+    with pytest.raises(ValueError, match=r"comorbidity_mask N="):
+        _accumulate_comorbidity_bin_mass(
+            good_doc_ids, good_scores, np.zeros((4, 1), dtype=bool), good_cats, provider
+        )
+    with pytest.raises(ValueError, match=r"comorbidity_mask C="):
+        _accumulate_comorbidity_bin_mass(
+            good_doc_ids, good_scores, np.zeros((3, 2), dtype=bool), good_cats, provider
+        )
+
+
+def test_build_comorbidity_keyword_table_include_any_adds_aggregated_row() -> None:
+    """Lines 780-783, 793 in build_comorbidity_keyword_table; include_any=True path."""
+    doc_ids = np.array([[0, 1], [0, 1], [0, 1]])
+    diff_scores = np.zeros_like(doc_ids, dtype=float)
+    mask = np.array([[True, False], [False, True], [False, False]], dtype=bool)
+    provider = StaticMappingProvider([[("kw0", 1.0)], [("kw1", 1.0)]])
+
+    table, bin_labels, _ = build_comorbidity_keyword_table(
+        doc_ids,
+        diff_scores,
+        mask,
+        ["cat0", "cat1"],
+        provider,
+        include_any=True,
+        include_none=True,
+    )
+    assert "Any tracked" in bin_labels
+    assert "None of the tracked" in bin_labels
+    any_row_idx = bin_labels.index("Any tracked")
+    assert table[any_row_idx].sum() > 0.0
+
+
+def test_accumulate_comorbidity_bin_mass_include_any_branch() -> None:
+    """Lines 618-621 in _accumulate_comorbidity_bin_mass; include_any=True path."""
+    from medrap.demographic_analysis import _accumulate_comorbidity_bin_mass
+
+    doc_ids = np.array([[0, 1], [0, 1]])
+    diff_scores = np.zeros_like(doc_ids, dtype=float)
+    mask = np.array([[True, False], [False, True]], dtype=bool)
+    provider = StaticMappingProvider([[("kw0", 1.0)], [("kw1", 1.0)]])
+    bin_kw_mass, bin_counts, _, _ = _accumulate_comorbidity_bin_mass(
+        doc_ids,
+        diff_scores,
+        mask,
+        ["cat0", "cat1"],
+        provider,
+        include_any=True,
+        include_none=False,
+    )
+    assert "Any tracked" in bin_counts
+    assert bin_counts["Any tracked"] == 2
+    assert "Any tracked" in bin_kw_mass
+
+
+def test_render_demographic_heatmaps_rejects_comorbidity_frame_with_wrong_row_count(
+    tmp_path: Path,
+) -> None:
+    """Guard at lines 1171-1175 in render_demographic_heatmaps."""
+    import torch
+
+    artifacts = {
+        "doc_ids": torch.tensor([[[0, 1]], [[0, 1]], [[0, 1]]], dtype=torch.long),
+        "differentiable_doc_scores": torch.tensor([[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
+    }
+    patient_frame = pl.DataFrame(
+        {
+            "age_bin": ["18-30", "18-30", "18-30"],
+            "race": ["WHITE", "WHITE", "WHITE"],
+            "gender": ["M", "M", "M"],
+        }
+    )
+    provider = StaticMappingProvider([[("kw0", 1.0)], [("kw1", 1.0)]])
+    bad_comorbidity = pl.DataFrame({"cat0": [True, False]})  # 2 rows vs 3
+    with pytest.raises(RuntimeError, match=r"comorbidity_frame rows"):
+        render_demographic_heatmaps(
+            artifacts,
+            provider,
+            patient_frame,
+            output_dir=tmp_path,
+            comorbidity_frame=bad_comorbidity,
+            comorbidity_categories=["cat0"],
+        )
+
+
+def test_render_demographic_heatmaps_rejects_comorbidity_frame_missing_columns(tmp_path: Path) -> None:
+    """Guard at line 1178."""
+    import torch
+
+    artifacts = {
+        "doc_ids": torch.tensor([[[0, 1]], [[0, 1]], [[0, 1]]], dtype=torch.long),
+        "differentiable_doc_scores": torch.tensor([[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
+    }
+    patient_frame = pl.DataFrame(
+        {
+            "age_bin": ["18-30", "18-30", "18-30"],
+            "race": ["WHITE", "WHITE", "WHITE"],
+            "gender": ["M", "M", "M"],
+        }
+    )
+    provider = StaticMappingProvider([[("kw0", 1.0)], [("kw1", 1.0)]])
+    comorbidity = pl.DataFrame({"other_col": [True, True, True]})
+    with pytest.raises(ValueError, match=r"missing columns for categories"):
+        render_demographic_heatmaps(
+            artifacts,
+            provider,
+            patient_frame,
+            output_dir=tmp_path,
+            comorbidity_frame=comorbidity,
+            comorbidity_categories=["cat0"],
+        )
+
+
+def test_render_demographic_heatmaps_fires_significance_border_for_high_z(tmp_path: Path) -> None:
+    """Covers line 1079 in render_demographic_heatmaps: |z|>2 cells get a black border patch.
+
+    Use a maximally concentrated split: M patients retrieve doc 0 (kw_a), F patients
+    retrieve doc 1 (kw_b). With N=20 (10 + 10), Pearson residual for (M, kw_a) is
+    ``(10 - 5) / sqrt(5) ≈ 2.24 > 2``.
+    """
+    import torch
+
+    n = 20  # N=8 gives residual sqrt(2)≈1.41 < 2; need ≥10 per bin to clear the threshold.
+    doc_ids_list: list[list[list[int]]] = []
+    for i in range(n):
+        # First half (M): doc 0 dominant; second half (F): doc 1 dominant.
+        doc_ids_list.append([[0, 1]] if i < n // 2 else [[1, 0]])
+    artifacts = {
+        "doc_ids": torch.tensor(doc_ids_list, dtype=torch.long),
+        # Huge gap so softmax puts ~all mass on the first slot.
+        "differentiable_doc_scores": torch.tensor([[50.0, -50.0]] * n, dtype=torch.float32),
+    }
+    patient_frame = pl.DataFrame(
+        {
+            "age_bin": ["18-30"] * n,
+            "race": ["WHITE"] * n,
+            "gender": (["M"] * (n // 2)) + (["F"] * (n // 2)),
+        }
+    )
+    provider = StaticMappingProvider([[("kw_a", 1.0)], [("kw_b", 1.0)]])
+    result = render_demographic_heatmaps(artifacts, provider, patient_frame, output_dir=tmp_path)
+    gender_residual = result["gender"]["residual"]
+    # At least one cell exceeds the |z|>2 significance threshold → line 1079 fires.
+    assert np.nanmax(np.abs(gender_residual)) > 2.0
+
+
+def test_render_demographic_heatmaps_falls_back_when_residuals_are_all_zero(tmp_path: Path) -> None:
+    """Covers line 1059 in render_demographic_heatmaps: vmax==0 fallback to 1.0 when residual
+    has no finite-nonzero entries.
+
+    With every patient retrieving the same doc/keyword, observed == expected uniformly →
+    residual matrix is all zero → vmax computation = 0 → fallback to 1.0.
+    """
+    import torch
+
+    n = 4
+    artifacts = {
+        "doc_ids": torch.tensor([[[0]]] * n, dtype=torch.long),
+        "differentiable_doc_scores": torch.tensor([[1.0]] * n, dtype=torch.float32),
+    }
+    patient_frame = pl.DataFrame(
+        {
+            "age_bin": ["18-30"] * n,
+            "race": ["WHITE"] * n,
+            "gender": ["M", "M", "F", "F"],
+        }
+    )
+    provider = StaticMappingProvider([[("kw_uniform", 1.0)]])
+    result = render_demographic_heatmaps(artifacts, provider, patient_frame, output_dir=tmp_path)
+    # The gender residual should be effectively zero across all cells (no concentration).
+    np.testing.assert_allclose(result["gender"]["residual"], 0.0, atol=1e-9)
+
+
+def test_write_residual_csv_skips_non_finite_residual_cells(tmp_path: Path) -> None:
+    """Covers line 898 in write_residual_csv: non-finite (NaN/Inf) cells are skipped in the CSV."""
+    from medrap.demographic_analysis import write_residual_csv
+
+    result = {
+        "age": {
+            "bins": ["18-30", "50-69"],
+            "keywords": ["kw_a", "kw_b"],
+            "table": np.array([[0.2, 0.3], [0.4, 0.1]]),
+            # First row is all-NaN (empty bin in the underlying accumulator simulation).
+            "residual": np.array([[float("nan"), float("nan")], [1.5, -0.5]]),
+        }
+    }
+    csv_path = tmp_path / "residuals.csv"
+    write_residual_csv(result, csv_path)
+    text = csv_path.read_text()
+    # Only the 50-69 row's cells appear in the CSV; the NaN row is silently skipped.
+    assert "18-30" not in text
+    assert "50-69" in text
+    assert "1.500000" in text

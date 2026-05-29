@@ -287,3 +287,231 @@ def test_load_hf_dataset_retriever_reraises_cpu_faiss_failure(monkeypatch) -> No
             doc_tokens_column="doc_tokens",
             doc_attention_mask_column="doc_attention_mask",
         )
+
+
+# ---------------------------------------------------------------------------
+# InMemoryRetriever validation guards (lines 148-160 in retrievers.py)
+# ---------------------------------------------------------------------------
+
+
+def _good_doc_keys() -> torch.Tensor:
+    return torch.FloatTensor([[1.0, 0.0], [0.0, 1.0]])
+
+
+def _good_doc_tokens() -> torch.Tensor:
+    return torch.LongTensor([[10, 11], [20, 21]])
+
+
+def _good_doc_mask() -> torch.Tensor:
+    return torch.BoolTensor([[True, True], [True, True]])
+
+
+def test_in_memory_retriever_rejects_non_2d_doc_key_embeddings() -> None:
+    with pytest.raises(ValueError, match=r"doc_key_embeddings must have shape"):
+        InMemoryRetriever(
+            doc_key_embeddings=torch.zeros(2, 2, 2),
+            doc_tokens=_good_doc_tokens(),
+            doc_attention_mask=_good_doc_mask(),
+        )
+
+
+def test_in_memory_retriever_rejects_non_2d_doc_tokens() -> None:
+    with pytest.raises(ValueError, match=r"doc_tokens must have shape"):
+        InMemoryRetriever(
+            doc_key_embeddings=_good_doc_keys(),
+            doc_tokens=torch.zeros(2, 2, 2, dtype=torch.long),
+            doc_attention_mask=_good_doc_mask(),
+        )
+
+
+def test_in_memory_retriever_rejects_mismatched_attention_mask_shape() -> None:
+    with pytest.raises(ValueError, match=r"doc_attention_mask must match doc_tokens"):
+        InMemoryRetriever(
+            doc_key_embeddings=_good_doc_keys(),
+            doc_tokens=_good_doc_tokens(),
+            doc_attention_mask=torch.BoolTensor([[True], [True]]),
+        )
+
+
+def test_in_memory_retriever_rejects_mismatched_doc_count_between_keys_and_tokens() -> None:
+    with pytest.raises(ValueError, match=r"same number of documents"):
+        InMemoryRetriever(
+            doc_key_embeddings=torch.FloatTensor([[1.0, 0.0]]),  # 1 doc
+            doc_tokens=_good_doc_tokens(),  # 2 docs
+            doc_attention_mask=_good_doc_mask(),
+        )
+
+
+def test_in_memory_retriever_rejects_bad_doc_ids_shape() -> None:
+    with pytest.raises(ValueError, match=r"doc_ids must have shape"):
+        InMemoryRetriever(
+            doc_key_embeddings=_good_doc_keys(),
+            doc_tokens=_good_doc_tokens(),
+            doc_attention_mask=_good_doc_mask(),
+            doc_ids=torch.LongTensor([[100, 200]]),  # 2-D, wrong shape
+        )
+
+
+def test_in_memory_retriever_rejects_unsupported_similarity() -> None:
+    with pytest.raises(ValueError, match=r"similarity must be"):
+        InMemoryRetriever(
+            doc_key_embeddings=_good_doc_keys(),
+            doc_tokens=_good_doc_tokens(),
+            doc_attention_mask=_good_doc_mask(),
+            similarity="euclidean",
+        )
+
+
+def test_in_memory_retriever_rejects_k_out_of_range() -> None:
+    with pytest.raises(ValueError, match=r"k must be between"):
+        InMemoryRetriever(
+            doc_key_embeddings=_good_doc_keys(),
+            doc_tokens=_good_doc_tokens(),
+            doc_attention_mask=_good_doc_mask(),
+            k=99,
+        )
+
+
+# ---------------------------------------------------------------------------
+# InMemoryRetriever.retrieve guards + cosine path (lines 213, 223, 226-227)
+# ---------------------------------------------------------------------------
+
+
+def test_in_memory_retriever_retrieve_rejects_non_3d_query_embeddings() -> None:
+    retriever = InMemoryRetriever(
+        doc_key_embeddings=_good_doc_keys(),
+        doc_tokens=_good_doc_tokens(),
+        doc_attention_mask=_good_doc_mask(),
+    )
+    with pytest.raises(ValueError, match=r"query_embeddings must have shape"):
+        retriever.retrieve(torch.zeros(2, 2))  # 2-D not (B, R, D_ret)
+
+
+def test_in_memory_retriever_retrieve_rejects_mismatched_query_dim() -> None:
+    retriever = InMemoryRetriever(
+        doc_key_embeddings=_good_doc_keys(),
+        doc_tokens=_good_doc_tokens(),
+        doc_attention_mask=_good_doc_mask(),
+    )
+    with pytest.raises(ValueError, match=r"last dimension must match"):
+        retriever.retrieve(torch.zeros(1, 1, 3))  # D=3, doc dim=2
+
+
+def test_in_memory_retriever_cosine_similarity_normalizes_inputs() -> None:
+    """Lines 226-227 in retrievers.py: cosine branch normalizes query and doc keys."""
+    retriever = InMemoryRetriever(
+        doc_key_embeddings=torch.FloatTensor([[10.0, 0.0], [0.0, 10.0]]),
+        doc_tokens=_good_doc_tokens(),
+        doc_attention_mask=_good_doc_mask(),
+        similarity="cosine",
+        k=1,
+    )
+    out = retriever.retrieve(torch.FloatTensor([[[5.0, 0.0]]]))
+    # Despite different magnitudes, cosine prefers the aligned-direction doc.
+    assert out.doc_tokens.shape[0] == 1
+    assert out.doc_scores is not None
+
+
+# ---------------------------------------------------------------------------
+# PerDocMeanPooledRetrievalEncoder pretrained-weights path
+# (lines 280-302 in retrieval_encoder.py)
+# ---------------------------------------------------------------------------
+
+
+def test_per_doc_mean_pooled_retrieval_encoder_loads_pretrained_weights(monkeypatch) -> None:
+    """The success path: pretrained model exposes ``embed_tokens.weight`` with matching shape."""
+    import medrap.retrieval_encoder as enc_module
+
+    pretrained_weight = torch.randn(8, 4)
+
+    class _FakeEmbed:
+        weight = pretrained_weight
+
+    class _FakePretrained:
+        embed_tokens = _FakeEmbed()
+
+    class _FakeAutoModel:
+        @staticmethod
+        def from_pretrained(name, **_kw):
+            return _FakePretrained()
+
+    monkeypatch.setattr(enc_module, "AutoModel", _FakeAutoModel)
+    enc = PerDocMeanPooledRetrievalEncoder(
+        vocab_size=8, embedding_dim=4, pretrained_model_name_or_path="fake/model"
+    )
+    # The embedding weights should match the pretrained tensor (within tolerance — copy_ is exact).
+    assert torch.allclose(enc.embedding.weight.detach(), pretrained_weight)
+
+
+def test_per_doc_mean_pooled_retrieval_encoder_uses_model_embed_tokens_when_direct_missing(
+    monkeypatch,
+) -> None:
+    """The pretrained model exposes ``model.embed_tokens.weight`` (the getattr-chain fallback)."""
+    import medrap.retrieval_encoder as enc_module
+
+    pretrained_weight = torch.randn(8, 4)
+
+    class _FakeEmbed:
+        weight = pretrained_weight
+
+    class _InnerModel:
+        embed_tokens = _FakeEmbed()
+
+    class _FakePretrained:
+        embed_tokens = None  # forces fallback to .model.embed_tokens
+        model = _InnerModel()
+
+    class _FakeAutoModel:
+        @staticmethod
+        def from_pretrained(name, **_kw):
+            return _FakePretrained()
+
+    monkeypatch.setattr(enc_module, "AutoModel", _FakeAutoModel)
+    enc = PerDocMeanPooledRetrievalEncoder(
+        vocab_size=8, embedding_dim=4, pretrained_model_name_or_path="fake/model"
+    )
+    assert torch.allclose(enc.embedding.weight.detach(), pretrained_weight)
+
+
+def test_per_doc_mean_pooled_retrieval_encoder_raises_when_embed_tokens_missing(monkeypatch) -> None:
+    """Lines 287-291: neither direct ``embed_tokens`` nor ``model.embed_tokens`` is found."""
+    import medrap.retrieval_encoder as enc_module
+
+    class _FakePretrained:
+        embed_tokens = None
+        model = None
+
+    class _FakeAutoModel:
+        @staticmethod
+        def from_pretrained(name, **_kw):
+            return _FakePretrained()
+
+    monkeypatch.setattr(enc_module, "AutoModel", _FakeAutoModel)
+    with pytest.raises(ValueError, match=r"Cannot find embed_tokens"):
+        PerDocMeanPooledRetrievalEncoder(
+            vocab_size=8, embedding_dim=4, pretrained_model_name_or_path="fake/model"
+        )
+
+
+def test_per_doc_mean_pooled_retrieval_encoder_raises_on_shape_mismatch(monkeypatch) -> None:
+    """Lines 294-299: pretrained shape doesn't match configured (vocab_size, embedding_dim)."""
+    import medrap.retrieval_encoder as enc_module
+
+    pretrained_weight = torch.randn(16, 8)  # mismatched
+
+    class _FakeEmbed:
+        weight = pretrained_weight
+
+    class _FakePretrained:
+        embed_tokens = _FakeEmbed()
+
+    class _FakeAutoModel:
+        @staticmethod
+        def from_pretrained(name, **_kw):
+            return _FakePretrained()
+
+    monkeypatch.setattr(enc_module, "AutoModel", _FakeAutoModel)
+    with pytest.raises(ValueError, match=r"does not match"):
+        PerDocMeanPooledRetrievalEncoder(
+            vocab_size=8, embedding_dim=4, pretrained_model_name_or_path="fake/model"
+        )

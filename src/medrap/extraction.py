@@ -21,8 +21,12 @@ doc_key_embeddings                          Retriever provides them
            ``(N, R, K, D_ret)``   float32
 per_doc_logits                              marginalized_retrieval=True
            ``(N, K, C)``          float32
-differentiable_doc_scores                   marginalized_retrieval=True
-           ``(N, K)``             float32
+differentiable_doc_scores                   Either produced natively by
+           ``(N, K)``             float32   marginalized_retrieval=True,
+                                            or filled post-hoc from
+                                            query_embeddings and
+                                            doc_key_embeddings when both
+                                            are present.
 =========  =====================  ========  ==============================
 
 ``N`` is the total number of samples. Tensor position maps 1:1 to dataset
@@ -74,7 +78,35 @@ from pathlib import Path
 import lightning
 import torch
 from torch import Tensor
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, RandomSampler
+
+
+def _fill_differentiable_doc_scores(artifacts: dict[str, Tensor], *, similarity: str = "dot") -> None:
+    """Compute ``differentiable_doc_scores`` post-hoc from saved query/key embeddings.
+
+    Non-marginalized runs (e.g. cross-attention + ``BinaryClassificationLoss``)
+    do not produce ``differentiable_doc_scores`` natively, but downstream
+    diagnostics (`run_demographic_heatmap.py`, score-weighted plots) expect
+    them. Since both ``query_embeddings`` and ``doc_key_embeddings`` are saved
+    for every run that uses a retriever exposing keys, we can recover the
+    score as their dot/cosine similarity.
+
+    The artifacts dict is mutated in-place. If the key is already present, or
+    either source tensor is missing, the dict is left unchanged.
+    """
+    from medrap.retrieval_scoring import differentiable_retrieval_scores
+
+    if "differentiable_doc_scores" in artifacts:
+        return
+    if "query_embeddings" not in artifacts or "doc_key_embeddings" not in artifacts:
+        return
+    with torch.no_grad():
+        scores = differentiable_retrieval_scores(
+            artifacts["query_embeddings"],
+            artifacts["doc_key_embeddings"],
+            similarity=similarity,
+        )
+    artifacts["differentiable_doc_scores"] = scores.float().cpu()
 
 
 def collate_prediction_batches(predictions: list[dict[str, Tensor]]) -> dict[str, Tensor]:
@@ -127,6 +159,7 @@ def extract_artifacts(
     trainer: lightning.Trainer,
     *,
     output_dir: str | Path,
+    use_cache: bool = False,
 ) -> Path:
     """Run prediction and save retrieval artifacts to disk.
 
@@ -141,6 +174,11 @@ def extract_artifacts(
         trainer: Lightning Trainer to use for prediction.
         output_dir: Directory to save the artifacts into. Will be created if
             it does not exist.
+        use_cache: When ``True``, return the existing ``extraction_artifacts.pt``
+            in ``output_dir`` without re-running ``trainer.predict``. Skips the
+            ``shuffle`` and ``num_devices`` validation since the dataloader and
+            trainer are not used in this branch. Defaults to ``False`` (always
+            re-run, original behavior). Delete the ``.pt`` to force a recompute.
 
     Returns:
         Path to the saved ``.pt`` file.
@@ -176,15 +214,39 @@ def extract_artifacts(
         >>> with tempfile.TemporaryDirectory() as tmpdir:
         ...     path = extract_artifacts(module, dl, trainer, output_dir=tmpdir)
         ...     artifacts = torch.load(path, weights_only=True)
-        ...     sorted(artifacts.keys())
-        ['doc_ids', 'doc_key_embeddings', 'doc_scores', 'logits', 'query_embeddings', 'targets']
+        ...     for k in sorted(artifacts.keys()):
+        ...         print(k)
+        differentiable_doc_scores
+        doc_ids
+        doc_key_embeddings
+        doc_scores
+        logits
+        query_embeddings
+        targets
     """
     out = Path(output_dir)
+    artifact_path = out / "extraction_artifacts.pt"
+
+    if use_cache and artifact_path.is_file():
+        return artifact_path
+
+    if isinstance(dataloader.sampler, RandomSampler):
+        raise ValueError(
+            "extract_artifacts requires shuffle=False: row i of the saved .pt must "
+            "correspond to sample i of the dataset in dataloader-walk order."
+        )
+    num_devices = getattr(trainer, "num_devices", 1)
+    if num_devices and num_devices > 1:
+        raise ValueError(
+            "extract_artifacts requires a single-device trainer; multi-device predict "
+            f"can return rank-interleaved outputs (got num_devices={num_devices})."
+        )
+
     out.mkdir(parents=True, exist_ok=True)
 
     batch_predictions = trainer.predict(module, dataloaders=dataloader)
     collated = collate_prediction_batches(batch_predictions)
+    _fill_differentiable_doc_scores(collated)
 
-    artifact_path = out / "extraction_artifacts.pt"
     torch.save(collated, artifact_path)
     return artifact_path

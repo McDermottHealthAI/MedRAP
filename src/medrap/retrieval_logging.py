@@ -148,7 +148,7 @@ def _retrieval_id_scalars(retrieval: RetrieverOutput, *, prefix: str) -> dict[st
     if retrieval.doc_ids is None or retrieval.doc_ids.numel() == 0:
         return out
     top1 = retrieval.doc_ids[..., 0].detach().long().flatten()
-    if top1.numel() == 0:
+    if top1.numel() == 0:  # pragma: no cover - unreachable: the earlier numel()==0 guard already returns
         return out
     unique_top1, counts = torch.unique(top1, return_counts=True)
     out[f"{prefix}/top1_unique_ratio"] = torch.tensor(

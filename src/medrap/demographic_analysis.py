@@ -12,6 +12,7 @@ aggregation or rendering code.
 
 from __future__ import annotations
 
+import csv
 from collections import defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -497,6 +498,135 @@ def _softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
     return e / e.sum(axis=axis, keepdims=True)
 
 
+def _accumulate_demographic_bin_mass(
+    doc_ids: np.ndarray,
+    diff_scores: np.ndarray,
+    demographic_labels: Sequence[str],
+    provider: DocKeywordProvider,
+) -> tuple[
+    dict[str, defaultdict[str, float]],
+    defaultdict[str, int],
+    defaultdict[str, float],
+    int,
+]:
+    """Accumulate per-bin and per-population keyword mass (mutually exclusive).
+
+    Each patient contributes exclusively to one bin (one demographic
+    label). The returned ``pop_keyword_mass[t]`` equals
+    ``sum_bins bin_to_keyword_mass[b][t]`` by construction.
+
+    Returns:
+        ``(bin_to_keyword_mass, bin_counts, pop_keyword_mass, N)``.
+    """
+    if doc_ids.ndim != 2:
+        raise ValueError(f"doc_ids must be (N, K); got {doc_ids.shape}")
+    if diff_scores.shape != doc_ids.shape:
+        raise ValueError(f"diff_scores shape {diff_scores.shape} must match doc_ids {doc_ids.shape}")
+    if len(demographic_labels) != doc_ids.shape[0]:
+        raise ValueError(f"demographic_labels length {len(demographic_labels)} != N={doc_ids.shape[0]}")
+
+    weights = _softmax(diff_scores, axis=-1)
+
+    bin_to_keyword_mass: dict[str, defaultdict[str, float]] = defaultdict(lambda: defaultdict(float))
+    bin_counts: defaultdict[str, int] = defaultdict(int)
+    pop_keyword_mass: defaultdict[str, float] = defaultdict(float)
+
+    n, k_docs = doc_ids.shape
+    for i in range(n):
+        bin_label = demographic_labels[i]
+        bin_counts[bin_label] += 1
+        for k in range(k_docs):
+            d = int(doc_ids[i, k])
+            pw = float(weights[i, k])
+            for kw, kw_weight in provider.keywords_for(d):
+                contribution = pw * kw_weight
+                bin_to_keyword_mass[bin_label][kw] += contribution
+                pop_keyword_mass[kw] += contribution
+
+    return bin_to_keyword_mass, bin_counts, pop_keyword_mass, n
+
+
+def _accumulate_comorbidity_bin_mass(
+    doc_ids: np.ndarray,
+    diff_scores: np.ndarray,
+    comorbidity_mask: np.ndarray,
+    category_names: Sequence[str],
+    provider: DocKeywordProvider,
+    *,
+    include_none: bool = True,
+    include_any: bool = False,
+    none_label: str = "None of the tracked",
+    any_label: str = "Any tracked",
+) -> tuple[
+    dict[str, defaultdict[str, float]],
+    defaultdict[str, int],
+    defaultdict[str, float],
+    int,
+]:
+    """Accumulate per-bin and per-population keyword mass (multi-membership).
+
+    A patient flagged for multiple categories contributes to every category
+    they're in. Critically, ``pop_keyword_mass`` is computed by counting each
+    patient exactly **once** — not summing across the bin accumulator (which
+    would double-count multi-flagged patients). This makes the
+    ``pop_keyword_mass`` interpretable as the per-patient population
+    distribution required by chi-square residual computation.
+
+    Returns:
+        ``(bin_to_keyword_mass, bin_counts, pop_keyword_mass, N)``.
+    """
+    if doc_ids.ndim != 2:
+        raise ValueError(f"doc_ids must be (N, K); got {doc_ids.shape}")
+    if diff_scores.shape != doc_ids.shape:
+        raise ValueError(f"diff_scores shape {diff_scores.shape} must match doc_ids {doc_ids.shape}")
+    mask = np.asarray(comorbidity_mask, dtype=bool)
+    if mask.ndim != 2:
+        raise ValueError(f"comorbidity_mask must be (N, C); got {mask.shape}")
+    if mask.shape[0] != doc_ids.shape[0]:
+        raise ValueError(f"comorbidity_mask N={mask.shape[0]} != doc_ids N={doc_ids.shape[0]}")
+    if mask.shape[1] != len(category_names):
+        raise ValueError(f"comorbidity_mask C={mask.shape[1]} != len(category_names)={len(category_names)}")
+
+    weights = _softmax(diff_scores, axis=-1)
+
+    bin_to_keyword_mass: dict[str, defaultdict[str, float]] = defaultdict(lambda: defaultdict(float))
+    bin_counts: defaultdict[str, int] = defaultdict(int)
+    pop_keyword_mass: defaultdict[str, float] = defaultdict(float)
+
+    n, k_docs = doc_ids.shape
+    for i in range(n):
+        # Per-patient keyword contribution computed once.
+        contributions: defaultdict[str, float] = defaultdict(float)
+        for k in range(k_docs):
+            d = int(doc_ids[i, k])
+            pw = float(weights[i, k])
+            for kw, kw_weight in provider.keywords_for(d):
+                contributions[kw] += pw * kw_weight
+
+        # Population total counts each patient ONCE regardless of category flags.
+        for kw, m in contributions.items():
+            pop_keyword_mass[kw] += m
+
+        any_flagged = False
+        for c, cat in enumerate(category_names):
+            if mask[i, c]:
+                any_flagged = True
+                bin_counts[cat] += 1
+                for kw, m in contributions.items():
+                    bin_to_keyword_mass[cat][kw] += m
+
+        if include_any and any_flagged:
+            bin_counts[any_label] += 1
+            for kw, m in contributions.items():
+                bin_to_keyword_mass[any_label][kw] += m
+        if include_none and not any_flagged:
+            bin_counts[none_label] += 1
+            for kw, m in contributions.items():
+                bin_to_keyword_mass[none_label][kw] += m
+
+    return bin_to_keyword_mass, bin_counts, pop_keyword_mass, n
+
+
 def build_keyword_demographic_table(
     doc_ids: np.ndarray,
     diff_scores: np.ndarray,
@@ -504,7 +634,7 @@ def build_keyword_demographic_table(
     provider: DocKeywordProvider,
     *,
     bin_order: Sequence[str] | None = None,
-    top_n_keywords: int = 20,
+    top_n_keywords: int | None = None,
 ) -> tuple[np.ndarray, list[str], list[str]]:
     """Aggregate softmax-weighted keyword mass per demographic bin.
 
@@ -517,7 +647,9 @@ def build_keyword_demographic_table(
         bin_order: Optional explicit ordering for the y-axis. If omitted, bins
             appear in first-seen order.
         top_n_keywords: Cap the keyword axis to the heaviest ``top_n``
-            keywords (by total mass across all bins).
+            keywords (by total mass across all bins). ``None`` (default)
+            or any non-positive value means "show all keywords"; useful
+            so a low-mass-but-highly-distinctive keyword isn't hidden.
 
     Returns:
         ``(table, bin_labels, keyword_labels)`` where ``table`` has shape
@@ -561,7 +693,8 @@ def build_keyword_demographic_table(
     for masses in bin_to_keyword_mass.values():
         for kw, m in masses.items():
             keyword_total[kw] += m
-    top_keywords = sorted(keyword_total, key=lambda kw: -keyword_total[kw])[:top_n_keywords]
+    ordered = sorted(keyword_total, key=lambda kw: -keyword_total[kw])
+    top_keywords = ordered if top_n_keywords is None or top_n_keywords <= 0 else ordered[:top_n_keywords]
 
     table = np.zeros((len(bin_labels), len(top_keywords)), dtype=np.float64)
     for i, b in enumerate(bin_labels):
@@ -573,6 +706,201 @@ def build_keyword_demographic_table(
     return table, bin_labels, top_keywords
 
 
+def build_comorbidity_keyword_table(
+    doc_ids: np.ndarray,
+    diff_scores: np.ndarray,
+    comorbidity_mask: np.ndarray,
+    category_names: Sequence[str],
+    provider: DocKeywordProvider,
+    *,
+    top_n_keywords: int | None = None,
+    include_none: bool = True,
+    include_any: bool = False,
+    none_label: str = "None of the tracked",
+    any_label: str = "Any tracked",
+) -> tuple[np.ndarray, list[str], list[str]]:
+    """Multi-membership version of :func:`build_keyword_demographic_table`.
+
+    Each patient's softmax-weighted keyword mass is added to *every*
+    category row they are flagged for in ``comorbidity_mask``. Optional
+    "None of the tracked" and "Any tracked" buckets aggregate the patients
+    with no flags / at least one flag respectively. Per-row normalization
+    matches the demographic table: each cell is the average per-patient
+    mass for that category-keyword combination.
+
+    Args:
+        doc_ids: ``(N, K)`` retrieved doc ids.
+        diff_scores: ``(N, K)`` differentiable retrieval scores.
+        comorbidity_mask: ``(N, C)`` bool. Each row is the patient's
+            indicator vector across ``category_names``.
+        category_names: ``length C``, the canonical row order for the heatmap.
+        provider: A :class:`DocKeywordProvider`.
+        top_n_keywords: Keep the top-K keywords across all bins. ``None``
+            (default) means "show all keywords".
+        include_none: Add a "None of the tracked" row aggregating
+            patients with zero flags.
+        include_any: Add an "Any tracked" row aggregating patients with at
+            least one flag.
+    """
+    if doc_ids.ndim != 2:
+        raise ValueError(f"doc_ids must be (N, K); got {doc_ids.shape}")
+    if diff_scores.shape != doc_ids.shape:
+        raise ValueError(f"diff_scores shape {diff_scores.shape} must match doc_ids {doc_ids.shape}")
+    mask = np.asarray(comorbidity_mask, dtype=bool)
+    if mask.ndim != 2:
+        raise ValueError(f"comorbidity_mask must be (N, C); got {mask.shape}")
+    if mask.shape[0] != doc_ids.shape[0]:
+        raise ValueError(f"comorbidity_mask N={mask.shape[0]} != doc_ids N={doc_ids.shape[0]}")
+    if mask.shape[1] != len(category_names):
+        raise ValueError(f"comorbidity_mask C={mask.shape[1]} != len(category_names)={len(category_names)}")
+
+    weights = _softmax(diff_scores, axis=-1)  # (N, K)
+
+    bin_to_keyword_mass: dict[str, defaultdict[str, float]] = defaultdict(lambda: defaultdict(float))
+    bin_counts: defaultdict[str, int] = defaultdict(int)
+
+    n, k_docs = doc_ids.shape
+    for i in range(n):
+        # One-pass per-patient contribution dict (avoid recomputing per category).
+        contributions: defaultdict[str, float] = defaultdict(float)
+        for k in range(k_docs):
+            d = int(doc_ids[i, k])
+            pw = float(weights[i, k])
+            for keyword, kw_weight in provider.keywords_for(d):
+                contributions[keyword] += pw * kw_weight
+
+        any_flagged = False
+        for c, cat in enumerate(category_names):
+            if mask[i, c]:
+                any_flagged = True
+                bin_counts[cat] += 1
+                for keyword, m in contributions.items():
+                    bin_to_keyword_mass[cat][keyword] += m
+
+        if include_any and any_flagged:
+            bin_counts[any_label] += 1
+            for keyword, m in contributions.items():
+                bin_to_keyword_mass[any_label][keyword] += m
+        if include_none and not any_flagged:
+            bin_counts[none_label] += 1
+            for keyword, m in contributions.items():
+                bin_to_keyword_mass[none_label][keyword] += m
+
+    # Row order: categories in given order (only those with ≥1 flagged patient),
+    # then "Any", then "None".
+    bin_labels = [c for c in category_names if c in bin_counts]
+    if include_any and any_label in bin_counts:
+        bin_labels.append(any_label)
+    if include_none and none_label in bin_counts:
+        bin_labels.append(none_label)
+
+    keyword_total: dict[str, float] = defaultdict(float)
+    for masses in bin_to_keyword_mass.values():
+        for keyword, m in masses.items():
+            keyword_total[keyword] += m
+    ordered = sorted(keyword_total, key=lambda kw: -keyword_total[kw])
+    top_keywords = ordered if top_n_keywords is None or top_n_keywords <= 0 else ordered[:top_n_keywords]
+
+    table = np.zeros((len(bin_labels), len(top_keywords)), dtype=np.float64)
+    for i, b in enumerate(bin_labels):
+        denom = max(bin_counts[b], 1)
+        masses = bin_to_keyword_mass[b]
+        for j, kw in enumerate(top_keywords):
+            table[i, j] = masses.get(kw, 0.0) / denom
+
+    return table, bin_labels, top_keywords
+
+
+def build_pearson_residual_table(
+    bin_to_keyword_mass: dict[str, dict[str, float]],
+    bin_counts: dict[str, int],
+    pop_keyword_mass: dict[str, float],
+    population_n: int,
+    bin_order: Sequence[str],
+    keyword_order: Sequence[str],
+) -> np.ndarray:
+    """Standardized Pearson cell residuals on a (bin, keyword) contingency.
+
+    For each cell:
+
+        O[b, t] = bin_to_keyword_mass[b][t]
+        E[b, t] = bin_counts[b] * pop_keyword_mass[t] / population_n
+        residual = (O - E) / sqrt(E)
+
+    This is the decomposition of the chi-square statistic. ``|residual| > 2``
+    is the canonical ~95% one-tailed significance threshold for an
+    individual cell's contribution (Agresti, *Categorical Data Analysis*,
+    §3.2).
+
+    Empty bins (``bin_counts[b] == 0``) yield an all-NaN row; cells with
+    zero expected mass (a topic that nobody retrieves) yield 0.0.
+
+    Args:
+        bin_to_keyword_mass: ``{bin: {keyword: total mass}}`` accumulator.
+        bin_counts: Patient count per bin.
+        pop_keyword_mass: Total population mass per keyword. For
+            multi-membership accumulators (e.g. Charlson) this must count
+            each patient exactly once.
+        population_n: Total number of patients in the population.
+        bin_order: Row order for the output array.
+        keyword_order: Column order for the output array.
+    """
+    n_bins = len(bin_order)
+    n_keywords = len(keyword_order)
+    residual = np.zeros((n_bins, n_keywords), dtype=np.float64)
+    if population_n <= 0:
+        residual[:] = np.nan
+        return residual
+
+    for i, b in enumerate(bin_order):
+        n_b = bin_counts.get(b, 0)
+        if n_b == 0:
+            residual[i, :] = np.nan
+            continue
+        masses = bin_to_keyword_mass.get(b, {})
+        for j, kw in enumerate(keyword_order):
+            observed = float(masses.get(kw, 0.0))
+            expected = n_b * float(pop_keyword_mass.get(kw, 0.0)) / population_n
+            if expected > 0.0:
+                residual[i, j] = (observed - expected) / np.sqrt(expected)
+            else:
+                residual[i, j] = 0.0
+    return residual
+
+
+def write_residual_csv(result: dict, output_path: Path) -> None:
+    """Dump per-cell raw mass + Pearson residual in long format to a CSV.
+
+    Columns: ``axis, bin, keyword, raw_mass, z_score``. One row per
+    (axis, bin, keyword) cell with a finite residual; NaN cells (empty
+    bins) are skipped. Lets the user sort / filter / cite specific
+    z-scores in a paper without reopening the PDFs.
+
+    Args:
+        result: The dict returned by :func:`render_demographic_heatmaps`.
+            Each value must have ``bins``, ``keywords``, ``table``
+            (raw mass), and ``residual`` (z-score) keys.
+        output_path: Destination CSV path. Parent directory is created.
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["axis", "bin", "keyword", "raw_mass", "z_score"])
+        for axis, entry in result.items():
+            bins = entry["bins"]
+            keywords = entry["keywords"]
+            raw = entry["table"]
+            residual = entry["residual"]
+            for i, b in enumerate(bins):
+                for j, kw in enumerate(keywords):
+                    z = float(residual[i, j])
+                    if not np.isfinite(z):
+                        continue
+                    raw_val = float(raw[i, j])
+                    writer.writerow([axis, b, kw, f"{raw_val:.6f}", f"{z:.6f}"])
+    print(f"Residuals CSV saved to {output_path}")
+
+
 # ---------------------------------------------------------------------------
 # Heatmap rendering
 # ---------------------------------------------------------------------------
@@ -582,11 +910,25 @@ def render_demographic_heatmaps(
     artifacts: dict,
     provider: DocKeywordProvider,
     patient_frame: pl.DataFrame,
-    output_path: Path,
+    output_dir: Path,
     *,
-    top_n_keywords: int = 20,
+    top_n_keywords: int | None = None,
+    comorbidity_frame: pl.DataFrame | None = None,
+    comorbidity_categories: Sequence[str] | None = None,
 ) -> dict:
-    """Render age, race/ethnicity, gender heatmaps stacked vertically.
+    """Render demographic and optional chronic-comorbidity heatmaps.
+
+    Each axis is written to its own PNG so the panels can be sized and
+    embedded independently in paper figures::
+
+        <output_dir>/keyword_demographic_age.pdf
+        <output_dir>/keyword_demographic_age_residual.pdf
+        <output_dir>/keyword_demographic_race.pdf
+        <output_dir>/keyword_demographic_race_residual.pdf
+        <output_dir>/keyword_demographic_gender.pdf
+        <output_dir>/keyword_demographic_gender_residual.pdf
+        <output_dir>/keyword_demographic_chronic.pdf            # only when comorbidity_frame is provided
+        <output_dir>/keyword_demographic_chronic_residual.pdf   # only when comorbidity_frame is provided
 
     Args:
         artifacts: Dict loaded from ``extraction_artifacts.pt``. Must contain
@@ -594,12 +936,24 @@ def render_demographic_heatmaps(
         provider: Doc → keyword mapping.
         patient_frame: One row per validation sample, in dataloader order.
             Must contain ``age_bin``, ``race``, ``gender`` columns.
-        output_path: Where to save the PNG.
-        top_n_keywords: Per-axis cap on keyword count.
+        output_dir: Directory to write the PNGs into. Created if missing.
+        top_n_keywords: Per-axis cap on keyword count. ``None`` (default)
+            means "show all keywords" — recommended so low-mass but
+            statistically distinctive topics aren't truncated out of the
+            residual heatmap.
+        comorbidity_frame: Optional per-patient comorbidity flag frame. Must
+            have one boolean column per name in ``comorbidity_categories``
+            and row count equal to ``patient_frame``. When provided, an
+            extra panel ``keyword_demographic_chronic.pdf`` is written
+            with multi-membership rows.
+        comorbidity_categories: Ordered list of category names matching
+            ``comorbidity_frame`` columns. Required when ``comorbidity_frame``
+            is provided.
 
     Returns:
-        Dict with table arrays and labels for each demographic axis, for
-        downstream inspection / diagnostics.
+        Dict with table arrays and labels for each axis, for downstream
+        inspection / diagnostics. Has keys ``"age"``, ``"race"``, ``"gender"``,
+        and (when ``comorbidity_frame`` is provided) ``"chronic"``.
     """
     import matplotlib
 
@@ -628,60 +982,226 @@ def render_demographic_heatmaps(
     race_labels = [aggregate_race(r) for r in patient_frame["race"].to_list()]
     gender_labels = [g if g is not None else "unknown" for g in patient_frame["gender"].to_list()]
 
-    age_table, age_bins, age_kws = build_keyword_demographic_table(
-        doc_ids,
-        diff_scores,
-        age_labels,
-        provider,
-        bin_order=AGE_BIN_ORDER,
-        top_n_keywords=top_n_keywords,
-    )
-    race_table, race_bins, race_kws = build_keyword_demographic_table(
-        doc_ids,
-        diff_scores,
-        race_labels,
-        provider,
-        bin_order=RACE_BIN_ORDER,
-        top_n_keywords=top_n_keywords,
-    )
-    gender_table, gender_bins, gender_kws = build_keyword_demographic_table(
-        doc_ids,
-        diff_scores,
-        gender_labels,
-        provider,
-        bin_order=sorted(set(gender_labels)),
-        top_n_keywords=top_n_keywords,
-    )
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    fig, axes = plt.subplots(3, 1, figsize=(max(10, 0.5 * top_n_keywords + 4), 14))
-    fig.suptitle("Retrieval keyword mass by patient demographic", fontsize=14, y=0.995)
+    def _pick_bins_and_keywords(
+        bin_to_kw_mass: dict[str, dict[str, float]],
+        bin_counts: dict[str, int],
+        bin_order_hint: Sequence[str] | None,
+    ) -> tuple[list[str], list[str]]:
+        """Apply the same row ordering + top-N keyword selection used by ``build_keyword_demographic_table``
+        so raw and residual heatmaps share their axes."""
+        if bin_order_hint is not None:
+            bin_labels = [b for b in bin_order_hint if b in bin_counts]
+        else:  # pragma: no cover - every caller in render_demographic_heatmaps passes a non-None hint
+            bin_labels = list(bin_counts.keys())
+        keyword_total: dict[str, float] = defaultdict(float)
+        for masses in bin_to_kw_mass.values():
+            for kw, m in masses.items():
+                keyword_total[kw] += m
+        ordered = sorted(keyword_total, key=lambda kw: -keyword_total[kw])
+        top_keywords = ordered if top_n_keywords is None or top_n_keywords <= 0 else ordered[:top_n_keywords]
+        return bin_labels, top_keywords
 
-    for ax, table, bins, kws, title in [
-        (axes[0], age_table, age_bins, age_kws, "Age (years)"),
-        (axes[1], race_table, race_bins, race_kws, "Race/Ethnicity"),
-        (axes[2], gender_table, gender_bins, gender_kws, "Gender"),
-    ]:
-        if table.size == 0:
-            ax.text(0.5, 0.5, f"No data for {title}", ha="center", va="center", transform=ax.transAxes)
-            ax.set_title(title)
+    def _normalize_table(
+        bin_to_kw_mass: dict[str, dict[str, float]],
+        bin_counts: dict[str, int],
+        bin_labels: Sequence[str],
+        top_keywords: Sequence[str],
+    ) -> np.ndarray:
+        """Per-patient-average normalization (the raw heatmap content)."""
+        table = np.zeros((len(bin_labels), len(top_keywords)), dtype=np.float64)
+        for i, b in enumerate(bin_labels):
+            denom = max(bin_counts.get(b, 0), 1)
+            masses = bin_to_kw_mass.get(b, {})
+            for j, kw in enumerate(top_keywords):
+                table[i, j] = masses.get(kw, 0.0) / denom
+        return table
+
+    def _render_one(
+        table: np.ndarray,
+        bins: Sequence[str],
+        kws: Sequence[str],
+        title: str,
+        out_path: Path,
+        *,
+        figsize: tuple[float, float] | None = None,
+        diverging: bool = False,
+    ) -> None:
+        fig, ax = plt.subplots(figsize=figsize or (10.0, 5.0))
+        no_data = (
+            table.size == 0
+            or len(bins) == 0
+            or len(kws) == 0
+            or (np.isnan(table).all() if table.size else False)
+        )
+        title_label = (
+            f"Retrieval keyword residuals — {title}" if diverging else f"Retrieval keyword mass — {title}"
+        )
+        if no_data:
+            ax.text(
+                0.5,
+                0.5,
+                f"No data for {title}",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+            )
+            ax.set_title(title_label)
             ax.set_axis_off()
-            continue
-        im = ax.imshow(table, aspect="auto", cmap="viridis")
-        ax.set_xticks(range(len(kws)))
-        ax.set_xticklabels(kws, rotation=45, ha="right", fontsize=8)
-        ax.set_yticks(range(len(bins)))
-        ax.set_yticklabels(bins, fontsize=9)
-        ax.set_title(title)
-        fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02, label="avg softmax weight")
+        elif diverging:
+            cmap = plt.get_cmap("RdBu_r").copy()
+            # NaN cells (empty bins) render as light grey rather than crashing.
+            cmap.set_bad(color="lightgrey", alpha=0.6)
+            finite = table[np.isfinite(table)]
+            vmax = float(np.abs(finite).max()) if finite.size else 1.0
+            if vmax == 0.0:
+                vmax = 1.0
+            im = ax.imshow(table, aspect="auto", cmap=cmap, vmin=-vmax, vmax=vmax)
+            ax.set_xticks(range(len(kws)))
+            ax.set_xticklabels(kws, rotation=45, ha="right", fontsize=8)
+            ax.set_yticks(range(len(bins)))
+            ax.set_yticklabels(bins, fontsize=9)
+            ax.set_title(title_label)
+            fig.colorbar(
+                im,
+                ax=ax,
+                fraction=0.04,
+                pad=0.02,
+                label="Pearson residual (z-score)",
+            )
+            # Mark cells with |z| > 2 (the conventional ~95% significance line) with
+            # a thin black border so significant deviations are easy to find.
+            for i in range(table.shape[0]):
+                for j in range(table.shape[1]):
+                    val = table[i, j]
+                    if np.isfinite(val) and abs(val) > 2.0:
+                        ax.add_patch(
+                            plt.Rectangle(
+                                (j - 0.5, i - 0.5),
+                                1,
+                                1,
+                                fill=False,
+                                edgecolor="black",
+                                linewidth=1.2,
+                            )
+                        )
+        else:
+            im = ax.imshow(table, aspect="auto", cmap="viridis")
+            ax.set_xticks(range(len(kws)))
+            ax.set_xticklabels(kws, rotation=45, ha="right", fontsize=8)
+            ax.set_yticks(range(len(bins)))
+            ax.set_yticklabels(bins, fontsize=9)
+            ax.set_title(title_label)
+            fig.colorbar(im, ax=ax, fraction=0.04, pad=0.02, label="avg softmax weight")
+        fig.tight_layout()
+        fig.savefig(out_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"Heatmap saved to {out_path}")
 
-    plt.tight_layout(rect=[0, 0, 1, 0.985])
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Heatmap saved to {output_path}")
+    def _render_pair(
+        bin_to_kw_mass: dict[str, dict[str, float]],
+        bin_counts: dict[str, int],
+        pop_kw_mass: dict[str, float],
+        population_n: int,
+        bin_order_hint: Sequence[str] | None,
+        title: str,
+        axis_key: str,
+        *,
+        height: float | None = None,
+    ) -> dict[str, object]:
+        """Render both raw and residual PDFs for one axis; return the result entry.
 
-    return {
-        "age": {"table": age_table, "bins": age_bins, "keywords": age_kws},
-        "race": {"table": race_table, "bins": race_bins, "keywords": race_kws},
-        "gender": {"table": gender_table, "bins": gender_bins, "keywords": gender_kws},
-    }
+        Figure width is computed from the actual keyword count after
+        ``_pick_bins_and_keywords`` runs (so ``top_n_keywords=None`` —
+        "show all" — sizes the figure correctly). ``height`` overrides the
+        default 5 in for axes with many rows (e.g. Charlson 17 rows).
+        """
+        bin_labels, top_keywords = _pick_bins_and_keywords(bin_to_kw_mass, bin_counts, bin_order_hint)
+        raw = _normalize_table(bin_to_kw_mass, bin_counts, bin_labels, top_keywords)
+        residual = build_pearson_residual_table(
+            bin_to_kw_mass,
+            bin_counts,
+            pop_kw_mass,
+            population_n,
+            bin_order=bin_labels,
+            keyword_order=top_keywords,
+        )
+        n_kws = max(1, len(top_keywords))
+        fig_width = max(10.0, 0.5 * n_kws + 4.0)
+        figsize = (fig_width, height if height is not None else 5.0)
+        _render_one(
+            raw,
+            bin_labels,
+            top_keywords,
+            title,
+            output_dir / f"keyword_demographic_{axis_key}.pdf",
+            figsize=figsize,
+            diverging=False,
+        )
+        _render_one(
+            residual,
+            bin_labels,
+            top_keywords,
+            title,
+            output_dir / f"keyword_demographic_{axis_key}_residual.pdf",
+            figsize=figsize,
+            diverging=True,
+        )
+        return {
+            "table": raw,
+            "bins": bin_labels,
+            "keywords": top_keywords,
+            "residual": residual,
+        }
+
+    result: dict[str, dict] = {}
+
+    age_acc = _accumulate_demographic_bin_mass(doc_ids, diff_scores, age_labels, provider)
+    result["age"] = _render_pair(*age_acc, AGE_BIN_ORDER, "Age (years)", "age")
+
+    race_acc = _accumulate_demographic_bin_mass(doc_ids, diff_scores, race_labels, provider)
+    result["race"] = _render_pair(*race_acc, RACE_BIN_ORDER, "Race/Ethnicity", "race")
+
+    gender_acc = _accumulate_demographic_bin_mass(doc_ids, diff_scores, gender_labels, provider)
+    result["gender"] = _render_pair(*gender_acc, sorted(set(gender_labels)), "Gender", "gender")
+
+    # Optional 4th panel: chronic comorbidities (multi-membership rows).
+    if comorbidity_frame is not None and comorbidity_categories:
+        if comorbidity_frame.height != patient_frame.height:
+            raise RuntimeError(
+                f"comorbidity_frame rows ({comorbidity_frame.height}) != patient_frame "
+                f"rows ({patient_frame.height}); cannot align to the val schema."
+            )
+        missing_cols = [c for c in comorbidity_categories if c not in comorbidity_frame.columns]
+        if missing_cols:
+            raise ValueError(f"comorbidity_frame is missing columns for categories: {missing_cols}")
+        comorbidity_mask = np.column_stack(
+            [comorbidity_frame[cat].to_numpy().astype(bool) for cat in comorbidity_categories]
+        )
+        chronic_acc = _accumulate_comorbidity_bin_mass(
+            doc_ids,
+            diff_scores,
+            comorbidity_mask,
+            list(comorbidity_categories),
+            provider,
+            include_none=True,
+        )
+        # Bin order: requested categories first, then the "None of the tracked"
+        # bucket; the helper filters out empty bins.
+        chronic_bin_order = [*comorbidity_categories, "None of the tracked"]
+        chronic_height = max(8.0, 0.3 * max(1, len(chronic_bin_order)) + 2.0)
+        result["chronic"] = _render_pair(
+            *chronic_acc,
+            chronic_bin_order,
+            "Charlson Comorbidity Index",
+            "chronic",
+            height=chronic_height,
+        )
+
+    # Long-format CSV dump of every (axis, bin, keyword) → (raw mass, z-score)
+    # cell. Lets the user inspect / sort / cite residuals as numbers without
+    # eyeballing PDF cells.
+    write_residual_csv(result, output_dir / "keyword_demographic_residuals.csv")
+
+    return result
