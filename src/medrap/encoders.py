@@ -4,13 +4,17 @@ These components convert MEDS batch inputs into dense patient representation use
 downstream fusion.
 """
 
+import logging
 from abc import ABC, abstractmethod
 
 import torch
+import torch.nn.functional as F
 from meds_torchdata import MEDSTorchBatch
 from torch import Tensor, nn
 
 from .types import EncoderOutput
+
+_logger = logging.getLogger(__name__)
 
 
 def _apply_rope(x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
@@ -66,13 +70,24 @@ def _time_delta_rope_freqs(
         (2, 3, 1, 8)
         >>> tuple(sin.shape)
         (2, 3, 1, 8)
-        >>> # padding positions produce zero cumulative time → cos==1, sin==0 at t=0
-        >>> mask2 = torch.tensor([[False, False, True]])
-        >>> cos2, sin2 = _time_delta_rope_freqs(torch.zeros(1, 3), 4, mask2)
-        >>> torch.allclose(cos2[0, 0], torch.ones(1, 4))
+        >>> # at t=0, cos==1 and sin==0 (rotation is identity)
+        >>> cos0, sin0 = _time_delta_rope_freqs(torch.zeros(1, 3), 4, torch.zeros(1, 3, dtype=torch.bool))
+        >>> torch.allclose(cos0[0, 0], torch.ones(1, 4))
+        True
+        >>> torch.allclose(sin0[0, 0], torch.zeros(1, 4), atol=1e-6)
+        True
+        >>> # padding token (mask=True) does not shift the time axis
+        >>> t3 = torch.tensor([[0.0, 1.0, 5.0]])
+        >>> mask3 = torch.tensor([[False, False, True]])
+        >>> cos3, _ = _time_delta_rope_freqs(t3, 4, mask3)
+        >>> cos_ref, _ = _time_delta_rope_freqs(torch.tensor([[0.0, 1.0, 0.0]]), 4, torch.zeros(1, 3, dtype=torch.bool))
+        >>> torch.allclose(cos3[:, :2], cos_ref[:, :2])
         True
     """
     td = time_delta_days.float().masked_fill(padding_mask, 0.0)
+    n_neg = int(td.lt(0).sum().item())
+    if n_neg:
+        _logger.debug("Clamping %d negative time_delta_days values to 0.", n_neg)
     t = torch.cumsum(torch.log1p(td.clamp(min=0)), dim=1)  # (B, S)
     freqs = 10000.0 ** (
         -torch.arange(head_dim // 2, device=td.device, dtype=td.dtype) / (head_dim // 2)
@@ -90,12 +105,11 @@ class _TimeDeltaRoPEAttention(nn.Module):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = d_model // num_heads
-        self.scale = self.head_dim**-0.5
+        self._attn_dropout = float(dropout)
         self.q_proj = nn.Linear(d_model, d_model)
         self.k_proj = nn.Linear(d_model, d_model)
         self.v_proj = nn.Linear(d_model, d_model)
         self.out_proj = nn.Linear(d_model, d_model)
-        self.drop = nn.Dropout(dropout)
 
     def forward(
         self,
@@ -118,13 +132,17 @@ class _TimeDeltaRoPEAttention(nn.Module):
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
 
-        attn = (q @ k.transpose(-2, -1)) * self.scale  # (B, H, S, S)
+        attn_mask = None
         if key_padding_mask is not None:
-            # True = padding → mask out from attending
-            attn = attn.masked_fill(key_padding_mask.unsqueeze(1).unsqueeze(2), float("-inf"))
-        attn = self.drop(attn.softmax(dim=-1))
+            # F.scaled_dot_product_attention expects True = attend; invert our True-is-padding mask.
+            attn_mask = ~key_padding_mask.unsqueeze(1).unsqueeze(2)  # (B, 1, 1, S)
 
-        out = (attn @ v).transpose(1, 2).reshape(batch_size, seq_len, n_heads * head_dim)
+        out = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=attn_mask,
+            dropout_p=self._attn_dropout if self.training else 0.0,
+        )
+        out = out.transpose(1, 2).reshape(batch_size, seq_len, n_heads * head_dim)
         return self.out_proj(out)
 
 
@@ -218,7 +236,11 @@ class MEDSCodeEncoder(PatientEncoder):
             >>> out.patient_state.dtype
             torch.float32
         """
-        return EncoderOutput(patient_state=batch.code.float().unsqueeze(-1))
+        code = batch.code
+        return EncoderOutput(
+            patient_state=code.float().unsqueeze(-1),
+            attention_mask=(code != 0),
+        )
 
 
 class TokenEmbeddingEncoder(PatientEncoder):
@@ -237,7 +259,7 @@ class TokenEmbeddingEncoder(PatientEncoder):
         super().__init__()
         self.vocab_size = int(vocab_size)
         self.embedding_dim = int(embedding_dim)
-        self.embedding = nn.Embedding(self.vocab_size, self.embedding_dim)
+        self.embedding = nn.Embedding(self.vocab_size, self.embedding_dim, padding_idx=0)
 
     def encode(self, batch: MEDSTorchBatch) -> EncoderOutput:
         """Embed ``batch.code`` into a sequence hidden state.
@@ -264,56 +286,11 @@ class TokenEmbeddingEncoder(PatientEncoder):
             >>> out.patient_state.dtype
             torch.float32
         """
-        return EncoderOutput(patient_state=self.embedding(batch.code.long()))
-
-
-class TabularEncoder(PatientEncoder):
-    """Tabular encoder that pools a code sequence into a single patient vector.
-
-    Embeds ``batch.code`` via a learned embedding table and mean-pools across the
-    sequence dimension to produce a ``(B, 1, D_ehr)`` patient representation.
-
-    Args:
-        vocab_size: Size of the EHR code vocabulary.
-        embedding_dim: Output hidden size ``D_ehr``.
-    """
-
-    def __init__(self, *, vocab_size: int = 1024, embedding_dim: int = 4) -> None:
-        super().__init__()
-        self.vocab_size = int(vocab_size)
-        self.embedding_dim = int(embedding_dim)
-        self.embedding = nn.Embedding(self.vocab_size, self.embedding_dim)
-
-    def encode(self, batch: MEDSTorchBatch) -> EncoderOutput:
-        """Embed and mean-pool ``batch.code`` into a tabular patient state.
-
-        Args:
-            batch: A ``MEDSTorchBatch`` containing a ``code`` field of shape
-                ``(B, S_ehr)``.
-
-        Returns:
-            An ``EncoderOutput`` where ``patient_state`` has shape
-            ``(B, 1, D_ehr)``.
-
-        Examples:
-            >>> encoder = TabularEncoder(vocab_size=8, embedding_dim=2)
-            >>> batch = MEDSTorchBatch(
-            ...     code=torch.LongTensor([[1, 2, 0], [3, 4, 5]]),
-            ...     numeric_value=torch.zeros(2, 3),
-            ...     numeric_value_mask=torch.zeros(2, 3, dtype=torch.bool),
-            ...     time_delta_days=torch.zeros(2, 3),
-            ... )
-            >>> out = encoder.encode(batch)
-            >>> tuple(out.patient_state.shape)
-            (2, 1, 2)
-            >>> out.patient_state.dtype
-            torch.float32
-            >>> tuple(encoder(batch).patient_state.shape)
-            (2, 1, 2)
-        """
-        embedded = self.embedding(batch.code.long())  # (B, S_ehr, D_ehr)
-        pooled = embedded.mean(dim=1, keepdim=True)  # (B, 1, D_ehr)
-        return EncoderOutput(patient_state=pooled)
+        code = batch.code.long()
+        return EncoderOutput(
+            patient_state=self.embedding(code),
+            attention_mask=(code != 0),
+        )
 
 
 class TimeDeltaRoPEPatientEncoder(PatientEncoder):
@@ -333,6 +310,12 @@ class TimeDeltaRoPEPatientEncoder(PatientEncoder):
         num_layers: Number of stacked transformer layers.
         ff_dim: Inner size of the position-wise feed-forward network.
         dropout: Dropout probability applied inside attention and FFN.
+
+    Examples:
+        >>> TimeDeltaRoPEPatientEncoder(vocab_size=16, embedding_dim=9, num_heads=4)
+        Traceback (most recent call last):
+            ...
+        ValueError: embedding_dim=9 must be divisible by num_heads=4
     """
 
     def __init__(
@@ -387,6 +370,43 @@ class TimeDeltaRoPEPatientEncoder(PatientEncoder):
             torch.float32
             >>> tuple(encoder(batch).patient_state.shape)
             (2, 4, 8)
+            >>> # single-token batch
+            >>> batch_one = MEDSTorchBatch(
+            ...     code=torch.LongTensor([[1]]),
+            ...     numeric_value=torch.zeros(1, 1),
+            ...     numeric_value_mask=torch.zeros(1, 1, dtype=torch.bool),
+            ...     time_delta_days=torch.zeros(1, 1),
+            ... )
+            >>> tuple(encoder.encode(batch_one).patient_state.shape)
+            (1, 1, 8)
+            >>> # all-padding batch does not raise
+            >>> batch_pad = MEDSTorchBatch(
+            ...     code=torch.LongTensor([[0, 0, 0]]),
+            ...     numeric_value=torch.zeros(1, 3),
+            ...     numeric_value_mask=torch.zeros(1, 3, dtype=torch.bool),
+            ...     time_delta_days=torch.zeros(1, 3),
+            ... )
+            >>> tuple(encoder.encode(batch_pad).patient_state.shape)
+            (1, 3, 8)
+            >>> # padding tokens do not affect valid token outputs
+            >>> _ = encoder.eval()
+            >>> batch_short = MEDSTorchBatch(
+            ...     code=torch.LongTensor([[1, 2, 3]]),
+            ...     numeric_value=torch.zeros(1, 3),
+            ...     numeric_value_mask=torch.zeros(1, 3, dtype=torch.bool),
+            ...     time_delta_days=torch.tensor([[0.0, 1.0, 2.0]]),
+            ... )
+            >>> batch_padded = MEDSTorchBatch(
+            ...     code=torch.LongTensor([[1, 2, 3, 0, 0]]),
+            ...     numeric_value=torch.zeros(1, 5),
+            ...     numeric_value_mask=torch.zeros(1, 5, dtype=torch.bool),
+            ...     time_delta_days=torch.tensor([[0.0, 1.0, 2.0, 0.0, 0.0]]),
+            ... )
+            >>> with torch.no_grad():
+            ...     out_short = encoder.encode(batch_short).patient_state[0, :3]
+            ...     out_padded = encoder.encode(batch_padded).patient_state[0, :3]
+            >>> torch.allclose(out_short, out_padded, atol=1e-5)
+            True
         """
         code = batch.code.long()
         padding_mask = code == 0  # (B, S) True = padding
@@ -394,4 +414,4 @@ class TimeDeltaRoPEPatientEncoder(PatientEncoder):
         x = self.embedding(code)  # (B, S, D)
         for layer in self.layers:
             x = layer(x, rope_cos, rope_sin, padding_mask)
-        return EncoderOutput(patient_state=self.norm(x))
+        return EncoderOutput(patient_state=self.norm(x), attention_mask=~padding_mask)

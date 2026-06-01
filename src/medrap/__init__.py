@@ -13,7 +13,6 @@ from .configs import (
 from .encoders import (
     MEDSCodeEncoder,
     PatientEncoder,
-    TabularEncoder,
     TimeDeltaRoPEPatientEncoder,
     TokenEmbeddingEncoder,
 )
@@ -90,7 +89,6 @@ __all__ = [
     "Retriever",
     "RetrieverOutput",
     "SequenceMeanQueryProjector",
-    "TabularEncoder",
     "TimeDeltaRoPEPatientEncoder",
     "TokenEmbeddingEncoder",
     "float_tensor_config",

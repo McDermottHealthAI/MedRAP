@@ -20,7 +20,7 @@ from meds_torchdata.types import SubsequenceSamplingStrategy
 from omegaconf import MISSING, OmegaConf
 
 from .datamodule import SyntheticSupervisedDatamodule
-from .encoders import MEDSCodeEncoder, TabularEncoder, TokenEmbeddingEncoder
+from .encoders import MEDSCodeEncoder, TokenEmbeddingEncoder
 from .fusion import ConcatFusion, ReplaceFusion
 from .heads import LinearHead
 from .lightning_module import MedRAPSupervisedLightningModule
@@ -84,12 +84,6 @@ TokenEmbeddingEncoderConfig = builds_any(
     vocab_size=1024,
     embedding_dim=4,
     zen_dataclass={"cls_name": "TokenEmbeddingEncoderConfig"},
-)
-TabularEncoderConfig = builds_any(
-    TabularEncoder,
-    vocab_size=1024,
-    embedding_dim=4,
-    zen_dataclass={"cls_name": "TabularEncoderConfig"},
 )
 LinearQueryProjectorConfig = builds_any(
     LinearQueryProjector,
