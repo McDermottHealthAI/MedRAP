@@ -27,40 +27,40 @@ retriever training) via the `marginalized_retrieval` flag.
 Implemented stage components:
 
 - **Encoders** (`encoders.py`): `MEDSCodeEncoder`, `TokenEmbeddingEncoder`,
-  `TabularEncoder`, and `TimeDeltaRoPEPatientEncoder` (a transformer encoder whose
-  rotary position embeddings are derived from cumulative log time-deltas).
+    `TabularEncoder`, and `TimeDeltaRoPEPatientEncoder` (a transformer encoder whose
+    rotary position embeddings are derived from cumulative log time-deltas).
 - **Query projectors** (`query_projection.py`): `LinearQueryProjector`,
-  `SequenceMeanQueryProjector`.
+    `SequenceMeanQueryProjector`.
 - **Retrievers** (`retrievers.py`): `InMemoryRetriever` and `HFDatasetRetriever`
-  (FAISS over a prepared HF dataset, with optional GPU FAISS, payload caching, and
-  a `none`/`random_docs` retrieval ablation mode).
+    (FAISS over a prepared HF dataset, with optional GPU FAISS, payload caching, and
+    a `none`/`random_docs` retrieval ablation mode).
 - **Retrieval encoders** (`retrieval_encoder.py`): `TokenFeatureRetrievalEncoder`,
-  `MeanPooledRetrievalEncoder`, `PerDocMeanPooledRetrievalEncoder`,
-  `LinearProjectionRetrievalEncoder`, `KeyEmbeddingRetrievalEncoder`.
+    `MeanPooledRetrievalEncoder`, `PerDocMeanPooledRetrievalEncoder`,
+    `LinearProjectionRetrievalEncoder`, `KeyEmbeddingRetrievalEncoder`.
 - **Fusion** (`fusion.py`): `ReplaceFusion`, `ConcatFusion`, `PassthroughFusion`
-  (retrieval-ablation baseline), `CrossAttentionFusion`.
+    (retrieval-ablation baseline), `CrossAttentionFusion`.
 - **Pooling** (`pooling.py`): `IdentityPooling`, `MaskedMeanPooling`.
 - **Heads** (`heads.py`): `LinearHead`.
 - **Tasks & losses** (`task.py`, `losses.py`): binary, marginalized-binary, and
-  multi-task binary classification, with `MultiTaskBCELoss`,
-  `MultiTaskBCEMarginalizedLoss`, and `MarginalizedRetrievalLoss`.
+    multi-task binary classification, with `MultiTaskBCELoss`,
+    `MultiTaskBCEMarginalizedLoss`, and `MarginalizedRetrievalLoss`.
 
 Subsystems and tooling:
 
 - **Multi-task code prediction** (`multitask_datamodule.py`) for simultaneous
-  binary prediction of many future codes, with offline label prep
-  (`scripts/prepare_multi_task_labels.py`).
+    binary prediction of many future codes, with offline label prep
+    (`scripts/prepare_multi_task_labels.py`).
 - **Retrieval diagnostics** (`retrieval_logging.py`, `retrieval_scoring.py`,
-  `callbacks.py`): batch-level W&B/Lightning diagnostics and differentiable
-  retrieval scoring.
+    `callbacks.py`): batch-level W&B/Lightning diagnostics and differentiable
+    retrieval scoring.
 - **Analysis suite**: artifact extraction (`extraction.py`), Charlson
-  comorbidity flagging (`comorbidity.py`), demographic × keyword heatmaps
-  (`demographic_analysis.py`), and an LLM-as-a-judge retrieval-relevance
-  pipeline (`llm_judge.py`).
+    comorbidity flagging (`comorbidity.py`), demographic × keyword heatmaps
+    (`demographic_analysis.py`), and an LLM-as-a-judge retrieval-relevance
+    pipeline (`llm_judge.py`).
 - **CLI** (`cli.py`): `medrap train`, `medrap eval`, and
-  `medrap prepare-retrieval-dataset`, all Hydra-native.
+    `medrap prepare-retrieval-dataset`, all Hydra-native.
 - Hydra config groups under `medrap/conf` for every stage plus the `training/`
-  and `prep/` trees.
+    and `prep/` trees.
 
 ## Quickstart (Synthetic MEDS Batch)
 
@@ -84,7 +84,9 @@ model = RetrievalAugmentedModel(
     encoder=MEDSCodeEncoder(),
     query_projector=SequenceMeanQueryProjector(in_dim=1, out_dim=4),
     retriever=InMemoryRetriever(
-        doc_key_embeddings=torch.FloatTensor([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]]),
+        doc_key_embeddings=torch.FloatTensor(
+            [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]]
+        ),
         doc_tokens=torch.LongTensor([[1, 2], [3, 4]]),
         doc_attention_mask=torch.BoolTensor([[True, True], [True, True]]),
     ),
