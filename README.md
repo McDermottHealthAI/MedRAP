@@ -15,52 +15,101 @@ Retrieval-augmented pretraining (RAP) for MEDS-style EHR data.
 
 ## Status
 
-This is a work-in-progress.
+This is a work-in-progress, but the core research stack is implemented.
 
-Implemented now:
+MedRAP composes a retrieval-augmented patient model from swappable stages
+(`encode → query → retrieve → retrieval-encode → fuse → pool → predict`),
+orchestrated by `RetrievalAugmentedModel` (`model.py`). The pipeline also
+supports REALM-style **marginalized retrieval** (per-document logits marginalized
+over the retrieved set, with differentiable document scores for end-to-end
+retriever training) via the `marginalized_retrieval` flag.
 
-- a concrete pipeline orchestrator (`RetrievalAugmentedModel`)
-- simple concrete stage components for smoke usage and examples
-- `MEDSCodeEncoder`, which consumes `batch.code` from MEDS-style batches
-- a small end-to-end doctest example in `model.py`
-- Hydra config groups under `medrap/conf`
-- `medrap train` / `medrap eval` CLI entrypoints
-- `medrap prepare-retrieval-dataset` for building static HF retrieval artifacts
+Implemented stage components:
+
+- **Encoders** (`encoders.py`): `MEDSCodeEncoder`, `TokenEmbeddingEncoder`,
+    `TabularEncoder`, and `TimeDeltaRoPEPatientEncoder` (a transformer encoder whose
+    rotary position embeddings are derived from cumulative log time-deltas).
+- **Query projectors** (`query_projection.py`): `LinearQueryProjector`,
+    `SequenceMeanQueryProjector`.
+- **Retrievers** (`retrievers.py`): `InMemoryRetriever` and `HFDatasetRetriever`
+    (FAISS over a prepared HF dataset, with optional GPU FAISS, payload caching, and
+    a `none`/`random_docs` retrieval ablation mode).
+- **Retrieval encoders** (`retrieval_encoder.py`): `TokenFeatureRetrievalEncoder`,
+    `MeanPooledRetrievalEncoder`, `PerDocMeanPooledRetrievalEncoder`,
+    `LinearProjectionRetrievalEncoder`, `KeyEmbeddingRetrievalEncoder`.
+- **Fusion** (`fusion.py`): `ReplaceFusion`, `ConcatFusion`, `PassthroughFusion`
+    (retrieval-ablation baseline), `CrossAttentionFusion`.
+- **Pooling** (`pooling.py`): `IdentityPooling`, `MaskedMeanPooling`.
+- **Heads** (`heads.py`): `LinearHead`.
+- **Tasks & losses** (`task.py`, `losses.py`): binary, marginalized-binary, and
+    multi-task binary classification, with `MultiTaskBCELoss`,
+    `MultiTaskBCEMarginalizedLoss`, and `MarginalizedRetrievalLoss`.
+
+Subsystems and tooling:
+
+- **Multi-task code prediction** (`multitask_datamodule.py`) for simultaneous
+    binary prediction of many future codes, with offline label prep
+    (`scripts/prepare_multi_task_labels.py`).
+- **Retrieval diagnostics** (`retrieval_logging.py`, `retrieval_scoring.py`,
+    `callbacks.py`): batch-level W&B/Lightning diagnostics and differentiable
+    retrieval scoring.
+- **Analysis suite**: artifact extraction (`extraction.py`), Charlson
+    comorbidity flagging (`comorbidity.py`), demographic × keyword heatmaps
+    (`demographic_analysis.py`), and an LLM-as-a-judge retrieval-relevance
+    pipeline (`llm_judge.py`).
+- **CLI** (`cli.py`): `medrap train`, `medrap eval`, and
+    `medrap prepare-retrieval-dataset`, all Hydra-native.
+- Hydra config groups under `medrap/conf` for every stage plus the `training/`
+    and `prep/` trees.
 
 ## Quickstart (Synthetic MEDS Batch)
 
+Assemble a retrieval-augmented model from concrete stage components and run a
+forward pass over a synthetic `MEDSTorchBatch`:
+
 ```python
 import torch
+from meds_torchdata import MEDSTorchBatch
 
 from medrap.encoders import MEDSCodeEncoder
 from medrap.fusion import ReplaceFusion
-from medrap.heads import IdentityHead
+from medrap.heads import LinearHead
 from medrap.model import RetrievalAugmentedModel
 from medrap.pooling import IdentityPooling
-from medrap.query_projection import IdentityQueryProjector
-from medrap.retrieval_encoder import IdentityRetrievalEncoder
-from medrap.retrievers import StaticRetriever
-from meds_torchdata import MEDSTorchBatch
+from medrap.query_projection import SequenceMeanQueryProjector
+from medrap.retrieval_encoder import MeanPooledRetrievalEncoder
+from medrap.retrievers import InMemoryRetriever
 
 model = RetrievalAugmentedModel(
     encoder=MEDSCodeEncoder(),
-    query_projector=IdentityQueryProjector(),
-    retriever=StaticRetriever(doc_tokens=[[1, 2]], doc_attention_mask=[[1, 1]]),
-    retrieval_encoder=IdentityRetrievalEncoder(),
+    query_projector=SequenceMeanQueryProjector(in_dim=1, out_dim=4),
+    retriever=InMemoryRetriever(
+        doc_key_embeddings=torch.FloatTensor(
+            [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]]
+        ),
+        doc_tokens=torch.LongTensor([[1, 2], [3, 4]]),
+        doc_attention_mask=torch.BoolTensor([[True, True], [True, True]]),
+    ),
+    retrieval_encoder=MeanPooledRetrievalEncoder(vocab_size=8, embedding_dim=2),
     fusion=ReplaceFusion(),
     pooling=IdentityPooling(),
-    head=IdentityHead(),
+    head=LinearHead(in_dim=2, out_dim=2),
 )
 
 batch = MEDSTorchBatch(
-    code=torch.LongTensor([[101, 7, 0], [42, 3, 0]]),
-    numeric_value=torch.zeros((2, 3), dtype=torch.float32),
-    numeric_value_mask=torch.zeros((2, 3), dtype=torch.bool),
-    time_delta_days=torch.zeros((2, 3), dtype=torch.float32),
+    code=torch.LongTensor([[101, 0], [42, 7]]),
+    numeric_value=torch.zeros((2, 2), dtype=torch.float32),
+    numeric_value_mask=torch.zeros((2, 2), dtype=torch.bool),
+    time_delta_days=torch.zeros((2, 2), dtype=torch.float32),
 )
-out = model.forward(batch)
-print(out.logits)  # tensor([[1, 2]])
+out = model.forward(batch=batch)
+print(tuple(out.logits.shape))  # (2, 2)
+print(sorted(out.metadata))
+# ['fusion_output', 'query_output', 'retrieval_encoder_output', 'retriever_output']
 ```
+
+A maintained, doctested copy of this example (plus a marginalized-retrieval
+variant) lives in the `RetrievalAugmentedModel` docstring in `model.py`.
 
 ## MEDS Batch Typing
 
@@ -68,12 +117,28 @@ print(out.logits)  # tensor([[1, 2]])
 
 ## CLI
 
-Run with Hydra overrides:
+`medrap` exposes three Hydra-native subcommands; all accept Hydra overrides and
+`medrap train`/`medrap eval` require an `output_dir`.
+
+A CPU smoke run on the built-in synthetic datamodule (no external data needed):
 
 ```bash
-uv run medrap train run_smoke=false
-uv run medrap eval run_smoke=false
+uv run medrap train output_dir=/tmp/medrap_smoke \
+	training/datamodule=synthetic training/trainer=lightning_demo
 ```
+
+Train and evaluate on real (tensorized MEDS) data:
+
+```bash
+uv run medrap train output_dir=outputs/run_001 training/datamodule=meds
+uv run medrap eval output_dir=outputs/run_001_eval \
+	checkpoint_path=outputs/run_001/best_model.ckpt
+```
+
+Re-running into an existing `output_dir` is rejected unless you pass
+`do_overwrite=true` or `do_resume=true` (train), or choose a fresh `output_dir`
+(eval). `medrap eval` also accepts `eval_mode=validate` (default) or
+`eval_mode=test`.
 
 Build a local Hugging Face dataset + FAISS index for retrieval (requires the `prep` extra, e.g. `uv pip install "medrap[prep]"`). Example: Hub source, then save under `prep.output.output_dir`:
 
@@ -173,16 +238,32 @@ host user, override the runtime user:
 docker run --rm --user "$(id -u):$(id -g)" ...
 ```
 
-Hydra component groups live in:
+Hydra component groups live in `src/medrap/conf/`. Pipeline-stage groups:
 
-- `encoder/`
-- `query_projector/`
-- `retriever/`
-- `retrieval_encoder/`
-- `fusion/`
-- `pooling/`
-- `head/`
-- `prep/`
+- `encoder/` — `meds_code`, `rope`, `token_embedding`, `token_embedding_128`, `token_embedding_1024`
+- `query_projector/` — `linear`, `sequence_mean`, `sequence_mean_1024`
+- `retriever/` — `in_memory`, `in_memory_sanity`, `in_memory_from_pt`, `hf_dataset`
+- `retrieval_encoder/` — `token_feature`, `mean_pooled`, `per_doc_mean_pooled`, `linear_projection`, `key_embedding`
+- `fusion/` — `replace`, `concat`, `passthrough`, `cross_attention_medium`
+- `pooling/` — `identity`, `masked_mean`
+- `head/` — `linear`, `linear_1024_to_2`
+
+Training groups (under `training/`):
+
+- `training/datamodule/` — `synthetic`, `synthetic_marginalized`, `meds`, `meds_multitask`
+- `training/loss/` — `binary_bce`, `marginalized_retrieval`, `multitask_binary_bce`, `multitask_binary_bce_marginalized`
+- `training/task/` — `binary_classification`, `marginalized_binary`, `multitask_binary`
+- `training/module/` — `supervised_lightning`
+- `training/trainer/` — `lightning_default`, `lightning_demo`, `lightning_eval`, `lightning_wandb`
+
+Offline retrieval-prep groups (under `prep/`):
+
+- `prep/source/` — `load_dataset`, `load_from_disk`
+- `prep/document/` — `ordered_fields`
+- `prep/tokenizer/` — `hf_auto`
+- `prep/embedder/` — `sentence_transformer`
+- `prep/index/` — `default`
+- `prep/output/` — `default`
 
 ## Using MIMIC-IV Data
 
