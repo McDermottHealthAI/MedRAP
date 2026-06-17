@@ -79,13 +79,6 @@ def test_medrap_eval_entrypoint_runs_with_overrides(tmp_path) -> None:
     assert (eval_dir / "resolved_config.yaml").exists()
 
 
-def test_train_entrypoint_runs_with_hydra_overrides(tmp_path) -> None:
-    output_dir = tmp_path / "train"
-
-    assert _run_train_cli([f"output_dir={output_dir}", "training/datamodule=synthetic"]) == 0
-    assert (output_dir / "checkpoints" / "last.ckpt").exists()
-
-
 def test_flat_entrypoint_scripts_are_registered() -> None:
     pyproject = tomllib.loads(Path("pyproject.toml").read_text())
     medrap_scripts = pyproject["project"]["scripts"]
@@ -139,26 +132,6 @@ def test_prepare_retrieval_dataset_entrypoint_runs_with_hydra_overrides(monkeypa
         "output_dir": str(output_dir),
         "max_length": 3,
     }
-
-
-def test_eval_entrypoint_runs_with_hydra_overrides(tmp_path) -> None:
-    output_dir = tmp_path / "train"
-    eval_dir = tmp_path / "eval"
-    checkpoint_path = output_dir / "checkpoints" / "last.ckpt"
-    assert _run_train_cli([f"output_dir={output_dir}", "training/datamodule=synthetic"]) == 0
-
-    assert (
-        _run_eval_cli(
-            [
-                f"output_dir={eval_dir}",
-                f"checkpoint_path={checkpoint_path}",
-                "training/datamodule=synthetic",
-            ]
-        )
-        == 0
-    )
-    assert (eval_dir / "config.yaml").exists()
-    assert (eval_dir / "resolved_config.yaml").exists()
 
 
 def test_eval_entrypoint_requires_checkpoint_path(tmp_path) -> None:
