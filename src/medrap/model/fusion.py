@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 import torch
 from torch import nn
 
-from .types import FusionInput, FusionOutput
+from ..types import FusionInput, FusionOutput
 
 
 class FusionModule(nn.Module, ABC):

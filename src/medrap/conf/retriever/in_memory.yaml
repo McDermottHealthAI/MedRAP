@@ -1,4 +1,4 @@
-_target_: medrap.retrievers.InMemoryRetriever
+_target_: medrap.model.retrievers.InMemoryRetriever
 doc_key_embeddings:
   _target_: torch.FloatTensor
   _args_:

@@ -1,4 +1,4 @@
-_target_: medrap.multitask_datamodule.MultiTaskMEDSDatamodule
+_target_: medrap.train.multitask_datamodule.MultiTaskMEDSDatamodule
 
 config:
   _target_: meds_torchdata.MEDSTorchDataConfig

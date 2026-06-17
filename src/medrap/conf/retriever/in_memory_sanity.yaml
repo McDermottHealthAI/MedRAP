@@ -2,7 +2,7 @@
 # Docs 0-3: "positive-relevant" (embeddings in dims 0-3).
 # Docs 4-7: "negative-relevant" (embeddings in dims 4-7).
 # k=4 retrieves half the corpus per patient.
-_target_: medrap.retrievers.InMemoryRetriever
+_target_: medrap.model.retrievers.InMemoryRetriever
 doc_key_embeddings:
   _target_: torch.FloatTensor
   _args_:

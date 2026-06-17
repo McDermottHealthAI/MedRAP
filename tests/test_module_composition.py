@@ -3,19 +3,19 @@ import torch
 from meds_torchdata import MEDSTorchBatch
 from torch import nn
 
-import medrap.retrievers as retrievers_module
-from medrap.encoders import MEDSCodeEncoder
-from medrap.fusion import ReplaceFusion
-from medrap.model import RetrievalAugmentedModel
-from medrap.pooling import IdentityPooling
-from medrap.query_projection import SequenceMeanQueryProjector
-from medrap.retrieval_encoder import (
+import medrap.model.retrievers as retrievers_module
+from medrap.model.encoders import MEDSCodeEncoder
+from medrap.model.fusion import ReplaceFusion
+from medrap.model.model import RetrievalAugmentedModel
+from medrap.model.pooling import IdentityPooling
+from medrap.model.query_projection import SequenceMeanQueryProjector
+from medrap.model.retrieval_encoder import (
     LinearProjectionRetrievalEncoder,
     MeanPooledRetrievalEncoder,
     PerDocMeanPooledRetrievalEncoder,
     TokenFeatureRetrievalEncoder,
 )
-from medrap.retrievers import InMemoryRetriever, load_hf_dataset_retriever
+from medrap.model.retrievers import InMemoryRetriever, load_hf_dataset_retriever
 from medrap.types import FusionInput, RetrieverOutput
 
 
@@ -420,7 +420,7 @@ def test_in_memory_retriever_cosine_similarity_normalizes_inputs() -> None:
 
 def test_per_doc_mean_pooled_retrieval_encoder_loads_pretrained_weights(monkeypatch) -> None:
     """The success path: pretrained model exposes ``embed_tokens.weight`` with matching shape."""
-    import medrap.retrieval_encoder as enc_module
+    import medrap.model.retrieval_encoder as enc_module
 
     pretrained_weight = torch.randn(8, 4)
 
@@ -447,7 +447,7 @@ def test_per_doc_mean_pooled_retrieval_encoder_uses_model_embed_tokens_when_dire
     monkeypatch,
 ) -> None:
     """The pretrained model exposes ``model.embed_tokens.weight`` (the getattr-chain fallback)."""
-    import medrap.retrieval_encoder as enc_module
+    import medrap.model.retrieval_encoder as enc_module
 
     pretrained_weight = torch.randn(8, 4)
 
@@ -475,7 +475,7 @@ def test_per_doc_mean_pooled_retrieval_encoder_uses_model_embed_tokens_when_dire
 
 def test_per_doc_mean_pooled_retrieval_encoder_raises_when_embed_tokens_missing(monkeypatch) -> None:
     """Lines 287-291: neither direct ``embed_tokens`` nor ``model.embed_tokens`` is found."""
-    import medrap.retrieval_encoder as enc_module
+    import medrap.model.retrieval_encoder as enc_module
 
     class _FakePretrained:
         embed_tokens = None
@@ -495,7 +495,7 @@ def test_per_doc_mean_pooled_retrieval_encoder_raises_when_embed_tokens_missing(
 
 def test_per_doc_mean_pooled_retrieval_encoder_raises_on_shape_mismatch(monkeypatch) -> None:
     """Lines 294-299: pretrained shape doesn't match configured (vocab_size, embedding_dim)."""
-    import medrap.retrieval_encoder as enc_module
+    import medrap.model.retrieval_encoder as enc_module
 
     pretrained_weight = torch.randn(16, 8)  # mismatched
 

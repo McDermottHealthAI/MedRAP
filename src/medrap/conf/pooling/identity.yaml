@@ -1,1 +1,1 @@
-_target_: medrap.pooling.IdentityPooling
+_target_: medrap.model.pooling.IdentityPooling

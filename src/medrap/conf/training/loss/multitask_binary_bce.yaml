@@ -1,1 +1,1 @@
-_target_: medrap.losses.MultiTaskBCELoss
+_target_: medrap.train.losses.MultiTaskBCELoss

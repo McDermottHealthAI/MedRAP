@@ -10,7 +10,7 @@ import torch
 from meds_torchdata import MEDSTorchBatch
 from torch import Tensor, nn
 
-from .types import EncoderOutput
+from ..types import EncoderOutput
 
 
 def _apply_rope(x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:

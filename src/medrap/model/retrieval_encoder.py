@@ -8,7 +8,7 @@ import torch
 from torch import nn
 from transformers import AutoModel
 
-from .types import RetrievalEncoderOutput, RetrieverOutput
+from ..types import RetrievalEncoderOutput, RetrieverOutput
 
 
 class TokenFeatureRetrievalEncoder(nn.Module):

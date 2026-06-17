@@ -1,1 +1,1 @@
-_target_: medrap.fusion.ReplaceFusion
+_target_: medrap.model.fusion.ReplaceFusion

@@ -11,7 +11,7 @@ import torch
 from datasets import Dataset, load_from_disk
 from torch import Tensor, nn
 
-from .types import RetrieverOutput
+from ..types import RetrieverOutput
 
 
 def _move_tensors_to_device(device: torch.device, *tensors: Tensor) -> tuple[Tensor, ...]:

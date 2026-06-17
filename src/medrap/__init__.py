@@ -10,31 +10,31 @@ from .configs import (
     instantiate_model,
     prepare_retrieval_dataset_from_config,
 )
-from .encoders import (
+from .model.encoders import (
     MEDSCodeEncoder,
     PatientEncoder,
     TabularEncoder,
     TimeDeltaRoPEPatientEncoder,
     TokenEmbeddingEncoder,
 )
-from .fusion import ConcatFusion, CrossAttentionFusion, FusionModule, PassthroughFusion, ReplaceFusion
-from .heads import LinearHead, PredictionHead
-from .lightning_module import MedRAPSupervisedLightningModule
-from .losses import MultiTaskBCELoss, MultiTaskBCEMarginalizedLoss
-from .model import RetrievalAugmentedModel
-from .multitask_datamodule import MultiTaskMEDSDatamodule, MultiTaskMEDSDataset, load_code_index
-from .pooling import IdentityPooling, MaskedMeanPooling, PoolingModule
-from .preparation import OrderedFieldDocumentRenderer, prepare_retrieval_dataset
-from .query_projection import LinearQueryProjector, QueryProjector, SequenceMeanQueryProjector
-from .retrieval_encoder import LinearProjectionRetrievalEncoder, PerDocMeanPooledRetrievalEncoder
-from .retrievers import (
+from .model.fusion import ConcatFusion, CrossAttentionFusion, FusionModule, PassthroughFusion, ReplaceFusion
+from .model.heads import LinearHead, PredictionHead
+from .train.lightning_module import MedRAPSupervisedLightningModule
+from .train.losses import MultiTaskBCELoss, MultiTaskBCEMarginalizedLoss
+from .model.model import RetrievalAugmentedModel
+from .train.multitask_datamodule import MultiTaskMEDSDatamodule, MultiTaskMEDSDataset, load_code_index
+from .model.pooling import IdentityPooling, MaskedMeanPooling, PoolingModule
+from .prepare.preparation import OrderedFieldDocumentRenderer, prepare_retrieval_dataset
+from .model.query_projection import LinearQueryProjector, QueryProjector, SequenceMeanQueryProjector
+from .model.retrieval_encoder import LinearProjectionRetrievalEncoder, PerDocMeanPooledRetrievalEncoder
+from .model.retrievers import (
     HFDatasetRetriever,
     InMemoryRetriever,
     Retriever,
     load_hf_dataset_retriever,
     load_in_memory_retriever,
 )
-from .task import BinaryClassificationLoss, BinaryClassificationTask, MultiTaskBinaryClassificationTask
+from .train.task import BinaryClassificationLoss, BinaryClassificationTask, MultiTaskBinaryClassificationTask
 from .types import (
     EncoderOutput,
     FusionInput,

@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as functional
 from torch import Tensor
 
-from .types import ModelOutput, QueryOutput, RetrieverOutput
+from ..types import ModelOutput, QueryOutput, RetrieverOutput
 
 if TYPE_CHECKING:
     from meds_torchdata import MEDSTorchBatch

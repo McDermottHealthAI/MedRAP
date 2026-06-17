@@ -5,7 +5,7 @@ import torch.nn.functional as functional
 from torch import Tensor, nn
 
 from .task import SupervisedLoss, TaskTargets
-from .types import ModelOutput
+from ..types import ModelOutput
 
 
 class MultiTaskBCELoss(SupervisedLoss):

@@ -1,2 +1,2 @@
-_target_: medrap.losses.MultiTaskBCEMarginalizedLoss
+_target_: medrap.train.losses.MultiTaskBCEMarginalizedLoss
 num_tasks: ???

@@ -1,2 +1,2 @@
-_target_: medrap.task.MultiTaskBinaryClassificationTask
+_target_: medrap.train.task.MultiTaskBinaryClassificationTask
 num_tasks: ???
