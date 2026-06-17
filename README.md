@@ -57,8 +57,8 @@ Subsystems and tooling:
     comorbidity flagging (`comorbidity.py`), demographic × keyword heatmaps
     (`demographic_analysis.py`), and an LLM-as-a-judge retrieval-relevance
     pipeline (`llm_judge.py`).
-- **CLI** (`cli.py`): `medrap train`, `medrap eval`, and
-    `medrap prepare-retrieval-dataset`, all Hydra-native.
+- **CLI** (`cli.py`): `medrap-train`, `medrap-eval`, and
+    `medrap-prepare-retrieval-dataset`, all Hydra-native.
 - Hydra config groups under `medrap/conf` for every stage plus the `training/`
     and `prep/` trees.
 
@@ -117,33 +117,33 @@ variant) lives in the `RetrievalAugmentedModel` docstring in `model.py`.
 
 ## CLI
 
-`medrap` exposes three Hydra-native subcommands; all accept Hydra overrides and
-`medrap train`/`medrap eval` require an `output_dir`.
+`medrap` exposes three Hydra-native entrypoints; all accept Hydra overrides and
+`medrap-train`/`medrap-eval` require an `output_dir`.
 
 A CPU smoke run on the built-in synthetic datamodule (no external data needed):
 
 ```bash
-uv run medrap train output_dir=/tmp/medrap_smoke \
+uv run medrap-train output_dir=/tmp/medrap_smoke \
 	training/datamodule=synthetic training/trainer=lightning_demo
 ```
 
 Train and evaluate on real (tensorized MEDS) data:
 
 ```bash
-uv run medrap train output_dir=outputs/run_001 training/datamodule=meds
-uv run medrap eval output_dir=outputs/run_001_eval \
+uv run medrap-train output_dir=outputs/run_001 training/datamodule=meds
+uv run medrap-eval output_dir=outputs/run_001_eval \
 	checkpoint_path=outputs/run_001/best_model.ckpt
 ```
 
 Re-running into an existing `output_dir` is rejected unless you pass
 `do_overwrite=true` or `do_resume=true` (train), or choose a fresh `output_dir`
-(eval). `medrap eval` also accepts `eval_mode=validate` (default) or
+(eval). `medrap-eval` also accepts `eval_mode=validate` (default) or
 `eval_mode=test`.
 
 Build a local Hugging Face dataset + FAISS index for retrieval (requires the `prep` extra, e.g. `uv pip install "medrap[prep]"`). Example: Hub source, then save under `prep.output.output_dir`:
 
 ```bash
-uv run medrap prepare-retrieval-dataset \
+uv run medrap-prepare-retrieval-dataset \
 	prep.source.path=MedRAG/textbooks prep.source.split=train \
 	prep.document.fields='[title,content]' \
 	prep.tokenizer.pretrained_model_name_or_path=Qwen/Qwen3-Embedding-0.6B \
@@ -158,9 +158,8 @@ uv run medrap prepare-retrieval-dataset \
 
 Use `prep.embedder.device=cpu` when no GPU is available. For a dataset already on disk, switch the source group: `prep/source=load_from_disk` and set `prep.source.dataset_path=...`.
 
-`medrap` is a thin dispatcher; `train` and `eval` are implemented as Hydra-native
-entrypoints (`@hydra.main`) internally, and `prepare-retrieval-dataset` is the
-offline artifact-preparation entrypoint.
+These commands are direct Hydra entrypoints (`@hydra.main`), so Hydra receives
+overrides without an intermediate subcommand dispatcher.
 
 ### HF Retrieval Performance
 
@@ -210,7 +209,7 @@ The image is intended to consume prebuilt artifacts. For training, mount:
 Quick smoke check:
 
 ```bash
-docker run --rm medrap:local medrap --help
+docker run --rm medrap:local medrap-train --help
 ```
 
 Example training invocation:
@@ -222,7 +221,7 @@ docker run --rm --gpus all \
 	-v /host/retrieval_db:/data/retrieval_db:ro \
 	-v /host/outputs:/outputs \
 	medrap:local \
-	medrap train \
+	medrap-train \
 	retriever=hf_dataset \
 	retriever.dataset_path=/data/retrieval_db \
 	training/datamodule=meds \
