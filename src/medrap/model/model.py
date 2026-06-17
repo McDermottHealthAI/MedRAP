@@ -4,9 +4,9 @@ from meds_torchdata import MEDSTorchBatch
 from torch import Tensor, nn
 from torch.nn import functional as nn_functional
 
+from ..types import FusionInput, ModelOutput
 from .heads import LinearHead
 from .retrieval_scoring import differentiable_retrieval_scores
-from ..types import FusionInput, ModelOutput
 
 
 def _marginal_class_probabilities(per_doc_logits: Tensor, doc_scores: Tensor) -> Tensor:

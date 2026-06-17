@@ -4,8 +4,8 @@ import torch
 import torch.nn.functional as functional
 from torch import Tensor, nn
 
-from .task import SupervisedLoss, TaskTargets
 from ..types import ModelOutput
+from .task import SupervisedLoss, TaskTargets
 
 
 class MultiTaskBCELoss(SupervisedLoss):

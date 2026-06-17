@@ -4,12 +4,10 @@ import torch
 from torch.utils.data import DataLoader
 
 from conftest import make_supervised_batch
-from medrap.model.encoders import MEDSCodeEncoder
 from medrap.extraction import collate_prediction_batches, extract_artifacts
+from medrap.model.encoders import MEDSCodeEncoder
 from medrap.model.fusion import ReplaceFusion
 from medrap.model.heads import LinearHead
-from medrap.train.lightning_module import MedRAPSupervisedLightningModule
-from medrap.train.losses import MarginalizedRetrievalSupervisedLoss
 from medrap.model.model import RetrievalAugmentedModel
 from medrap.model.pooling import IdentityPooling
 from medrap.model.query_projection import SequenceMeanQueryProjector
@@ -19,6 +17,8 @@ from medrap.model.retrieval_encoder import (
 )
 from medrap.model.retrieval_scoring import differentiable_retrieval_scores
 from medrap.model.retrievers import InMemoryRetriever
+from medrap.train.lightning_module import MedRAPSupervisedLightningModule
+from medrap.train.losses import MarginalizedRetrievalSupervisedLoss
 from medrap.train.task import MarginalizedBinaryClassificationTask
 from medrap.types import FusionInput
 

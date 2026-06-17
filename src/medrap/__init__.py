@@ -19,12 +19,8 @@ from .model.encoders import (
 )
 from .model.fusion import ConcatFusion, CrossAttentionFusion, FusionModule, PassthroughFusion, ReplaceFusion
 from .model.heads import LinearHead, PredictionHead
-from .train.lightning_module import MedRAPSupervisedLightningModule
-from .train.losses import MultiTaskBCELoss, MultiTaskBCEMarginalizedLoss
 from .model.model import RetrievalAugmentedModel
-from .train.multitask_datamodule import MultiTaskMEDSDatamodule, MultiTaskMEDSDataset, load_code_index
 from .model.pooling import IdentityPooling, MaskedMeanPooling, PoolingModule
-from .prepare_retrieval.preparation import OrderedFieldDocumentRenderer, prepare_retrieval_dataset
 from .model.query_projection import LinearQueryProjector, QueryProjector, SequenceMeanQueryProjector
 from .model.retrieval_encoder import LinearProjectionRetrievalEncoder, PerDocMeanPooledRetrievalEncoder
 from .model.retrievers import (
@@ -34,6 +30,10 @@ from .model.retrievers import (
     load_hf_dataset_retriever,
     load_in_memory_retriever,
 )
+from .prepare_retrieval.preparation import OrderedFieldDocumentRenderer, prepare_retrieval_dataset
+from .train.lightning_module import MedRAPSupervisedLightningModule
+from .train.losses import MultiTaskBCELoss, MultiTaskBCEMarginalizedLoss
+from .train.multitask_datamodule import MultiTaskMEDSDatamodule, MultiTaskMEDSDataset, load_code_index
 from .train.task import BinaryClassificationLoss, BinaryClassificationTask, MultiTaskBinaryClassificationTask
 from .types import (
     EncoderOutput,

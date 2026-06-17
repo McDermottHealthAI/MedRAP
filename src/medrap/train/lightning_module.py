@@ -9,6 +9,7 @@ from torch import Tensor, nn
 from torch.optim import Optimizer
 from transformers import get_cosine_schedule_with_warmup
 
+from ..types import ModelOutput
 from .metrics import binary_auroc_torch, multitask_auroc_torch, positive_class_probs
 from .retrieval_logging import model_diagnostic_scalars
 from .task import (
@@ -17,7 +18,6 @@ from .task import (
     SupervisedLoss,
     SupervisedTask,
 )
-from ..types import ModelOutput
 
 
 class MedRAPSupervisedLightningModule(lightning.LightningModule):
