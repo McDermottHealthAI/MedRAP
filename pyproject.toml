@@ -98,7 +98,7 @@ addopts = [
   "--ignore=MEDS-DEV",
   "--ignore=AGENTS.md",
   "--ignore=CONTRIBUTORS.md",
-  "--ignore=src/medrap/prepare/preparation.py",
+  "--ignore=src/medrap/prepare_retrieval/preparation.py",
   "--doctest-glob=*.md",
 ]
 markers = []

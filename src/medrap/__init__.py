@@ -24,7 +24,7 @@ from .train.losses import MultiTaskBCELoss, MultiTaskBCEMarginalizedLoss
 from .model.model import RetrievalAugmentedModel
 from .train.multitask_datamodule import MultiTaskMEDSDatamodule, MultiTaskMEDSDataset, load_code_index
 from .model.pooling import IdentityPooling, MaskedMeanPooling, PoolingModule
-from .prepare.preparation import OrderedFieldDocumentRenderer, prepare_retrieval_dataset
+from .prepare_retrieval.preparation import OrderedFieldDocumentRenderer, prepare_retrieval_dataset
 from .model.query_projection import LinearQueryProjector, QueryProjector, SequenceMeanQueryProjector
 from .model.retrieval_encoder import LinearProjectionRetrievalEncoder, PerDocMeanPooledRetrievalEncoder
 from .model.retrievers import (

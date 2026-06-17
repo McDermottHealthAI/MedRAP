@@ -27,7 +27,7 @@ from .train.lightning_module import MedRAPSupervisedLightningModule
 from .train.losses import MarginalizedRetrievalSupervisedLoss
 from .model.model import RetrievalAugmentedModel
 from .model.pooling import IdentityPooling, MaskedMeanPooling
-from .prepare.preparation import (
+from .prepare_retrieval.preparation import (
     OrderedFieldDocumentRenderer,
     prepare_retrieval_dataset,
 )
