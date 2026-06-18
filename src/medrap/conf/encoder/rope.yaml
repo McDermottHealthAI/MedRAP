@@ -1,6 +1,6 @@
 # Time-delta RoPE encoder (128-D). Drop-in replacement for token_embedding_128.
 # fusion.d_in_patient must be 128; query_projector.in_dim must be 128.
-_target_: medrap.encoders.TimeDeltaRoPEPatientEncoder
+_target_: medrap.model.encoders.TimeDeltaRoPEPatientEncoder
 vocab_size: 65536
 embedding_dim: 128
 num_heads: 4

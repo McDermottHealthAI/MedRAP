@@ -1,1 +1,1 @@
-_target_: medrap.encoders.MEDSCodeEncoder
+_target_: medrap.model.encoders.MEDSCodeEncoder

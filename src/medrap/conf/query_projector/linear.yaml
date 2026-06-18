@@ -1,3 +1,3 @@
-_target_: medrap.query_projection.LinearQueryProjector
+_target_: medrap.model.query_projection.LinearQueryProjector
 in_dim: 4
 out_dim: 4

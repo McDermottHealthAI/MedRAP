@@ -1,1 +1,1 @@
-_target_: medrap.fusion.ConcatFusion
+_target_: medrap.model.fusion.ConcatFusion

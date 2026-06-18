@@ -1,1 +1,1 @@
-_target_: medrap.losses.MarginalizedRetrievalSupervisedLoss
+_target_: medrap.train.losses.MarginalizedRetrievalSupervisedLoss

@@ -1,4 +1,4 @@
-_target_: medrap.retrievers.load_hf_dataset_retriever
+_target_: medrap.model.retrievers.load_hf_dataset_retriever
 dataset_path: ???
 index_name: retrieval
 index_path: ${.dataset_path}/${.index_name}.faiss

@@ -2,7 +2,7 @@
 # Positive patients have high code values (~100-500), negative have low (~10-50).
 # After SequenceMeanQueryProjector, positive/negative patients produce distinct
 # query vectors, enabling the model to learn class-conditional retrieval.
-_target_: medrap.datamodule.SyntheticSupervisedDatamodule
+_target_: medrap.train.datamodule.SyntheticSupervisedDatamodule
 
 train_batch:
   _target_: meds_torchdata.MEDSTorchBatch

@@ -4,7 +4,7 @@ import pytest
 import torch
 from meds_torchdata import MEDSTorchBatch
 
-from medrap.encoders import TimeDeltaRoPEPatientEncoder, _apply_rope, _time_delta_rope_freqs
+from medrap.model.encoders import TimeDeltaRoPEPatientEncoder, _apply_rope, _time_delta_rope_freqs
 
 
 def _make_batch(

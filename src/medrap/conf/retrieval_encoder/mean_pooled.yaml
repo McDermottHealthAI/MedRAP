@@ -1,1 +1,1 @@
-_target_: medrap.retrieval_encoder.MeanPooledRetrievalEncoder
+_target_: medrap.model.retrieval_encoder.MeanPooledRetrievalEncoder

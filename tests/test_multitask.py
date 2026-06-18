@@ -8,10 +8,10 @@ import torch
 from meds_torchdata import MEDSTorchBatch
 from meds_torchdata.pytorch_dataset import MEDSPytorchDataset
 
-from medrap.fusion import PassthroughFusion
-from medrap.losses import MultiTaskBCELoss, MultiTaskBCEMarginalizedLoss
-from medrap.multitask_datamodule import MultiTaskMEDSDataset, _make_dataset_class
-from medrap.task import MultiTaskBinaryClassificationTask
+from medrap.model.fusion import PassthroughFusion
+from medrap.train.losses import MultiTaskBCELoss, MultiTaskBCEMarginalizedLoss
+from medrap.train.multitask_datamodule import MultiTaskMEDSDataset, _make_dataset_class
+from medrap.train.task import MultiTaskBinaryClassificationTask
 from medrap.types import FusionInput, ModelOutput
 
 # ---------------------------------------------------------------------------
@@ -229,7 +229,7 @@ class TestMultiTaskBCEMarginalizedLoss:
 class TestMultiTaskMEDSDataset:
     def test_load_code_index(self, tmp_path):
         """load_code_index parses code_index.json correctly."""
-        from medrap.multitask_datamodule import load_code_index
+        from medrap.train.multitask_datamodule import load_code_index
 
         index = {"0": "LAB//123", "1": "DIAG//456", "2": "MED//789"}
         (tmp_path / "code_index.json").write_text(json.dumps(index))
@@ -392,7 +392,7 @@ class TestMultiTaskMEDSDatamodule:
     src/medrap/multitask_datamodule.py."""
 
     def test_datamodule_init_wires_inner_and_forwards_dataloaders_and_datasets(self, monkeypatch):
-        from medrap.multitask_datamodule import MultiTaskMEDSDatamodule
+        from medrap.train.multitask_datamodule import MultiTaskMEDSDatamodule
 
         captured = {}
 
@@ -412,7 +412,7 @@ class TestMultiTaskMEDSDatamodule:
             def test_dataloader(self):
                 return "TEST_DL"
 
-        import medrap.multitask_datamodule as mod
+        import medrap.train.multitask_datamodule as mod
 
         monkeypatch.setattr(mod, "MEDSLightningDatamodule", _FakeInner)
 

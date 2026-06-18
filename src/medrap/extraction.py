@@ -94,7 +94,7 @@ def _fill_differentiable_doc_scores(artifacts: dict[str, Tensor], *, similarity:
     The artifacts dict is mutated in-place. If the key is already present, or
     either source tensor is missing, the dict is left unchanged.
     """
-    from medrap.retrieval_scoring import differentiable_retrieval_scores
+    from medrap.model.retrieval_scoring import differentiable_retrieval_scores
 
     if "differentiable_doc_scores" in artifacts:
         return
@@ -185,15 +185,15 @@ def extract_artifacts(
 
     Examples:
         >>> import tempfile
-        >>> from medrap.encoders import MEDSCodeEncoder
-        >>> from medrap.fusion import ReplaceFusion
-        >>> from medrap.heads import LinearHead
-        >>> from medrap.pooling import IdentityPooling
-        >>> from medrap.query_projection import SequenceMeanQueryProjector
-        >>> from medrap.retrieval_encoder import MeanPooledRetrievalEncoder
-        >>> from medrap.retrievers import InMemoryRetriever
-        >>> from medrap.model import RetrievalAugmentedModel
-        >>> from medrap.lightning_module import MedRAPSupervisedLightningModule
+        >>> from medrap.model.encoders import MEDSCodeEncoder
+        >>> from medrap.model.fusion import ReplaceFusion
+        >>> from medrap.model.heads import LinearHead
+        >>> from medrap.model.pooling import IdentityPooling
+        >>> from medrap.model.query_projection import SequenceMeanQueryProjector
+        >>> from medrap.model.retrieval_encoder import MeanPooledRetrievalEncoder
+        >>> from medrap.model.retrievers import InMemoryRetriever
+        >>> from medrap.model.model import RetrievalAugmentedModel
+        >>> from medrap.train.lightning_module import MedRAPSupervisedLightningModule
         >>> model = RetrievalAugmentedModel(
         ...     encoder=MEDSCodeEncoder(),
         ...     query_projector=SequenceMeanQueryProjector(in_dim=1, out_dim=4),

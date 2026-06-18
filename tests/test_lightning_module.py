@@ -5,8 +5,8 @@ from meds_torchdata import MEDSTorchBatch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from medrap.lightning_module import MedRAPSupervisedLightningModule
-from medrap.task import BinaryClassificationTask, SupervisedLoss, SupervisedTask
+from medrap.train.lightning_module import MedRAPSupervisedLightningModule
+from medrap.train.task import BinaryClassificationTask, SupervisedLoss, SupervisedTask
 from medrap.types import ModelOutput, QueryOutput, RetrieverOutput
 
 
@@ -512,7 +512,7 @@ def test_end_of_fit_val_auroc_callback_skips_when_single_class_targets() -> None
     from types import SimpleNamespace
     from unittest.mock import MagicMock
 
-    from medrap.callbacks import EndOfFitValAUROCCallback
+    from medrap.train.callbacks import EndOfFitValAUROCCallback
     from medrap.types import ModelOutput
 
     def _auroc_batch(y: bool) -> MEDSTorchBatch:

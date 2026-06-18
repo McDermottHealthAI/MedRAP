@@ -5,11 +5,11 @@ from meds_torchdata import MEDSTorchBatch
 from torch import nn
 
 from medrap.configs import instantiate_datamodule, instantiate_model, instantiate_training_module
-from medrap.lightning_module import MedRAPSupervisedLightningModule
-from medrap.model import RetrievalAugmentedModel
-from medrap.preparation import OrderedFieldDocumentRenderer, prepare_retrieval_dataset
-from medrap.retrievers import HFDatasetRetriever
-from medrap.task import SupervisedTask
+from medrap.model.model import RetrievalAugmentedModel
+from medrap.model.retrievers import HFDatasetRetriever
+from medrap.prepare_retrieval.preparation import OrderedFieldDocumentRenderer, prepare_retrieval_dataset
+from medrap.train.lightning_module import MedRAPSupervisedLightningModule
+from medrap.train.task import SupervisedTask
 
 
 def _example_batch() -> MEDSTorchBatch:

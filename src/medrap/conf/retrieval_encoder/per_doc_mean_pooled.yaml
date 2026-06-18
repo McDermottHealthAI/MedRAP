@@ -1,4 +1,4 @@
-_target_: medrap.retrieval_encoder.PerDocMeanPooledRetrievalEncoder
+_target_: medrap.model.retrieval_encoder.PerDocMeanPooledRetrievalEncoder
 vocab_size: ???
 embedding_dim: ???
 pretrained_model_name_or_path: null

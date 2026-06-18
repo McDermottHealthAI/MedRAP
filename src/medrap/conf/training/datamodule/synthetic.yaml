@@ -1,4 +1,4 @@
-_target_: medrap.datamodule.SyntheticSupervisedDatamodule
+_target_: medrap.train.datamodule.SyntheticSupervisedDatamodule
 
 train_batch:
   _target_: meds_torchdata.MEDSTorchBatch

@@ -1,2 +1,2 @@
-_target_: medrap.task.MarginalizedBinaryClassificationTask
+_target_: medrap.train.task.MarginalizedBinaryClassificationTask
 output_dim: 2

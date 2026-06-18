@@ -29,7 +29,7 @@ jobs:
         run: >
           uv run pytest -v
           --ignore=docs
-          --ignore=src/medrap/preparation.py
+          --ignore=src/medrap/prepare_retrieval/preparation.py
           --ignore=tests/test_preparation.py
           --cov=src
           --cov-report=
@@ -41,7 +41,7 @@ jobs:
       - name: Run prep tests
         run: >
           uv run pytest -v
-          src/medrap/preparation.py
+          src/medrap/prepare_retrieval/preparation.py
           tests/test_preparation.py
           --cov=src
           --cov-append

@@ -12,7 +12,7 @@ from lightning.pytorch.loggers import WandbLogger
 from torch import Tensor
 from torchmetrics.functional.classification import binary_auroc
 
-from .types import ModelOutput
+from ..types import ModelOutput
 
 
 def _positive_class_probs(logits: Tensor) -> Tensor:
@@ -97,7 +97,7 @@ class EndOfFitValAUROCCallback(Callback):
         >>> from torch.utils.data import DataLoader
         >>> import lightning.pytorch as pl
         >>> from meds_torchdata import MEDSTorchBatch
-        >>> from medrap.task import BinaryClassificationTask
+        >>> from medrap.train.task import BinaryClassificationTask
         >>> from medrap.types import ModelOutput
         >>> def _auroc_batch(y: bool) -> MEDSTorchBatch:
         ...     b = MEDSTorchBatch(
@@ -149,8 +149,8 @@ class EndOfFitValAUROCCallback(Callback):
         >>> from torch.utils.data import DataLoader
         >>> import lightning.pytorch as pl
         >>> from meds_torchdata import MEDSTorchBatch
-        >>> from medrap.lightning_module import MedRAPSupervisedLightningModule
-        >>> from medrap.task import BinaryClassificationTask
+        >>> from medrap.train.lightning_module import MedRAPSupervisedLightningModule
+        >>> from medrap.train.task import BinaryClassificationTask
         >>> from medrap.types import ModelOutput
         >>> def _auroc_batch2(y: bool) -> MEDSTorchBatch:
         ...     b = MEDSTorchBatch(
@@ -306,7 +306,7 @@ class EndOfFitValAUROCCallback(Callback):
         ...     ModelOutput(logits=torch.tensor([[0.0]])),
         ...     ModelOutput(logits=torch.tensor([[1.0]])),
         ... ]
-        >>> with patch("medrap.callbacks.binary_auroc", side_effect=RuntimeError("fail")):
+        >>> with patch("medrap.train.callbacks.binary_auroc", side_effect=RuntimeError("fail")):
         ...     EndOfFitValAUROCCallback().on_fit_end(
         ...         SimpleNamespace(
         ...             sanity_checking=False,
@@ -333,7 +333,7 @@ class EndOfFitValAUROCCallback(Callback):
         ...     ModelOutput(logits=torch.tensor([[0.0]])),
         ...     ModelOutput(logits=torch.tensor([[1.0]])),
         ... ]
-        >>> with patch("medrap.callbacks.binary_auroc", return_value=torch.tensor(float("nan"))):
+        >>> with patch("medrap.train.callbacks.binary_auroc", return_value=torch.tensor(float("nan"))):
         ...     EndOfFitValAUROCCallback().on_fit_end(
         ...         SimpleNamespace(
         ...             sanity_checking=False,
@@ -348,7 +348,7 @@ class EndOfFitValAUROCCallback(Callback):
         ...     )
         >>> log_nan.log_metrics.called
         False
-        >>> import medrap.callbacks as _cb_mod
+        >>> import medrap.train.callbacks as _cb_mod
         >>> class _StubWB:
         ...     pass
         >>> _saved_wb = _cb_mod.WandbLogger

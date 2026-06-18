@@ -1,1 +1,1 @@
-_target_: medrap.pooling.MaskedMeanPooling
+_target_: medrap.model.pooling.MaskedMeanPooling

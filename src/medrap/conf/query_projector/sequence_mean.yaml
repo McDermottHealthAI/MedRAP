@@ -1,3 +1,3 @@
-_target_: medrap.query_projection.SequenceMeanQueryProjector
+_target_: medrap.model.query_projection.SequenceMeanQueryProjector
 in_dim: 1
 out_dim: 4

@@ -1,1 +1,1 @@
-_target_: medrap.retrieval_encoder.KeyEmbeddingRetrievalEncoder
+_target_: medrap.model.retrieval_encoder.KeyEmbeddingRetrievalEncoder

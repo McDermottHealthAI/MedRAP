@@ -9,6 +9,7 @@ from torch import Tensor, nn
 from torch.optim import Optimizer
 from transformers import get_cosine_schedule_with_warmup
 
+from ..types import ModelOutput
 from .metrics import binary_auroc_torch, multitask_auroc_torch, positive_class_probs
 from .retrieval_logging import model_diagnostic_scalars
 from .task import (
@@ -17,7 +18,6 @@ from .task import (
     SupervisedLoss,
     SupervisedTask,
 )
-from .types import ModelOutput
 
 
 class MedRAPSupervisedLightningModule(lightning.LightningModule):
@@ -311,14 +311,14 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
             Dict of CPU tensors with retrieval artifacts for this batch.
 
         Examples:
-            >>> from medrap.encoders import MEDSCodeEncoder
-            >>> from medrap.fusion import ReplaceFusion
-            >>> from medrap.heads import LinearHead
-            >>> from medrap.pooling import IdentityPooling
-            >>> from medrap.query_projection import SequenceMeanQueryProjector
-            >>> from medrap.retrieval_encoder import MeanPooledRetrievalEncoder
-            >>> from medrap.retrievers import InMemoryRetriever
-            >>> from medrap.model import RetrievalAugmentedModel
+            >>> from medrap.model.encoders import MEDSCodeEncoder
+            >>> from medrap.model.fusion import ReplaceFusion
+            >>> from medrap.model.heads import LinearHead
+            >>> from medrap.model.pooling import IdentityPooling
+            >>> from medrap.model.query_projection import SequenceMeanQueryProjector
+            >>> from medrap.model.retrieval_encoder import MeanPooledRetrievalEncoder
+            >>> from medrap.model.retrievers import InMemoryRetriever
+            >>> from medrap.model.model import RetrievalAugmentedModel
             >>> model = RetrievalAugmentedModel(
             ...     encoder=MEDSCodeEncoder(),
             ...     query_projector=SequenceMeanQueryProjector(in_dim=1, out_dim=4),
@@ -435,8 +435,8 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
             ... }
             >>> id(task.scale) in optimized_params
             True
-            >>> from medrap.losses import MarginalizedRetrievalSupervisedLoss
-            >>> from medrap.task import MarginalizedBinaryClassificationTask
+            >>> from medrap.train.losses import MarginalizedRetrievalSupervisedLoss
+            >>> from medrap.train.task import MarginalizedBinaryClassificationTask
             >>> class _MargModel(nn.Module):
             ...     def forward(self, batch: MEDSTorchBatch) -> ModelOutput:
             ...         return ModelOutput(

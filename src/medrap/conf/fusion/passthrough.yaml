@@ -1,1 +1,1 @@
-_target_: medrap.fusion.PassthroughFusion
+_target_: medrap.model.fusion.PassthroughFusion

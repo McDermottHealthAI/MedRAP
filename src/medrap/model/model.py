@@ -4,9 +4,9 @@ from meds_torchdata import MEDSTorchBatch
 from torch import Tensor, nn
 from torch.nn import functional as nn_functional
 
+from ..types import FusionInput, ModelOutput
 from .heads import LinearHead
 from .retrieval_scoring import differentiable_retrieval_scores
-from .types import FusionInput, ModelOutput
 
 
 def _marginal_class_probabilities(per_doc_logits: Tensor, doc_scores: Tensor) -> Tensor:
@@ -79,14 +79,14 @@ class RetrievalAugmentedModel(nn.Module):
 
         Examples:
             >>> import torch
-            >>> from medrap.encoders import MEDSCodeEncoder
-            >>> from medrap.fusion import ReplaceFusion
-            >>> from medrap.heads import LinearHead
+            >>> from medrap.model.encoders import MEDSCodeEncoder
+            >>> from medrap.model.fusion import ReplaceFusion
+            >>> from medrap.model.heads import LinearHead
             >>> from meds_torchdata import MEDSTorchBatch
-            >>> from medrap.pooling import IdentityPooling
-            >>> from medrap.query_projection import SequenceMeanQueryProjector
-            >>> from medrap.retrieval_encoder import MeanPooledRetrievalEncoder
-            >>> from medrap.retrievers import InMemoryRetriever
+            >>> from medrap.model.pooling import IdentityPooling
+            >>> from medrap.model.query_projection import SequenceMeanQueryProjector
+            >>> from medrap.model.retrieval_encoder import MeanPooledRetrievalEncoder
+            >>> from medrap.model.retrievers import InMemoryRetriever
             >>> model = RetrievalAugmentedModel(
             ...     encoder=MEDSCodeEncoder(),
             ...     query_projector=SequenceMeanQueryProjector(in_dim=1, out_dim=4),
@@ -116,14 +116,14 @@ class RetrievalAugmentedModel(nn.Module):
 
             >>> import torch
             >>> from meds_torchdata import MEDSTorchBatch
-            >>> from medrap.encoders import MEDSCodeEncoder
-            >>> from medrap.fusion import ReplaceFusion
-            >>> from medrap.heads import LinearHead
-            >>> from medrap.pooling import IdentityPooling
-            >>> from medrap.query_projection import SequenceMeanQueryProjector
-            >>> from medrap.retrieval_encoder import KeyEmbeddingRetrievalEncoder
-            >>> from medrap.retrievers import InMemoryRetriever
-            >>> from medrap.losses import MarginalizedRetrievalSupervisedLoss
+            >>> from medrap.model.encoders import MEDSCodeEncoder
+            >>> from medrap.model.fusion import ReplaceFusion
+            >>> from medrap.model.heads import LinearHead
+            >>> from medrap.model.pooling import IdentityPooling
+            >>> from medrap.model.query_projection import SequenceMeanQueryProjector
+            >>> from medrap.model.retrieval_encoder import KeyEmbeddingRetrievalEncoder
+            >>> from medrap.model.retrievers import InMemoryRetriever
+            >>> from medrap.train.losses import MarginalizedRetrievalSupervisedLoss
             >>> m = RetrievalAugmentedModel(
             ...     encoder=MEDSCodeEncoder(),
             ...     query_projector=SequenceMeanQueryProjector(in_dim=1, out_dim=4),
@@ -199,14 +199,14 @@ class RetrievalAugmentedModel(nn.Module):
             ValueError: marginalized_retrieval requires a LinearHead...
             >>> class _NoKeyRet(nn.Module):
             ...     def forward(self, _q):
-            ...         from medrap.types import RetrieverOutput
+            ...         from medrap.types import RetrieverOutput  # types stays at top level
             ...
             ...         return RetrieverOutput(
             ...             doc_tokens=torch.zeros(2, 1, 2, 2, dtype=torch.long),
             ...             doc_attention_mask=torch.ones(2, 1, 2, 2, dtype=torch.bool),
             ...             doc_key_embeddings=None,
             ...         )
-            >>> from medrap.retrieval_encoder import MeanPooledRetrievalEncoder
+            >>> from medrap.model.retrieval_encoder import MeanPooledRetrievalEncoder
             >>> m_no_key = RetrievalAugmentedModel(
             ...     encoder=MEDSCodeEncoder(),
             ...     query_projector=SequenceMeanQueryProjector(in_dim=1, out_dim=4),
@@ -223,7 +223,7 @@ class RetrievalAugmentedModel(nn.Module):
             ValueError: ...doc_key_embeddings...
             >>> class _BadFus(nn.Module):
             ...     def forward(self, fusion_input):
-            ...         from medrap.types import FusionOutput
+            ...         from medrap.types import FusionOutput  # types stays at top level
             ...
             ...         return FusionOutput(fused_state=torch.zeros(2, 4))
             >>> m_bad_fus = RetrievalAugmentedModel(
@@ -249,7 +249,7 @@ class RetrievalAugmentedModel(nn.Module):
             ...
             ValueError: ...fused_state...
             >>> with patch(
-            ...     "medrap.model.differentiable_retrieval_scores", lambda *a, **k: torch.zeros(2, 99)
+            ...     "medrap.model.model.differentiable_retrieval_scores", lambda *a, **k: torch.zeros(2, 99)
             ... ):
             ...     m(mb)  # doctest: +ELLIPSIS
             Traceback (most recent call last):

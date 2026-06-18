@@ -19,28 +19,32 @@ from meds_torchdata.extensions.lightning_datamodule import Datamodule as MEDSLig
 from meds_torchdata.types import SubsequenceSamplingStrategy
 from omegaconf import MISSING, OmegaConf
 
-from .datamodule import SyntheticSupervisedDatamodule
-from .encoders import MEDSCodeEncoder, TabularEncoder, TokenEmbeddingEncoder
-from .fusion import ConcatFusion, ReplaceFusion
-from .heads import LinearHead
-from .lightning_module import MedRAPSupervisedLightningModule
-from .losses import MarginalizedRetrievalSupervisedLoss
-from .model import RetrievalAugmentedModel
-from .pooling import IdentityPooling, MaskedMeanPooling
-from .preparation import (
-    OrderedFieldDocumentRenderer,
-    prepare_retrieval_dataset,
-)
-from .query_projection import LinearQueryProjector, SequenceMeanQueryProjector
-from .retrieval_encoder import (
+from .model.encoders import MEDSCodeEncoder, TabularEncoder, TokenEmbeddingEncoder
+from .model.fusion import ConcatFusion, ReplaceFusion
+from .model.heads import LinearHead
+from .model.model import RetrievalAugmentedModel
+from .model.pooling import IdentityPooling, MaskedMeanPooling
+from .model.query_projection import LinearQueryProjector, SequenceMeanQueryProjector
+from .model.retrieval_encoder import (
     KeyEmbeddingRetrievalEncoder,
     LinearProjectionRetrievalEncoder,
     MeanPooledRetrievalEncoder,
     PerDocMeanPooledRetrievalEncoder,
     TokenFeatureRetrievalEncoder,
 )
-from .retrievers import InMemoryRetriever, load_hf_dataset_retriever
-from .task import BinaryClassificationLoss, BinaryClassificationTask, MarginalizedBinaryClassificationTask
+from .model.retrievers import InMemoryRetriever, load_hf_dataset_retriever
+from .prepare_retrieval.preparation import (
+    OrderedFieldDocumentRenderer,
+    prepare_retrieval_dataset,
+)
+from .train.datamodule import SyntheticSupervisedDatamodule
+from .train.lightning_module import MedRAPSupervisedLightningModule
+from .train.losses import MarginalizedRetrievalSupervisedLoss
+from .train.task import (
+    BinaryClassificationLoss,
+    BinaryClassificationTask,
+    MarginalizedBinaryClassificationTask,
+)
 
 ComponentConfig = Any
 builds_any = cast("Any", builds)

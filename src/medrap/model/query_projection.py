@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 
 from torch import Tensor, nn
 
-from .types import QueryOutput
+from ..types import QueryOutput
 
 
 class QueryProjector(nn.Module, ABC):

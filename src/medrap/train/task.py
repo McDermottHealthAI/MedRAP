@@ -7,7 +7,7 @@ import torch
 from meds_torchdata import MEDSTorchBatch
 from torch import Tensor, nn
 
-from .types import ModelOutput
+from ..types import ModelOutput
 
 type TaskTargets = Tensor | dict[str, Tensor]
 
