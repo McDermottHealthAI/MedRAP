@@ -1,3 +1,5 @@
+import sys
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -8,7 +10,7 @@ from omegaconf import OmegaConf
 from omegaconf.errors import MissingMandatoryValue
 
 import medrap.cli as cli
-from medrap.cli import eval_main, main, prepare_retrieval_dataset_main, train_main
+from medrap.cli import eval_main, prepare_retrieval_dataset_main, train_main
 
 TINY_SENTENCE_TRANSFORMER_MODEL = "sentence-transformers-testing/stsb-bert-tiny-safetensors"
 
@@ -23,26 +25,49 @@ def _assert_cli_failure(
         assert expected_message in str(exc_info.value)
 
 
-def test_medrap_train_cli_runs_with_overrides(tmp_path) -> None:
+def _run_hydra_entrypoint(entrypoint, prog: str, overrides: list[str]) -> int:
+    old_argv = sys.argv
+    try:
+        sys.argv = [prog, *overrides]
+        result = entrypoint()
+        return int(result) if isinstance(result, int) else 0
+    finally:
+        sys.argv = old_argv
+
+
+def _run_train_cli(overrides: list[str]) -> int:
+    return _run_hydra_entrypoint(train_main, "medrap-train", overrides)
+
+
+def _run_eval_cli(overrides: list[str]) -> int:
+    return _run_hydra_entrypoint(eval_main, "medrap-eval", overrides)
+
+
+def _run_prepare_retrieval_dataset_cli(overrides: list[str]) -> int:
+    return _run_hydra_entrypoint(
+        prepare_retrieval_dataset_main, "medrap-prepare-retrieval-dataset", overrides
+    )
+
+
+def test_medrap_train_entrypoint_runs_with_overrides(tmp_path) -> None:
     output_dir = tmp_path / "train"
 
-    assert main(["train", f"output_dir={output_dir}", "training/datamodule=synthetic"]) == 0
+    assert _run_train_cli([f"output_dir={output_dir}", "training/datamodule=synthetic"]) == 0
     assert (output_dir / "config.yaml").exists()
     assert (output_dir / "resolved_config.yaml").exists()
     assert (output_dir / "checkpoints" / "last.ckpt").exists()
     assert (output_dir / "best_model.ckpt").exists()
 
 
-def test_medrap_eval_cli_runs_with_overrides(tmp_path) -> None:
+def test_medrap_eval_entrypoint_runs_with_overrides(tmp_path) -> None:
     output_dir = tmp_path / "train"
     eval_dir = tmp_path / "eval"
     checkpoint_path = output_dir / "checkpoints" / "last.ckpt"
-    assert train_main([f"output_dir={output_dir}", "training/datamodule=synthetic"]) == 0
+    assert _run_train_cli([f"output_dir={output_dir}", "training/datamodule=synthetic"]) == 0
 
     assert (
-        main(
+        _run_eval_cli(
             [
-                "eval",
                 f"output_dir={eval_dir}",
                 f"checkpoint_path={checkpoint_path}",
                 "training/datamodule=synthetic",
@@ -54,24 +79,14 @@ def test_medrap_eval_cli_runs_with_overrides(tmp_path) -> None:
     assert (eval_dir / "resolved_config.yaml").exists()
 
 
-def test_train_entrypoint_runs_with_hydra_overrides(tmp_path) -> None:
-    output_dir = tmp_path / "train"
+def test_flat_entrypoint_scripts_are_registered() -> None:
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text())
+    medrap_scripts = pyproject["project"]["scripts"]
 
-    assert train_main([f"output_dir={output_dir}", "training/datamodule=synthetic"]) == 0
-    assert (output_dir / "checkpoints" / "last.ckpt").exists()
-
-
-def test_medrap_prepare_retrieval_dataset_dispatches(monkeypatch) -> None:
-    called: list[list[str]] = []
-
-    def _fake_main(overrides: list[str]) -> int:
-        called.append(overrides)
-        return 0
-
-    monkeypatch.setattr("medrap.cli.prepare_retrieval_dataset_main", _fake_main)
-
-    assert main(["prepare-retrieval-dataset", "prep.output.output_dir=tmp"]) == 0
-    assert called == [["prep.output.output_dir=tmp"]]
+    assert "medrap" not in medrap_scripts
+    assert medrap_scripts["medrap-train"] == "medrap.cli:train_main"
+    assert medrap_scripts["medrap-eval"] == "medrap.cli:eval_main"
+    assert medrap_scripts["medrap-prepare-retrieval-dataset"] == "medrap.cli:prepare_retrieval_dataset_main"
 
 
 def test_prepare_retrieval_dataset_entrypoint_runs_with_hydra_overrides(monkeypatch, tmp_path) -> None:
@@ -94,7 +109,7 @@ def test_prepare_retrieval_dataset_entrypoint_runs_with_hydra_overrides(monkeypa
     output_dir = tmp_path / "prepared"
 
     assert (
-        prepare_retrieval_dataset_main(
+        _run_prepare_retrieval_dataset_cli(
             [
                 "prep/source=load_from_disk",
                 f"prep.source.dataset_path={source_dir}",
@@ -119,29 +134,9 @@ def test_prepare_retrieval_dataset_entrypoint_runs_with_hydra_overrides(monkeypa
     }
 
 
-def test_eval_entrypoint_runs_with_hydra_overrides(tmp_path) -> None:
-    output_dir = tmp_path / "train"
-    eval_dir = tmp_path / "eval"
-    checkpoint_path = output_dir / "checkpoints" / "last.ckpt"
-    assert train_main([f"output_dir={output_dir}", "training/datamodule=synthetic"]) == 0
-
-    assert (
-        eval_main(
-            [
-                f"output_dir={eval_dir}",
-                f"checkpoint_path={checkpoint_path}",
-                "training/datamodule=synthetic",
-            ]
-        )
-        == 0
-    )
-    assert (eval_dir / "config.yaml").exists()
-    assert (eval_dir / "resolved_config.yaml").exists()
-
-
 def test_eval_entrypoint_requires_checkpoint_path(tmp_path) -> None:
     _assert_cli_failure(
-        lambda: eval_main([f"output_dir={tmp_path / 'eval'}", "training/datamodule=synthetic"]),
+        lambda: _run_eval_cli([f"output_dir={tmp_path / 'eval'}", "training/datamodule=synthetic"]),
         allowed_exceptions=(SystemExit, MissingMandatoryValue, ValueError),
         expected_message="checkpoint_path",
     )
@@ -167,10 +162,10 @@ def test_prepare_train_run_overwrite_removes_stale_files(tmp_path: Path) -> None
 
 def test_train_entrypoint_refuses_existing_output_dir_without_flags(tmp_path) -> None:
     output_dir = tmp_path / "train"
-    assert train_main([f"output_dir={output_dir}", "training/datamodule=synthetic"]) == 0
+    assert _run_train_cli([f"output_dir={output_dir}", "training/datamodule=synthetic"]) == 0
 
     _assert_cli_failure(
-        lambda: train_main([f"output_dir={output_dir}", "training/datamodule=synthetic"]),
+        lambda: _run_train_cli([f"output_dir={output_dir}", "training/datamodule=synthetic"]),
         allowed_exceptions=(SystemExit, FileExistsError),
         expected_message="already contains a saved MedRAP run",
     )
@@ -178,19 +173,21 @@ def test_train_entrypoint_refuses_existing_output_dir_without_flags(tmp_path) ->
 
 def test_train_entrypoint_supports_resume_from_output_dir(tmp_path) -> None:
     output_dir = tmp_path / "train"
-    assert train_main([f"output_dir={output_dir}", "training/datamodule=synthetic"]) == 0
+    assert _run_train_cli([f"output_dir={output_dir}", "training/datamodule=synthetic"]) == 0
 
-    assert train_main([f"output_dir={output_dir}", "training/datamodule=synthetic", "do_resume=true"]) == 0
+    assert (
+        _run_train_cli([f"output_dir={output_dir}", "training/datamodule=synthetic", "do_resume=true"]) == 0
+    )
 
 
 def test_eval_entrypoint_supports_test_mode(tmp_path) -> None:
     output_dir = tmp_path / "train"
     eval_dir = tmp_path / "eval"
     checkpoint_path = output_dir / "checkpoints" / "last.ckpt"
-    assert train_main([f"output_dir={output_dir}", "training/datamodule=synthetic"]) == 0
+    assert _run_train_cli([f"output_dir={output_dir}", "training/datamodule=synthetic"]) == 0
 
     assert (
-        eval_main(
+        _run_eval_cli(
             [
                 f"output_dir={eval_dir}",
                 f"checkpoint_path={checkpoint_path}",
@@ -206,9 +203,9 @@ def test_eval_entrypoint_refuses_existing_output_dir(tmp_path) -> None:
     output_dir = tmp_path / "train"
     eval_dir = tmp_path / "eval"
     checkpoint_path = output_dir / "checkpoints" / "last.ckpt"
-    assert train_main([f"output_dir={output_dir}", "training/datamodule=synthetic"]) == 0
+    assert _run_train_cli([f"output_dir={output_dir}", "training/datamodule=synthetic"]) == 0
     assert (
-        eval_main(
+        _run_eval_cli(
             [
                 f"output_dir={eval_dir}",
                 f"checkpoint_path={checkpoint_path}",
@@ -219,7 +216,7 @@ def test_eval_entrypoint_refuses_existing_output_dir(tmp_path) -> None:
     )
 
     _assert_cli_failure(
-        lambda: eval_main(
+        lambda: _run_eval_cli(
             [
                 f"output_dir={eval_dir}",
                 f"checkpoint_path={checkpoint_path}",
