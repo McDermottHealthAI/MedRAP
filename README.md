@@ -38,7 +38,8 @@ Implemented stage components:
     `MeanPooledRetrievalEncoder`, `PerDocMeanPooledRetrievalEncoder`,
     `LinearProjectionRetrievalEncoder`, `KeyEmbeddingRetrievalEncoder`.
 - **Fusion** (`fusion.py`): `ReplaceFusion`, `ConcatFusion`, `PassthroughFusion`
-    (retrieval-ablation baseline), `CrossAttentionFusion`.
+    (retrieval-ablation baseline), `CrossAttentionFusion`, `PerDocCrossAttentionFusion`
+    (per-document cross-attention; required for `marginalized_retrieval` with attention-based fusion).
 - **Pooling** (`pooling.py`): `IdentityPooling`, `MaskedMeanPooling`.
 - **Heads** (`heads.py`): `LinearHead`.
 - **Tasks & losses** (`task.py`, `losses.py`): binary, marginalized-binary, and
@@ -246,7 +247,7 @@ Hydra component groups live in `src/medrap/conf/`. Pipeline-stage groups:
 - `query_projector/` — `linear`, `sequence_mean`, `sequence_mean_1024`
 - `retriever/` — `in_memory`, `in_memory_sanity`, `in_memory_from_pt`, `hf_dataset`
 - `retrieval_encoder/` — `token_feature`, `mean_pooled`, `per_doc_mean_pooled`, `linear_projection`, `key_embedding`
-- `fusion/` — `replace`, `concat`, `passthrough`, `cross_attention_medium`
+- `fusion/` — `replace`, `concat`, `passthrough`, `cross_attention_medium`, `cross_attention_perdoc_medium`
 - `pooling/` — `identity`, `masked_mean`
 - `head/` — `linear`, `linear_1024_to_2`
 
