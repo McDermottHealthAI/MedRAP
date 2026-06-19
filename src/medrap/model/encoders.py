@@ -4,13 +4,17 @@ These components convert MEDS batch inputs into dense patient representation use
 downstream fusion.
 """
 
+import logging
 from abc import ABC, abstractmethod
 
 import torch
 from meds_torchdata import MEDSTorchBatch
 from torch import Tensor, nn
+from torch.nn import functional as nn_functional
 
 from ..types import EncoderOutput
+
+log = logging.getLogger(__name__)
 
 
 def _apply_rope(x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
@@ -66,12 +70,41 @@ def _time_delta_rope_freqs(
         (2, 3, 1, 8)
         >>> tuple(sin.shape)
         (2, 3, 1, 8)
-        >>> # padding positions produce zero cumulative time → cos==1, sin==0 at t=0
+
+        At ``t=0`` the rotation is the identity (``cos=1``, ``sin=0``):
+
         >>> mask2 = torch.tensor([[False, False, True]])
         >>> cos2, sin2 = _time_delta_rope_freqs(torch.zeros(1, 3), 4, mask2)
         >>> torch.allclose(cos2[0, 0], torch.ones(1, 4))
         True
+        >>> torch.allclose(sin2[0, 0], torch.zeros(1, 4), atol=1e-6)
+        True
+
+        A padding token (mask=True) does not advance the time axis for the
+        positions that follow it:
+
+        >>> padded = torch.tensor([[0.0, 1.0, 5.0]])
+        >>> pad_mask = torch.tensor([[False, False, True]])
+        >>> cos_padded, _ = _time_delta_rope_freqs(padded, 4, pad_mask)
+        >>> cos_no_pad, _ = _time_delta_rope_freqs(
+        ...     torch.tensor([[0.0, 1.0, 0.0]]), 4, torch.zeros(1, 3, dtype=torch.bool)
+        ... )
+        >>> torch.allclose(cos_padded[:, :2], cos_no_pad[:, :2])
+        True
+
+        Negative time deltas (a data-quality issue) are clamped to 0 rather
+        than raising, matching a zero-gap event at that position:
+
+        >>> negative = torch.tensor([[0.0, -1.0, 2.0]])
+        >>> cos_neg, _ = _time_delta_rope_freqs(negative, 4, torch.zeros(1, 3, dtype=torch.bool))
+        >>> zero_gap, _ = _time_delta_rope_freqs(
+        ...     torch.tensor([[0.0, 0.0, 2.0]]), 4, torch.zeros(1, 3, dtype=torch.bool)
+        ... )
+        >>> torch.allclose(cos_neg, zero_gap)
+        True
     """
+    if (time_delta_days < 0).any():
+        log.debug("_time_delta_rope_freqs received negative time deltas; clamping to 0.")
     td = time_delta_days.float().masked_fill(padding_mask, 0.0)
     t = torch.cumsum(torch.log1p(td.clamp(min=0)), dim=1)  # (B, S)
     freqs = 10000.0 ** (
@@ -90,12 +123,11 @@ class _TimeDeltaRoPEAttention(nn.Module):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = d_model // num_heads
-        self.scale = self.head_dim**-0.5
+        self.dropout_p = float(dropout)
         self.q_proj = nn.Linear(d_model, d_model)
         self.k_proj = nn.Linear(d_model, d_model)
         self.v_proj = nn.Linear(d_model, d_model)
         self.out_proj = nn.Linear(d_model, d_model)
-        self.drop = nn.Dropout(dropout)
 
     def forward(
         self,
@@ -118,13 +150,16 @@ class _TimeDeltaRoPEAttention(nn.Module):
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
 
-        attn = (q @ k.transpose(-2, -1)) * self.scale  # (B, H, S, S)
+        attn_mask: Tensor | None = None
         if key_padding_mask is not None:
-            # True = padding → mask out from attending
-            attn = attn.masked_fill(key_padding_mask.unsqueeze(1).unsqueeze(2), float("-inf"))
-        attn = self.drop(attn.softmax(dim=-1))
+            # scaled_dot_product_attention's bool mask convention is the opposite of
+            # key_padding_mask: True means "attend", not "this is padding".
+            attn_mask = (~key_padding_mask).unsqueeze(1).unsqueeze(2)  # (B, 1, 1, S)
 
-        out = (attn @ v).transpose(1, 2).reshape(batch_size, seq_len, n_heads * head_dim)
+        out = nn_functional.scaled_dot_product_attention(
+            q, k, v, attn_mask=attn_mask, dropout_p=self.dropout_p if self.training else 0.0
+        )
+        out = out.transpose(1, 2).reshape(batch_size, seq_len, n_heads * head_dim)
         return self.out_proj(out)
 
 
@@ -226,7 +261,8 @@ class TokenEmbeddingEncoder(PatientEncoder):
 
     This is a minimal learned sequence encoder for MEDS-style batches. It reads
     ``batch.code`` from a ``MEDSTorchBatch`` and maps each code id to an
-    embedding vector, producing a dense patient representation.
+    embedding vector, producing a dense patient representation. The embedding
+    table uses ``padding_idx=0`` so padding tokens (``code == 0``) embed to zero.
 
     Args:
         vocab_size: Size of the EHR code vocabulary.
@@ -237,7 +273,7 @@ class TokenEmbeddingEncoder(PatientEncoder):
         super().__init__()
         self.vocab_size = int(vocab_size)
         self.embedding_dim = int(embedding_dim)
-        self.embedding = nn.Embedding(self.vocab_size, self.embedding_dim)
+        self.embedding = nn.Embedding(self.vocab_size, self.embedding_dim, padding_idx=0)
 
     def encode(self, batch: MEDSTorchBatch) -> EncoderOutput:
         """Embed ``batch.code`` into a sequence hidden state.
@@ -263,57 +299,13 @@ class TokenEmbeddingEncoder(PatientEncoder):
             (2, 3, 2)
             >>> out.patient_state.dtype
             torch.float32
+
+            Padding (``code == 0``) embeds to zero:
+
+            >>> bool((out.patient_state[0, 2] == 0).all())
+            True
         """
         return EncoderOutput(patient_state=self.embedding(batch.code.long()))
-
-
-class TabularEncoder(PatientEncoder):
-    """Tabular encoder that pools a code sequence into a single patient vector.
-
-    Embeds ``batch.code`` via a learned embedding table and mean-pools across the
-    sequence dimension to produce a ``(B, 1, D_ehr)`` patient representation.
-
-    Args:
-        vocab_size: Size of the EHR code vocabulary.
-        embedding_dim: Output hidden size ``D_ehr``.
-    """
-
-    def __init__(self, *, vocab_size: int = 1024, embedding_dim: int = 4) -> None:
-        super().__init__()
-        self.vocab_size = int(vocab_size)
-        self.embedding_dim = int(embedding_dim)
-        self.embedding = nn.Embedding(self.vocab_size, self.embedding_dim)
-
-    def encode(self, batch: MEDSTorchBatch) -> EncoderOutput:
-        """Embed and mean-pool ``batch.code`` into a tabular patient state.
-
-        Args:
-            batch: A ``MEDSTorchBatch`` containing a ``code`` field of shape
-                ``(B, S_ehr)``.
-
-        Returns:
-            An ``EncoderOutput`` where ``patient_state`` has shape
-            ``(B, 1, D_ehr)``.
-
-        Examples:
-            >>> encoder = TabularEncoder(vocab_size=8, embedding_dim=2)
-            >>> batch = MEDSTorchBatch(
-            ...     code=torch.LongTensor([[1, 2, 0], [3, 4, 5]]),
-            ...     numeric_value=torch.zeros(2, 3),
-            ...     numeric_value_mask=torch.zeros(2, 3, dtype=torch.bool),
-            ...     time_delta_days=torch.zeros(2, 3),
-            ... )
-            >>> out = encoder.encode(batch)
-            >>> tuple(out.patient_state.shape)
-            (2, 1, 2)
-            >>> out.patient_state.dtype
-            torch.float32
-            >>> tuple(encoder(batch).patient_state.shape)
-            (2, 1, 2)
-        """
-        embedded = self.embedding(batch.code.long())  # (B, S_ehr, D_ehr)
-        pooled = embedded.mean(dim=1, keepdim=True)  # (B, 1, D_ehr)
-        return EncoderOutput(patient_state=pooled)
 
 
 class TimeDeltaRoPEPatientEncoder(PatientEncoder):
@@ -333,6 +325,12 @@ class TimeDeltaRoPEPatientEncoder(PatientEncoder):
         num_layers: Number of stacked transformer layers.
         ff_dim: Inner size of the position-wise feed-forward network.
         dropout: Dropout probability applied inside attention and FFN.
+
+    Examples:
+        >>> TimeDeltaRoPEPatientEncoder(vocab_size=16, embedding_dim=9, num_heads=4)
+        Traceback (most recent call last):
+            ...
+        ValueError: embedding_dim=9 must be divisible by num_heads=4
     """
 
     def __init__(
@@ -366,7 +364,8 @@ class TimeDeltaRoPEPatientEncoder(PatientEncoder):
 
         Returns:
             An ``EncoderOutput`` where ``patient_state`` has shape
-            ``(B, S_ehr, D_ehr)``.
+            ``(B, S_ehr, D_ehr)`` and ``attention_mask`` (``True`` = valid,
+            non-padding position) has shape ``(B, S_ehr)``.
 
         Examples:
             >>> import torch
@@ -387,6 +386,51 @@ class TimeDeltaRoPEPatientEncoder(PatientEncoder):
             torch.float32
             >>> tuple(encoder(batch).patient_state.shape)
             (2, 4, 8)
+            >>> out.attention_mask.tolist()
+            [[True, True, True, False], [True, True, False, False]]
+
+            A single-token batch is encoded without error:
+
+            >>> single = MEDSTorchBatch(
+            ...     code=torch.LongTensor([[1]]),
+            ...     numeric_value=torch.zeros(1, 1),
+            ...     numeric_value_mask=torch.zeros(1, 1, dtype=torch.bool),
+            ...     time_delta_days=torch.zeros(1, 1),
+            ... )
+            >>> encoder.encode(single).patient_state.shape
+            torch.Size([1, 1, 8])
+
+            An all-padding batch does not raise:
+
+            >>> all_padding = MEDSTorchBatch(
+            ...     code=torch.LongTensor([[0, 0, 0]]),
+            ...     numeric_value=torch.zeros(1, 3),
+            ...     numeric_value_mask=torch.zeros(1, 3, dtype=torch.bool),
+            ...     time_delta_days=torch.zeros(1, 3),
+            ... )
+            >>> encoder.encode(all_padding).patient_state.shape
+            torch.Size([1, 3, 8])
+
+            Trailing padding does not change the encoding of valid tokens:
+
+            >>> _ = encoder.eval()
+            >>> short = MEDSTorchBatch(
+            ...     code=torch.LongTensor([[1, 2, 3]]),
+            ...     numeric_value=torch.zeros(1, 3),
+            ...     numeric_value_mask=torch.zeros(1, 3, dtype=torch.bool),
+            ...     time_delta_days=torch.tensor([[0.0, 1.0, 2.0]]),
+            ... )
+            >>> padded = MEDSTorchBatch(
+            ...     code=torch.LongTensor([[1, 2, 3, 0, 0]]),
+            ...     numeric_value=torch.zeros(1, 5),
+            ...     numeric_value_mask=torch.zeros(1, 5, dtype=torch.bool),
+            ...     time_delta_days=torch.tensor([[0.0, 1.0, 2.0, 0.0, 0.0]]),
+            ... )
+            >>> with torch.no_grad():
+            ...     out_short = encoder.encode(short).patient_state[0, :3]
+            ...     out_padded = encoder.encode(padded).patient_state[0, :3]
+            >>> torch.allclose(out_short, out_padded, atol=1e-5)
+            True
         """
         code = batch.code.long()
         padding_mask = code == 0  # (B, S) True = padding
@@ -394,4 +438,4 @@ class TimeDeltaRoPEPatientEncoder(PatientEncoder):
         x = self.embedding(code)  # (B, S, D)
         for layer in self.layers:
             x = layer(x, rope_cos, rope_sin, padding_mask)
-        return EncoderOutput(patient_state=self.norm(x))
+        return EncoderOutput(patient_state=self.norm(x), attention_mask=~padding_mask)

@@ -70,8 +70,8 @@ def test_stage_forward_aliases_named_methods() -> None:
     assert torch.equal(enc_via_method.patient_state, enc_via_forward.patient_state)
 
     projector = SequenceMeanQueryProjector(in_dim=1, out_dim=4)
-    q_via_method = projector.project(enc_via_method.patient_state)
-    q_via_forward = projector(enc_via_method.patient_state)
+    q_via_method = projector.project(enc_via_method)
+    q_via_forward = projector(enc_via_method)
     assert torch.equal(q_via_method.query_embeddings, q_via_forward.query_embeddings)
     assert q_via_method.query_embeddings.shape == (2, 1, 4)
 

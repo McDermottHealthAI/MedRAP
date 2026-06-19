@@ -163,7 +163,7 @@ def test_predict_step_values_match_pipeline_stages() -> None:
 
     with torch.no_grad():
         ref_encoded = module.model.encoder(batch)
-        ref_query_out = module.model.query_projector(ref_encoded.patient_state)
+        ref_query_out = module.model.query_projector(ref_encoded)
         ref_retriever_out = module.model.retriever(ref_query_out.query_embeddings)
         ref_full = module.model(batch)
 
@@ -194,7 +194,7 @@ def test_predict_step_values_match_pipeline_stages_marginalized() -> None:
 
     with torch.no_grad():
         ref_encoded = module.model.encoder(batch)
-        ref_query_out = module.model.query_projector(ref_encoded.patient_state)
+        ref_query_out = module.model.query_projector(ref_encoded)
         ref_retriever_out = module.model.retriever(ref_query_out.query_embeddings)
         ref_retrieval_encoded = module.model.retrieval_encoder(ref_retriever_out)
         ref_fusion_out = module.model.fusion(
