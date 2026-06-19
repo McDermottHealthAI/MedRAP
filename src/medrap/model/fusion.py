@@ -499,6 +499,17 @@ class PerDocCrossAttentionFusion(FusionModule):
             >>> tuple(fusion.fuse(fi_masked).fused_state.shape)
             (2, 3, 8)
 
+            Wrong ``retrieval_memory`` rank raises ``ValueError``:
+
+            >>> bad_rank = FusionInput(
+            ...     patient_state=torch.randn(2, 10, 4),
+            ...     retrieval_memory=torch.randn(2, 3, 6),
+            ... )
+            >>> fusion.fuse(bad_rank)  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+            ...
+            ValueError: PerDocCrossAttentionFusion expects 5D retrieval_memory...
+
             ``R != 1`` raises ``ValueError``:
 
             >>> bad = FusionInput(
