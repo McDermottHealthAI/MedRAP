@@ -17,7 +17,14 @@ from .model.encoders import (
     TimeDeltaRoPEPatientEncoder,
     TokenEmbeddingEncoder,
 )
-from .model.fusion import ConcatFusion, CrossAttentionFusion, FusionModule, PassthroughFusion, ReplaceFusion
+from .model.fusion import (
+    ConcatFusion,
+    CrossAttentionFusion,
+    FusionModule,
+    PassthroughFusion,
+    PerDocCrossAttentionFusion,
+    ReplaceFusion,
+)
 from .model.heads import LinearHead, PredictionHead
 from .model.model import RetrievalAugmentedModel
 from .model.pooling import IdentityPooling, MaskedMeanPooling, PoolingModule
@@ -75,6 +82,7 @@ __all__ = [
     "OrderedFieldDocumentRenderer",
     "PassthroughFusion",
     "PatientEncoder",
+    "PerDocCrossAttentionFusion",
     "PerDocMeanPooledRetrievalEncoder",
     "PipelineConfig",
     "PoolingModule",
