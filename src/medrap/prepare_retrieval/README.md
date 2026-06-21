@@ -1,4 +1,4 @@
-# medrap.prepare_retrieval_dataset
+# medrap.prepare_retrieval
 
 Offline preparation for the `medrap prepare-retrieval-dataset` command. Takes a Hugging Face
 dataset of text documents, renders them into a fixed field order, tokenizes and embeds them
