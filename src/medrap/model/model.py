@@ -164,6 +164,36 @@ class RetrievalAugmentedModel(nn.Module):
             ... )
             tensor(True)
 
+        Marginalized retrieval with a fusion that attends to each document
+        independently (works at any K, unlike ``CrossAttentionFusion`` below):
+
+            >>> from medrap.model.fusion import PerDocCrossAttentionFusion
+            >>> from medrap.model.retrieval_encoder import TokenFeatureRetrievalEncoder
+            >>> m_perdoc = RetrievalAugmentedModel(
+            ...     encoder=MEDSCodeEncoder(),
+            ...     query_projector=SequenceMeanQueryProjector(in_dim=1, out_dim=4),
+            ...     retriever=InMemoryRetriever(
+            ...         doc_key_embeddings=torch.FloatTensor(
+            ...             [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]]
+            ...         ),
+            ...         doc_tokens=torch.LongTensor([[1, 2], [3, 4], [5, 6]]),
+            ...         doc_attention_mask=torch.BoolTensor([[True, True], [True, True], [True, True]]),
+            ...         k=2,
+            ...     ),
+            ...     retrieval_encoder=TokenFeatureRetrievalEncoder(vocab_size=8, embedding_dim=6),
+            ...     fusion=PerDocCrossAttentionFusion(
+            ...         d_model=4, num_heads=2, ff_dim=8, num_layers=1, d_in_patient=1, d_in_doc=6
+            ...     ),
+            ...     pooling=IdentityPooling(),
+            ...     head=LinearHead(in_dim=4, out_dim=2),
+            ...     marginalized_retrieval=True,
+            ... )
+            >>> out_perdoc = m_perdoc(mb)
+            >>> tuple(out_perdoc.logits.shape)
+            (2, 2)
+            >>> tuple(out_perdoc.metadata["per_doc_logits"].shape)
+            (2, 2, 2)
+
         Marginalized retrieval validation errors:
 
             >>> from unittest.mock import patch
@@ -197,6 +227,31 @@ class RetrievalAugmentedModel(nn.Module):
             Traceback (most recent call last):
             ...
             ValueError: marginalized_retrieval requires a LinearHead...
+            >>> from medrap.model.fusion import CrossAttentionFusion
+            >>> m_wrong_fusion = RetrievalAugmentedModel(
+            ...     encoder=MEDSCodeEncoder(),
+            ...     query_projector=SequenceMeanQueryProjector(in_dim=1, out_dim=4),
+            ...     retriever=InMemoryRetriever(
+            ...         doc_key_embeddings=torch.FloatTensor(
+            ...             [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]]
+            ...         ),
+            ...         doc_tokens=torch.LongTensor([[1, 2], [3, 4], [5, 6]]),
+            ...         doc_attention_mask=torch.BoolTensor([[True, True], [True, True], [True, True]]),
+            ...         k=2,
+            ...         similarity="dot",
+            ...     ),
+            ...     retrieval_encoder=TokenFeatureRetrievalEncoder(vocab_size=8, embedding_dim=4),
+            ...     fusion=CrossAttentionFusion(
+            ...         d_model=4, num_heads=2, ff_dim=8, num_layers=1, d_in_patient=1, d_in_doc=4
+            ...     ),
+            ...     pooling=IdentityPooling(),
+            ...     head=LinearHead(in_dim=4, out_dim=2),
+            ...     marginalized_retrieval=True,
+            ... )
+            >>> m_wrong_fusion(mb)  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+            ...
+            ValueError: ...fusion module...
             >>> class _NoKeyRet(nn.Module):
             ...     def forward(self, _q):
             ...         from medrap.types import RetrieverOutput  # types stays at top level
@@ -222,6 +277,8 @@ class RetrievalAugmentedModel(nn.Module):
             ...
             ValueError: ...doc_key_embeddings...
             >>> class _BadFus(nn.Module):
+            ...     produces_per_document_state = True
+            ...
             ...     def forward(self, fusion_input):
             ...         from medrap.types import FusionOutput  # types stays at top level
             ...
@@ -277,6 +334,13 @@ class RetrievalAugmentedModel(nn.Module):
         if self.marginalized_retrieval:
             if not isinstance(self.head, LinearHead):
                 raise ValueError("marginalized_retrieval requires a LinearHead for per-document logits")
+            if not getattr(self.fusion, "produces_per_document_state", False):
+                raise ValueError(
+                    "marginalized_retrieval requires a fusion module that produces per-document "
+                    f"fused_state (B, K, D); {type(self.fusion).__name__} does not "
+                    "(set produces_per_document_state=True on it, e.g. ReplaceFusion or "
+                    "PerDocCrossAttentionFusion)"
+                )
             if retrieval_out.doc_key_embeddings is None:
                 raise ValueError(
                     "marginalized_retrieval requires retriever outputs with doc_key_embeddings "

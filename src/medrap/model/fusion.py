@@ -19,7 +19,17 @@ class FusionModule(nn.Module, ABC):
     retrieval memory into a fused representation.  The ``forward`` method
     delegates to ``fuse`` so that the module can be used as a standard
     ``nn.Module``.
+
+    Attributes:
+        produces_per_document_state: Whether ``fused_state`` is indexed by
+            retrieved document (``(B, K, D)``) rather than by EHR sequence
+            position (``(B, S_ehr, D)``). :class:`~medrap.model.model.RetrievalAugmentedModel`
+            requires this to be ``True`` when ``marginalized_retrieval=True``,
+            since the marginalization sums over dim 1 expecting it to range
+            over retrieved documents.
     """
+
+    produces_per_document_state: bool = False
 
     @abstractmethod
     def fuse(self, fusion_input: FusionInput) -> FusionOutput:
@@ -48,6 +58,8 @@ class ReplaceFusion(FusionModule):
       ``(B, K, D_mem)`` when ``R = 1`` and the singleton doc-length dim is 1; otherwise
       ``(B, R * K * S_doc, D_mem)``.
     """
+
+    produces_per_document_state = True
 
     def __init__(self) -> None:
         super().__init__()
@@ -376,3 +388,165 @@ class CrossAttentionFusion(FusionModule):
             x = layer(x, kv, key_padding_mask)
 
         return FusionOutput(fused_state=self.out_norm(x))
+
+
+class PerDocCrossAttentionFusion(FusionModule):
+    """Cross-attention fusion that attends to each retrieved document independently.
+
+    Unlike :class:`CrossAttentionFusion` — which attends jointly to all ``K``
+    documents and produces ``(B, S_ehr, d_model)`` indexed by EHR sequence
+    position — this module expands the batch to ``B * K``, runs cross-attention
+    between each patient and exactly one of its retrieved documents, then
+    mean-pools over the patient sequence to produce one vector per document.
+
+    The resulting ``(B, K, d_model)`` output is indexed by retrieved document,
+    so it is compatible with REALM-style marginalized retrieval
+    (:attr:`~medrap.model.model.RetrievalAugmentedModel.marginalized_retrieval`)
+    at any value of ``K`` — unlike ``CrossAttentionFusion``, which marginalizes
+    over EHR sequence positions instead of documents when paired with that flag.
+
+    Only ``R = 1`` retrieval step is supported.
+
+    Args:
+        d_model: Internal model dimension after input projection.
+        num_heads: Number of attention heads (must divide ``d_model``).
+        ff_dim: Hidden dimension of the position-wise feed-forward network.
+        num_layers: Number of stacked cross-attention layers.
+        d_in_patient: Input dimension of ``patient_state`` (``D_ehr``).
+        d_in_doc: Input dimension of ``retrieval_memory`` token vectors (``D_mem``).
+        dropout: Dropout probability applied inside attention and FFN.
+
+    Input shapes (via :class:`~medrap.types.FusionInput`):
+        - ``patient_state``:    ``(B, S_ehr, D_ehr)``
+        - ``retrieval_memory``: ``(B, 1, K, S_doc, D_mem)``
+        - ``doc_attention_mask`` (optional): ``(B, 1, K, S_doc)`` bool, ``True`` = valid token
+
+    Output shape:
+        ``fused_state``: ``(B, K, d_model)``
+    """
+
+    produces_per_document_state = True
+
+    def __init__(
+        self,
+        *,
+        d_model: int,
+        num_heads: int,
+        ff_dim: int,
+        num_layers: int,
+        d_in_patient: int,
+        d_in_doc: int,
+        dropout: float = 0.0,
+    ) -> None:
+        super().__init__()
+        self.patient_proj = nn.Linear(d_in_patient, d_model)
+        self.layers = nn.ModuleList(
+            [_CrossAttentionLayer(d_model, d_in_doc, num_heads, ff_dim, dropout) for _ in range(num_layers)]
+        )
+        self.out_norm = nn.LayerNorm(d_model)
+
+    def fuse(self, fusion_input: FusionInput) -> FusionOutput:
+        """Enrich patient state by attending to each retrieved doc independently.
+
+        Args:
+            fusion_input: ``FusionInput`` with:
+
+                - ``patient_state`` shaped ``(B, S_ehr, D_ehr)``
+                - ``retrieval_memory`` shaped ``(B, 1, K, S_doc, D_mem)``
+                - ``doc_attention_mask`` optional bool mask ``(B, 1, K, S_doc)``
+
+        Returns:
+            ``FusionOutput`` where ``fused_state`` has shape ``(B, K, d_model)``.
+
+        Raises:
+            ValueError: If ``retrieval_memory`` is not 5-D or ``R != 1``.
+
+        Examples:
+            Basic forward pass — output is indexed by document, not sequence position:
+
+            >>> import torch
+            >>> from medrap.types import FusionInput
+            >>> fusion = PerDocCrossAttentionFusion(
+            ...     d_model=8,
+            ...     num_heads=2,
+            ...     ff_dim=16,
+            ...     num_layers=2,
+            ...     d_in_patient=4,
+            ...     d_in_doc=6,
+            ... )
+            >>> fi = FusionInput(
+            ...     patient_state=torch.randn(2, 10, 4),  # (B=2, S_ehr=10, D_ehr=4)
+            ...     retrieval_memory=torch.randn(2, 1, 3, 5, 6),  # (B, R=1, K=3, S_doc=5, D_mem=6)
+            ... )
+            >>> out = fusion.fuse(fi)
+            >>> tuple(out.fused_state.shape)
+            (2, 3, 8)
+
+            ``forward`` delegates to ``fuse``:
+
+            >>> tuple(fusion(fi).fused_state.shape)
+            (2, 3, 8)
+
+            Doc padding tokens are masked out of attention:
+
+            >>> mask = torch.ones(2, 1, 3, 5, dtype=torch.bool)
+            >>> mask[:, :, :, -1] = False  # last token of each doc is padding
+            >>> fi_masked = FusionInput(
+            ...     patient_state=torch.randn(2, 10, 4),
+            ...     retrieval_memory=torch.randn(2, 1, 3, 5, 6),
+            ...     doc_attention_mask=mask,
+            ... )
+            >>> tuple(fusion.fuse(fi_masked).fused_state.shape)
+            (2, 3, 8)
+
+            Wrong ``retrieval_memory`` rank raises ``ValueError``:
+
+            >>> bad_rank = FusionInput(
+            ...     patient_state=torch.randn(2, 10, 4),
+            ...     retrieval_memory=torch.randn(2, 3, 6),
+            ... )
+            >>> fusion.fuse(bad_rank)  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+            ...
+            ValueError: PerDocCrossAttentionFusion expects 5D retrieval_memory...
+
+            ``R != 1`` raises ``ValueError``:
+
+            >>> bad = FusionInput(
+            ...     patient_state=torch.randn(2, 10, 4),
+            ...     retrieval_memory=torch.randn(2, 2, 3, 5, 6),
+            ... )
+            >>> fusion.fuse(bad)  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+            ...
+            ValueError: PerDocCrossAttentionFusion only supports R=1...
+        """
+        ps = fusion_input.patient_state  # (B, S_ehr, D_ehr)
+        rm = fusion_input.retrieval_memory  # (B, R, K, S_doc, D_mem)
+
+        if rm.ndim != 5:
+            raise ValueError(
+                f"PerDocCrossAttentionFusion expects 5D retrieval_memory, got shape {tuple(rm.shape)}"
+            )
+        b, r, k, s_doc, d_mem = rm.shape
+        if r != 1:
+            raise ValueError(f"PerDocCrossAttentionFusion only supports R=1, got R={r}")
+
+        # Pair each patient with each of its K docs: [p0, p0, ..., p1, p1, ...] along dim 0.
+        ps_expanded = ps.repeat_interleave(k, dim=0)  # (B*K, S_ehr, D_ehr)
+        kv = rm.squeeze(1).reshape(b * k, s_doc, d_mem)  # (B*K, S_doc, D_mem)
+
+        key_padding_mask: torch.Tensor | None = None
+        if fusion_input.doc_attention_mask is not None:
+            flat_mask = fusion_input.doc_attention_mask.squeeze(1).reshape(b * k, s_doc).bool()
+            key_padding_mask = ~flat_mask  # True = padding (PyTorch convention)
+
+        x = self.patient_proj(ps_expanded)  # (B*K, S_ehr, d_model)
+        for layer in self.layers:
+            x = layer(x, kv, key_padding_mask)
+        x = self.out_norm(x)  # (B*K, S_ehr, d_model)
+
+        pooled = x.mean(dim=1)  # (B*K, d_model) — one vector per (patient, doc) pair
+        fused_state = pooled.reshape(b, k, -1)  # (B, K, d_model)
+
+        return FusionOutput(fused_state=fused_state)
