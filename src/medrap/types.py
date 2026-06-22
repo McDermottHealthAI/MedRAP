@@ -23,9 +23,13 @@ class EncoderOutput:
     Attributes:
         patient_state: Encoded patient representation with shape
             ``(B, S_ehr, D_ehr)``.
+        attention_mask: Optional bool mask with shape ``(B, S_ehr)``, ``True``
+            at valid (non-padding) positions. ``None`` when the encoder has no
+            notion of padding (for example tabular/scaffold encoders).
     """
 
     patient_state: Tensor
+    attention_mask: Tensor | None = None
 
 
 @dataclass(slots=True)

@@ -314,7 +314,7 @@ class RetrievalAugmentedModel(nn.Module):
             ValueError: ...differentiable scores...
         """
         encoder_out = self.encoder(batch)
-        query_out = self.query_projector(encoder_out.patient_state)
+        query_out = self.query_projector(encoder_out)
         retrieval_out = self.retriever(query_out.query_embeddings)
         retrieval_encoded = self.retrieval_encoder(retrieval_out)
         fusion_out = self.fusion(
