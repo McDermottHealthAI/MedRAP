@@ -30,7 +30,6 @@ jobs:
           uv run pytest -v
           --ignore=docs
           --ignore=src/medrap/prepare_retrieval/preparation.py
-          --ignore=tests/test_preparation.py
           --cov=src
           --cov-report=
           --junitxml=junit.xml
@@ -42,7 +41,6 @@ jobs:
         run: >
           uv run pytest -v
           src/medrap/prepare_retrieval/preparation.py
-          tests/test_preparation.py
           --cov=src
           --cov-append
           --cov-report=
