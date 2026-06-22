@@ -26,8 +26,8 @@ training) via the `marginalized_retrieval` flag.
 
 Implemented stage components (all in `medrap.model`):
 
-- **Encoders**: `MEDSCodeEncoder`, `TokenEmbeddingEncoder`, `TabularEncoder`,
-    and `TimeDeltaRoPEPatientEncoder` (transformer encoder with rotary position
+- **Encoders**: `MEDSCodeEncoder`, `TokenEmbeddingEncoder`, and
+    `TimeDeltaRoPEPatientEncoder` (transformer encoder with rotary position
     embeddings derived from cumulative log time-deltas).
 - **Query projectors**: `LinearQueryProjector`, `SequenceMeanQueryProjector`.
 - **Retrievers**: `InMemoryRetriever` and `HFDatasetRetriever`

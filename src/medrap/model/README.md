@@ -7,7 +7,7 @@ checkpoint.
 | Module                 | Contents                                                                                                                                                             |
 | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `model.py`             | `RetrievalAugmentedModel` — end-to-end orchestrator (`encode → query → retrieve → retrieval-encode → fuse → pool → predict`)                                         |
-| `encoders.py`          | `MEDSCodeEncoder`, `TokenEmbeddingEncoder`, `TabularEncoder`, `TimeDeltaRoPEPatientEncoder`                                                                          |
+| `encoders.py`          | `MEDSCodeEncoder`, `TokenEmbeddingEncoder`, `TimeDeltaRoPEPatientEncoder`                                                                                            |
 | `query_projection.py`  | `LinearQueryProjector`, `SequenceMeanQueryProjector`                                                                                                                 |
 | `retrievers.py`        | `InMemoryRetriever`, `HFDatasetRetriever` (FAISS over a prepared HF dataset)                                                                                         |
 | `retrieval_encoder.py` | `TokenFeatureRetrievalEncoder`, `MeanPooledRetrievalEncoder`, `PerDocMeanPooledRetrievalEncoder`, `LinearProjectionRetrievalEncoder`, `KeyEmbeddingRetrievalEncoder` |

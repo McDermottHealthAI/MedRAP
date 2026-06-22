@@ -237,7 +237,8 @@ class MEDSCodeEncoder(PatientEncoder):
 
         Returns:
             An ``EncoderOutput`` where ``patient_state`` has shape
-            ``(B, S_ehr, 1)``.
+            ``(B, S_ehr, 1)`` and ``attention_mask`` (``True`` = valid,
+            non-padding position) has shape ``(B, S_ehr)``.
 
         Examples:
             >>> encoder = MEDSCodeEncoder()
@@ -252,8 +253,10 @@ class MEDSCodeEncoder(PatientEncoder):
             (2, 3, 1)
             >>> out.patient_state.dtype
             torch.float32
+            >>> out.attention_mask.tolist()
+            [[True, True, False], [True, True, True]]
         """
-        return EncoderOutput(patient_state=batch.code.float().unsqueeze(-1))
+        return EncoderOutput(patient_state=batch.code.float().unsqueeze(-1), attention_mask=batch.code != 0)
 
 
 class TokenEmbeddingEncoder(PatientEncoder):
@@ -284,7 +287,8 @@ class TokenEmbeddingEncoder(PatientEncoder):
 
         Returns:
             An ``EncoderOutput`` where ``patient_state`` has shape
-            ``(B, S_ehr, D_ehr)``.
+            ``(B, S_ehr, D_ehr)`` and ``attention_mask`` (``True`` = valid,
+            non-padding position) has shape ``(B, S_ehr)``.
 
         Examples:
             >>> encoder = TokenEmbeddingEncoder(vocab_size=8, embedding_dim=2)
@@ -299,13 +303,16 @@ class TokenEmbeddingEncoder(PatientEncoder):
             (2, 3, 2)
             >>> out.patient_state.dtype
             torch.float32
+            >>> out.attention_mask.tolist()
+            [[True, True, False], [True, True, True]]
 
             Padding (``code == 0``) embeds to zero:
 
             >>> bool((out.patient_state[0, 2] == 0).all())
             True
         """
-        return EncoderOutput(patient_state=self.embedding(batch.code.long()))
+        code = batch.code.long()
+        return EncoderOutput(patient_state=self.embedding(code), attention_mask=code != 0)
 
 
 class TimeDeltaRoPEPatientEncoder(PatientEncoder):
