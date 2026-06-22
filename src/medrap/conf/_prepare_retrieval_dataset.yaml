@@ -11,6 +11,8 @@ prep:
   num_docs: null
   num_docs_seed: 42
 
+do_overwrite: false
+
 hydra:
   run:
     dir: .

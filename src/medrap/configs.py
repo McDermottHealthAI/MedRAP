@@ -654,13 +654,36 @@ def prepare_retrieval_dataset_from_config(config: Any) -> str:
         True
         >>> captured_subset["dataset"]
         ('subset', 9, [0, 1, 2])
+
+    Full unmocked round trip — a real dataset saved to disk, loaded via
+    :class:`LoadHFDatasetFromDiskConfig`, and prepared through the real
+    ``instantiate_any`` wiring (no mocking):
+
+        >>> from datasets import Dataset
+        >>> from hydra_zen import builds
+        >>> TokenizerConfig = builds(DoctestTokenizer, populate_full_signature=False)
+        >>> EmbedderConfig = builds(DoctestEmbedder, populate_full_signature=False)
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     source_path = Path(tmpdir) / "source"
+        ...     Dataset.from_dict({"text": ["alpha", "beta"]}).save_to_disk(str(source_path))
+        ...     real_cfg = PrepareRetrievalDatasetAppConfig(
+        ...         prep=PrepareRetrievalDatasetConfig(
+        ...             source=LoadHFDatasetFromDiskConfig(dataset_path=str(source_path)),
+        ...             document=OrderedFieldDocumentRendererConfig(fields=["text"]),
+        ...             tokenizer=TokenizerConfig(),
+        ...             embedder=EmbedderConfig(),
+        ...             index=RetrievalDatasetIndexConfig(max_length=4),
+        ...             output=RetrievalDatasetOutputConfig(output_dir=str(Path(tmpdir) / "prepared")),
+        ...         )
+        ...     )
+        ...     real_output_dir = prepare_retrieval_dataset_from_config(real_cfg)
+        ...     (Path(real_output_dir) / "retrieval.faiss").exists()
+        True
     """
     prep_cfg = config.prep
     dataset = instantiate_any(prep_cfg.source)
-    num_docs = getattr(prep_cfg, "num_docs", None)
-    if num_docs is not None:
-        num_docs_seed = int(getattr(prep_cfg, "num_docs_seed", 42))
-        dataset = dataset.shuffle(seed=num_docs_seed).select(range(int(num_docs)))
+    if prep_cfg.num_docs is not None:
+        dataset = dataset.shuffle(seed=int(prep_cfg.num_docs_seed)).select(range(int(prep_cfg.num_docs)))
     renderer = instantiate_any(prep_cfg.document)
     tokenizer = instantiate_any(prep_cfg.tokenizer)
     embedder = instantiate_any(prep_cfg.embedder)

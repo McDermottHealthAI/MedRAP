@@ -23,10 +23,14 @@ def _run_cfg(cfg: DictConfig) -> int:
     return 0
 
 
+def _save_resolved(cfg: DictConfig, output_path: Path) -> None:
+    resolved_cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+    OmegaConf.save(resolved_cfg, output_path)
+
+
 def _save_resolved_config(cfg: DictConfig, output_path: Path) -> None:
     bound_cfg = _bind_trainer_paths(cfg, output_dir=output_path.parent)
-    resolved_cfg = OmegaConf.create(OmegaConf.to_container(bound_cfg, resolve=True))
-    OmegaConf.save(resolved_cfg, output_path)
+    _save_resolved(bound_cfg, output_path)
 
 
 def _bind_trainer_paths(cfg: DictConfig, *, output_dir: Path) -> DictConfig:
@@ -238,6 +242,72 @@ def _prepare_eval_run(cfg: DictConfig) -> Path:
     return output_dir
 
 
+def _prepare_retrieval_dataset_run(cfg: DictConfig) -> Path:
+    """Create or validate a retrieval-dataset preparation output directory.
+
+    Examples:
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     output_dir = Path(tmpdir) / "prepared"
+        ...     cfg = OmegaConf.create(
+        ...         {"prep": {"output": {"output_dir": str(output_dir)}}, "do_overwrite": False}
+        ...     )
+        ...     returned = _prepare_retrieval_dataset_run(cfg)
+        ...     has_config = (output_dir / "config.yaml").exists()
+        ...     has_resolved = (output_dir / "resolved_config.yaml").exists()
+        ...     returned == output_dir and has_config and has_resolved
+        True
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     output_dir = Path(tmpdir) / "prepared"
+        ...     output_dir.mkdir()
+        ...     _ = (output_dir / "config.yaml").write_text("existing")
+        ...     cfg = OmegaConf.create(
+        ...         {"prep": {"output": {"output_dir": str(output_dir)}}, "do_overwrite": False}
+        ...     )
+        ...     _prepare_retrieval_dataset_run(cfg)
+        Traceback (most recent call last):
+        FileExistsError: Output directory .../prepared already contains a prepared retrieval dataset. ...
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     output_dir = Path(tmpdir) / "prepared"
+        ...     output_dir.mkdir()
+        ...     stale_file = output_dir / "retrieval.faiss"
+        ...     _ = stale_file.write_text("stale")
+        ...     _ = (output_dir / "config.yaml").write_text("existing")
+        ...     cfg = OmegaConf.create(
+        ...         {"prep": {"output": {"output_dir": str(output_dir)}}, "do_overwrite": True}
+        ...     )
+        ...     returned = _prepare_retrieval_dataset_run(cfg)
+        ...     returned == output_dir and not stale_file.exists()
+        True
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     output_path = Path(tmpdir) / "prepared"
+        ...     _ = output_path.write_text("not a directory")
+        ...     cfg = OmegaConf.create(
+        ...         {"prep": {"output": {"output_dir": str(output_path)}}, "do_overwrite": False}
+        ...     )
+        ...     _prepare_retrieval_dataset_run(cfg)
+        Traceback (most recent call last):
+        NotADirectoryError: Output directory .../prepared is a file, not a directory.
+    """
+    output_dir = Path(cfg.prep.output.output_dir)
+    if output_dir.is_file():
+        raise NotADirectoryError(f"Output directory {output_dir} is a file, not a directory.")
+
+    config_path = output_dir / "config.yaml"
+    if config_path.exists():
+        if cfg.do_overwrite:
+            shutil.rmtree(output_dir, ignore_errors=True)
+        else:
+            raise FileExistsError(
+                f"Output directory {output_dir} already contains a prepared retrieval dataset. "
+                "Use `do_overwrite=true` to proceed."
+            )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    OmegaConf.save(cfg, config_path)
+    _save_resolved(cfg, output_dir / "resolved_config.yaml")
+    return output_dir
+
+
 def _ensure_lightning_csv_log_dirs(trainer: object) -> None:
     """Create CSVLogger ``log_dir`` trees before the first metrics flush.
 
@@ -333,6 +403,14 @@ def _run_eval(cfg: DictConfig) -> int:
     raise ValueError(f"eval_mode must be 'validate' or 'test'; got {cfg.eval_mode!r}")
 
 
+def _run_prepare_retrieval_dataset(cfg: DictConfig) -> int:
+    print(OmegaConf.to_yaml(cfg))
+    _prepare_retrieval_dataset_run(cfg)
+    output_path = prepare_retrieval_dataset_from_config(cfg)
+    print(f"Prepared retrieval dataset saved to {output_path}")
+    return 0
+
+
 @hydra.main(version_base=None, config_path="conf", config_name="_train")
 def train_main(cfg: DictConfig) -> int:
     """Run the Hydra-native training entrypoint."""
@@ -348,5 +426,4 @@ def eval_main(cfg: DictConfig) -> int:
 @hydra.main(version_base=None, config_path="conf", config_name="_prepare_retrieval_dataset")
 def prepare_retrieval_dataset_main(cfg: DictConfig) -> int:
     """Run the Hydra-native retrieval-dataset preparation entrypoint."""
-    prepare_retrieval_dataset_from_config(cfg)
-    return 0
+    return _run_prepare_retrieval_dataset(cfg)

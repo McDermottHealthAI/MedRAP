@@ -154,7 +154,8 @@ uv run medrap-prepare-retrieval-dataset \
 	prep.index.encode_batch_size=32
 ```
 
-Use `prep.embedder.device=cpu` when no GPU is available. For a dataset already on disk, switch the source group: `prep/source=load_from_disk` and set `prep.source.dataset_path=...`.
+Use `prep.embedder.device=cpu` when no GPU is available. For a dataset already on disk, switch the source group: `prep/source=load_from_disk` and set `prep.source.dataset_path=...`. Like train/eval,
+re-running into an existing `prep.output.output_dir` is rejected unless you pass `do_overwrite=true`.
 
 These commands are direct Hydra entrypoints (`@hydra.main`), so Hydra receives
 overrides without an intermediate subcommand dispatcher.
