@@ -132,6 +132,8 @@ def test_prepare_retrieval_dataset_entrypoint_runs_with_hydra_overrides(monkeypa
         "output_dir": str(output_dir),
         "max_length": 3,
     }
+    assert (output_dir / "config.yaml").exists()
+    assert (output_dir / "resolved_config.yaml").exists()
 
 
 def test_eval_entrypoint_requires_checkpoint_path(tmp_path) -> None:
