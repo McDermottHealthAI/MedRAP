@@ -455,6 +455,7 @@ class PrepareRetrievalDatasetAppConfig:
     """Top-level app config for retrieval dataset preparation."""
 
     prep: PrepareRetrievalDatasetConfig = field(default_factory=PrepareRetrievalDatasetConfig)
+    do_overwrite: bool = False
 
 
 def instantiate_model(config: Any) -> RetrievalAugmentedModel:
@@ -588,6 +589,8 @@ def prepare_retrieval_dataset_from_config(config: Any) -> str:
         True
         >>> cfg.prep.output.output_dir
         '/tmp/prepared'
+        >>> cfg.do_overwrite
+        False
         >>> retriever_cfg = HFDatasetRetrieverConfig(dataset_path="/tmp/retrieval-artifact")
         >>> retriever_cfg.dataset_path
         '/tmp/retrieval-artifact'
