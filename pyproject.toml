@@ -23,6 +23,7 @@ dependencies = [
   "hydra-core==1.3.2",
   "hydra-zen==0.16.0",
   "lightning==2.6.1",
+  "MEDS-transforms==0.5.3",
   "meds-torch-data==0.6.6",
   "sentence-transformers==5.3.0",
   "torch==2.10.0",
@@ -90,6 +91,7 @@ medrap = ["conf/**/*.yaml"]
 medrap-train = "medrap.cli:train_main"
 medrap-eval = "medrap.cli:eval_main"
 medrap-prepare-retrieval-dataset = "medrap.cli:prepare_retrieval_dataset_main"
+medrap-preprocess = "medrap.cli:preprocess_main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "src/medrap"]

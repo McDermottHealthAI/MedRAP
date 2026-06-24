@@ -53,7 +53,7 @@ src/medrap/
 ├── model/              # nn.Module building blocks (shared by all commands)
 ├── train/              # Lightning training infrastructure (train, eval)
 ├── prepare_retrieval/  # Offline retrieval dataset preparation
-├── preprocess/         # MEDS data tensorization (planned)
+├── preprocess/         # Raw-MEDS rare-code/sparse-subject filtering (pre-tensorization)
 ├── retrieve/           # Batch retrieval from a trained model (planned)
 ├── get_embeddings/     # Embedding extraction from a trained model (planned)
 └── predict_probabilities/  # Probability prediction from a trained model (planned)
@@ -115,8 +115,8 @@ variant) lives in the `RetrievalAugmentedModel` docstring in `model/model.py`.
 
 ## CLI
 
-`medrap` exposes three Hydra-native entrypoints; all accept Hydra overrides and
-`medrap-train`/`medrap-eval` require an `output_dir`.
+`medrap` exposes four Hydra-native entrypoints; all accept Hydra overrides and
+`medrap-train`/`medrap-eval`/`medrap-preprocess` require an `output_dir`.
 
 A CPU smoke run on the built-in synthetic datamodule (no external data needed):
 
@@ -156,6 +156,17 @@ uv run medrap-prepare-retrieval-dataset \
 
 Use `prep.embedder.device=cpu` when no GPU is available. For a dataset already on disk, switch the source group: `prep/source=load_from_disk` and set `prep.source.dataset_path=...`. Like train/eval,
 re-running into an existing `prep.output.output_dir` is rejected unless you pass `do_overwrite=true`.
+
+Filter a raw MEDS dataset's rare codes and sparse subjects before tensorization (run before `MTD_preprocess`, see [Using MIMIC-IV Data](#using-mimic-iv-data) below):
+
+```bash
+uv run medrap-preprocess meds_data_dir=mimic/MEDS_cohort output_dir=mimic/MEDS_cohort_filtered \
+	min_subjects_per_code=25 min_events_per_subject=5
+```
+
+Codes matching `sentinel_code_regex` (death/admission/discharge/registration events by default) are never
+dropped regardless of frequency. Like the other commands, re-running into an existing `output_dir` is
+rejected unless you pass `do_overwrite=true`.
 
 These commands are direct Hydra entrypoints (`@hydra.main`), so Hydra receives
 overrides without an intermediate subcommand dispatcher.

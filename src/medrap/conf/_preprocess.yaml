@@ -1,0 +1,14 @@
+meds_data_dir: ???
+output_dir: ???
+min_subjects_per_code: null
+min_occurrences_per_code: null
+sentinel_code_regex: "MEDS_DEATH.*|MEDS_BIRTH.*|.*ADMISSION.*|.*DISCHARGE.*|.*REGISTRATION.*"
+min_events_per_subject: null
+do_overwrite: false
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: false
