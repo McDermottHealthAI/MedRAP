@@ -119,9 +119,10 @@ def filter_rare_codes(
     """
     is_sentinel = pl.col("code").str.contains(sentinel_code_regex)
     adjusted_metadata = code_metadata.with_columns(
-        pl.when(is_sentinel).then(_ALWAYS_PASS_THRESHOLD).otherwise(pl.col("code/n_subjects")).alias(
-            "code/n_subjects"
-        ),
+        pl.when(is_sentinel)
+        .then(_ALWAYS_PASS_THRESHOLD)
+        .otherwise(pl.col("code/n_subjects"))
+        .alias("code/n_subjects"),
         pl.when(is_sentinel)
         .then(_ALWAYS_PASS_THRESHOLD)
         .otherwise(pl.col("code/n_occurrences"))
