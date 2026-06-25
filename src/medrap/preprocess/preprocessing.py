@@ -5,6 +5,7 @@ MEDS directory, writing a filtered dataset in the same raw-MEDS shape.
 """
 
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 import polars as pl
@@ -51,7 +52,7 @@ def aggregate_code_metadata_from_meds(meds_data_dir: str | Path) -> pl.DataFrame
 def _write_filtered_shards(
     meds_data_dir: str | Path,
     output_dir: str | Path,
-    filter_fn: "pl.LazyFrame | None",
+    filter_fn: Callable[[pl.LazyFrame], pl.LazyFrame],
 ) -> Path:
     in_dir = Path(meds_data_dir) / "data"
     out_dir = Path(output_dir) / "data"
