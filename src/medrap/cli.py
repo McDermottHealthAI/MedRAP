@@ -15,6 +15,7 @@ from .configs import (
     instantiate_datamodule,
     instantiate_training_module,
     prepare_retrieval_dataset_from_config,
+    preprocess_dataset_from_config,
 )
 
 
@@ -308,6 +309,64 @@ def _prepare_retrieval_dataset_run(cfg: DictConfig) -> Path:
     return output_dir
 
 
+def _prepare_preprocess_run(cfg: DictConfig) -> Path:
+    """Create or validate a MEDS preprocessing output directory.
+
+    Examples:
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     output_dir = Path(tmpdir) / "filtered"
+        ...     cfg = OmegaConf.create({"output_dir": str(output_dir), "do_overwrite": False})
+        ...     returned = _prepare_preprocess_run(cfg)
+        ...     has_config = (output_dir / "config.yaml").exists()
+        ...     has_resolved = (output_dir / "resolved_config.yaml").exists()
+        ...     returned == output_dir and has_config and has_resolved
+        True
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     output_dir = Path(tmpdir) / "filtered"
+        ...     output_dir.mkdir()
+        ...     _ = (output_dir / "config.yaml").write_text("existing")
+        ...     cfg = OmegaConf.create({"output_dir": str(output_dir), "do_overwrite": False})
+        ...     _prepare_preprocess_run(cfg)
+        Traceback (most recent call last):
+        FileExistsError: Output directory .../filtered already contains a preprocessed MEDS dataset. ...
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     output_dir = Path(tmpdir) / "filtered"
+        ...     output_dir.mkdir()
+        ...     stale_file = output_dir / "data.parquet"
+        ...     _ = stale_file.write_text("stale")
+        ...     _ = (output_dir / "config.yaml").write_text("existing")
+        ...     cfg = OmegaConf.create({"output_dir": str(output_dir), "do_overwrite": True})
+        ...     returned = _prepare_preprocess_run(cfg)
+        ...     returned == output_dir and not stale_file.exists()
+        True
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     output_path = Path(tmpdir) / "filtered"
+        ...     _ = output_path.write_text("not a directory")
+        ...     cfg = OmegaConf.create({"output_dir": str(output_path), "do_overwrite": False})
+        ...     _prepare_preprocess_run(cfg)
+        Traceback (most recent call last):
+        NotADirectoryError: Output directory .../filtered is a file, not a directory.
+    """
+    output_dir = Path(cfg.output_dir)
+    if output_dir.is_file():
+        raise NotADirectoryError(f"Output directory {output_dir} is a file, not a directory.")
+
+    config_path = output_dir / "config.yaml"
+    if config_path.exists():
+        if cfg.do_overwrite:
+            shutil.rmtree(output_dir, ignore_errors=True)
+        else:
+            raise FileExistsError(
+                f"Output directory {output_dir} already contains a preprocessed MEDS dataset. "
+                "Use `do_overwrite=true` to proceed."
+            )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    OmegaConf.save(cfg, config_path)
+    _save_resolved(cfg, output_dir / "resolved_config.yaml")
+    return output_dir
+
+
 def _ensure_lightning_csv_log_dirs(trainer: object) -> None:
     """Create CSVLogger ``log_dir`` trees before the first metrics flush.
 
@@ -411,6 +470,14 @@ def _run_prepare_retrieval_dataset(cfg: DictConfig) -> int:
     return 0
 
 
+def _run_preprocess(cfg: DictConfig) -> int:
+    print(OmegaConf.to_yaml(cfg))
+    _prepare_preprocess_run(cfg)
+    output_path = preprocess_dataset_from_config(cfg)
+    print(f"Preprocessed MEDS dataset saved to {output_path}")
+    return 0
+
+
 @hydra.main(version_base=None, config_path="conf", config_name="_train")
 def train_main(cfg: DictConfig) -> int:
     """Run the Hydra-native training entrypoint."""
@@ -427,3 +494,9 @@ def eval_main(cfg: DictConfig) -> int:
 def prepare_retrieval_dataset_main(cfg: DictConfig) -> int:
     """Run the Hydra-native retrieval-dataset preparation entrypoint."""
     return _run_prepare_retrieval_dataset(cfg)
+
+
+@hydra.main(version_base=None, config_path="conf", config_name="_preprocess")
+def preprocess_main(cfg: DictConfig) -> int:
+    """Run the Hydra-native MEDS preprocessing entrypoint."""
+    return _run_preprocess(cfg)

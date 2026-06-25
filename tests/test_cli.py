@@ -10,7 +10,7 @@ from omegaconf import OmegaConf
 from omegaconf.errors import MissingMandatoryValue
 
 import medrap.cli as cli
-from medrap.cli import eval_main, prepare_retrieval_dataset_main, train_main
+from medrap.cli import eval_main, prepare_retrieval_dataset_main, preprocess_main, train_main
 
 TINY_SENTENCE_TRANSFORMER_MODEL = "sentence-transformers-testing/stsb-bert-tiny-safetensors"
 
@@ -47,6 +47,10 @@ def _run_prepare_retrieval_dataset_cli(overrides: list[str]) -> int:
     return _run_hydra_entrypoint(
         prepare_retrieval_dataset_main, "medrap-prepare-retrieval-dataset", overrides
     )
+
+
+def _run_preprocess_cli(overrides: list[str]) -> int:
+    return _run_hydra_entrypoint(preprocess_main, "medrap-preprocess", overrides)
 
 
 def test_medrap_train_entrypoint_runs_with_overrides(tmp_path) -> None:
@@ -87,6 +91,7 @@ def test_flat_entrypoint_scripts_are_registered() -> None:
     assert medrap_scripts["medrap-train"] == "medrap.cli:train_main"
     assert medrap_scripts["medrap-eval"] == "medrap.cli:eval_main"
     assert medrap_scripts["medrap-prepare-retrieval-dataset"] == "medrap.cli:prepare_retrieval_dataset_main"
+    assert medrap_scripts["medrap-preprocess"] == "medrap.cli:preprocess_main"
 
 
 def test_prepare_retrieval_dataset_entrypoint_runs_with_hydra_overrides(monkeypatch, tmp_path) -> None:
@@ -500,3 +505,35 @@ def test_run_eval_rejects_unknown_eval_mode(tmp_path, monkeypatch: pytest.Monkey
 
     with pytest.raises(ValueError, match="eval_mode must be 'validate' or 'test'"):
         cli._run_eval(cfg)
+
+
+def test_preprocess_entrypoint_runs_with_hydra_overrides(monkeypatch, tmp_path) -> None:
+    captured = {}
+
+    def _fake_preprocess_dataset_from_config(cfg):
+        captured["meds_data_dir"] = cfg.meds_data_dir
+        captured["output_dir"] = cfg.output_dir
+        captured["min_subjects_per_code"] = cfg.min_subjects_per_code
+
+    monkeypatch.setattr("medrap.cli.preprocess_dataset_from_config", _fake_preprocess_dataset_from_config)
+
+    meds_data_dir = tmp_path / "raw"
+    output_dir = tmp_path / "filtered"
+
+    assert (
+        _run_preprocess_cli(
+            [
+                f"meds_data_dir={meds_data_dir}",
+                f"output_dir={output_dir}",
+                "min_subjects_per_code=5",
+            ]
+        )
+        == 0
+    )
+    assert captured == {
+        "meds_data_dir": str(meds_data_dir),
+        "output_dir": str(output_dir),
+        "min_subjects_per_code": 5,
+    }
+    assert (output_dir / "config.yaml").exists()
+    assert (output_dir / "resolved_config.yaml").exists()
