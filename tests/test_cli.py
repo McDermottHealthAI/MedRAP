@@ -513,7 +513,9 @@ def test_preprocess_entrypoint_runs_with_hydra_overrides(monkeypatch, tmp_path) 
     def _fake_preprocess_dataset_from_config(cfg):
         captured["meds_data_dir"] = cfg.meds_data_dir
         captured["output_dir"] = cfg.output_dir
+        captured["n_quantile_bins"] = cfg.n_quantile_bins
         captured["min_subjects_per_code"] = cfg.min_subjects_per_code
+        return cfg.output_dir
 
     monkeypatch.setattr("medrap.cli.preprocess_dataset_from_config", _fake_preprocess_dataset_from_config)
 
@@ -525,6 +527,7 @@ def test_preprocess_entrypoint_runs_with_hydra_overrides(monkeypatch, tmp_path) 
             [
                 f"meds_data_dir={meds_data_dir}",
                 f"output_dir={output_dir}",
+                "n_quantile_bins=4",
                 "min_subjects_per_code=5",
             ]
         )
@@ -533,6 +536,7 @@ def test_preprocess_entrypoint_runs_with_hydra_overrides(monkeypatch, tmp_path) 
     assert captured == {
         "meds_data_dir": str(meds_data_dir),
         "output_dir": str(output_dir),
+        "n_quantile_bins": 4,
         "min_subjects_per_code": 5,
     }
     assert (output_dir / "config.yaml").exists()

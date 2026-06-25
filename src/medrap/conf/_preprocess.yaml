@@ -1,5 +1,6 @@
 meds_data_dir: ???
 output_dir: ???
+n_quantile_bins: null
 min_subjects_per_code: null
 min_occurrences_per_code: null
 sentinel_code_regex: "MEDS_DEATH.*|MEDS_BIRTH.*|.*ADMISSION.*|.*DISCHARGE.*|.*REGISTRATION.*"

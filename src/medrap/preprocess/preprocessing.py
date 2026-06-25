@@ -6,9 +6,11 @@ MEDS directory, writing a filtered dataset in the same raw-MEDS shape.
 
 import tempfile
 from collections.abc import Callable
+from contextlib import ExitStack
 from pathlib import Path
 
 import polars as pl
+from MEDS_transforms.stages.bin_numeric_values.bin_numeric_values import bin_numeric_values_fntr
 from MEDS_transforms.stages.filter_measurements.filter_measurements import filter_measurements
 from MEDS_transforms.stages.filter_subjects.filter_subjects import filter_subjects
 from omegaconf import OmegaConf
@@ -62,6 +64,114 @@ def _write_filtered_shards(
         filtered = filter_fn(pl.scan_parquet(shard_path))
         filtered.collect().write_parquet(split_dir / shard_path.name)
     return Path(output_dir)
+
+
+def fit_quantile_metadata(meds_data_dir: str | Path, n_bins: int) -> pl.DataFrame:
+    """Compute per-code quantile breakpoints from the training split for numeric value binning.
+
+    Only scans the training split (``data/train/``) to avoid leaking tuning or
+    held-out distributional information into the bin boundaries. Codes with no
+    non-null numeric values in the training split are omitted from the result;
+    they will not be binned when the returned metadata is passed to
+    ``bin_numeric_values_fntr``.
+
+    Args:
+        meds_data_dir: Root of a raw MEDS dataset.
+        n_bins: Number of quantile bins to create. Produces ``n_bins - 1``
+            evenly-spaced quantile breakpoints at levels ``1/n_bins``,
+            ``2/n_bins``, …, ``(n_bins-1)/n_bins``.
+
+    Returns:
+        DataFrame with columns ``code`` and ``values/quantiles`` (a struct
+        with field names ``values/quantile/{level}`` for each breakpoint level),
+        in the format expected by ``MEDS_transforms``' ``bin_numeric_values_fntr``.
+
+    Examples:
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     train_dir = Path(tmpdir) / "data" / "train"
+        ...     train_dir.mkdir(parents=True)
+        ...     pl.DataFrame(
+        ...         {
+        ...             "subject_id": [1, 1, 2, 2, 3],
+        ...             "code": ["Lab//A", "Lab//A", "Lab//A", "Lab//B", "NoValue"],
+        ...             "numeric_value": pl.Series([1.0, 3.0, 5.0, 2.0, None], dtype=pl.Float32),
+        ...             "time": pl.Series([None] * 5, dtype=pl.Datetime("us")),
+        ...         }
+        ...     ).write_parquet(train_dir / "0.parquet")
+        ...     meta = fit_quantile_metadata(tmpdir, n_bins=2)
+        ...     # NoValue has no numeric values so it's omitted; both quantile codes present
+        ...     sorted(meta["code"].to_list())
+        ['Lab//A', 'Lab//B']
+    """
+    quantile_levels = [round(i / n_bins, 10) for i in range(1, n_bins)]
+    df = pl.scan_parquet(Path(meds_data_dir) / "data" / "train" / "*.parquet")
+
+    nv_dtype = df.collect_schema().get("numeric_value", pl.Float32)
+
+    quant_aggs = [
+        pl.col("numeric_value").quantile(level).cast(nv_dtype).alias(f"values/quantile/{level}")
+        for level in quantile_levels
+    ]
+    quant_col_names = [f"values/quantile/{level}" for level in quantile_levels]
+
+    return (
+        df.filter(pl.col("numeric_value").is_not_null())
+        .group_by("code")
+        .agg(*quant_aggs)
+        .with_columns(pl.struct(quant_col_names).alias("values/quantiles"))
+        .drop(quant_col_names)
+        .collect()
+    )
+
+
+def quantize_numeric_values(
+    meds_data_dir: str | Path,
+    code_metadata: pl.DataFrame,
+    *,
+    output_dir: str | Path,
+) -> Path:
+    """Bin numeric values into quantile ranges, appending the range to the code name.
+
+    Each measurement with a non-null numeric value whose code appears in
+    ``code_metadata`` gets its code suffixed with the bin range (e.g.
+    ``Creatinine//value_[0.9,1.3)``), and its ``numeric_value`` is set to null
+    (the information is now encoded in the code name). Codes with no entry in
+    ``code_metadata`` or with a null numeric value are left unchanged.
+
+    Writes the result to ``output_dir`` in the same raw-MEDS
+    ``data/<split>/<shard>.parquet`` shape as the input.
+
+    Args:
+        meds_data_dir: Root of a raw MEDS dataset.
+        code_metadata: Output of :func:`fit_quantile_metadata`.
+        output_dir: Directory to write the quantized dataset into.
+
+    Returns:
+        ``output_dir`` as a ``Path``.
+
+    Examples:
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     train_dir = Path(tmpdir) / "data" / "train"
+        ...     train_dir.mkdir(parents=True)
+        ...     pl.DataFrame(
+        ...         {
+        ...             "subject_id": [1, 2, 3, 1],
+        ...             "code": ["Lab//A", "Lab//A", "Lab//A", "GENDER//F"],
+        ...             "numeric_value": pl.Series([1.0, 3.0, 5.0, None], dtype=pl.Float32),
+        ...             "time": pl.Series([None] * 4, dtype=pl.Datetime("us")),
+        ...         }
+        ...     ).write_parquet(train_dir / "0.parquet")
+        ...     meta = fit_quantile_metadata(tmpdir, n_bins=2)
+        ...     out_dir = quantize_numeric_values(tmpdir, meta, output_dir=Path(tmpdir) / "binned")
+        ...     result = pl.read_parquet(out_dir / "data" / "train" / "0.parquet")
+        ...     sorted(result["code"].to_list())
+        ['GENDER//F', 'Lab//A//value_[-inf,3.0)', 'Lab//A//value_[3.0,inf)', 'Lab//A//value_[3.0,inf)']
+        >>> result["numeric_value"].is_null().all()
+        True
+    """
+    stage_cfg = OmegaConf.create({"drop_numeric_value": True})
+    bin_fn = bin_numeric_values_fntr(stage_cfg, code_metadata)
+    return _write_filtered_shards(meds_data_dir, output_dir, bin_fn)
 
 
 def filter_rare_codes(
@@ -190,16 +300,31 @@ def preprocess_meds_dataset(
     *,
     meds_data_dir: str | Path,
     output_dir: str | Path,
+    n_quantile_bins: int | None,
     min_subjects_per_code: int | None,
     min_occurrences_per_code: int | None,
     sentinel_code_regex: str,
     min_events_per_subject: int | None,
 ) -> Path:
-    """Filter rare codes then sparse subjects from a raw MEDS dataset.
+    """Quantize numeric values, then filter rare codes and sparse subjects.
+
+    Pipeline order (each stage writes to a temp directory feeding the next):
+
+    1. **Quantize** (if ``n_quantile_bins`` is not ``None``): bin each measurement's
+       ``numeric_value`` into a quantile range and append the range to the code name
+       (e.g. ``Creatinine//value_[0.9,1.3)``). Bin boundaries are fit on the
+       training split only to avoid leakage. Quantization runs *before* rare-code
+       filtering so the frequency filter operates on the final quantized vocabulary.
+    2. **Filter rare codes**: drop codes below ``min_subjects_per_code`` /
+       ``min_occurrences_per_code``, exempting ``sentinel_code_regex`` matches.
+    3. **Filter sparse subjects**: drop subjects with fewer than
+       ``min_events_per_subject`` distinct event timepoints.
 
     Args:
         meds_data_dir: Root of a raw MEDS dataset.
         output_dir: Directory to write the filtered dataset into.
+        n_quantile_bins: Number of quantile bins for numeric value quantization,
+            or ``None`` to skip. See :func:`fit_quantile_metadata`.
         min_subjects_per_code: See :func:`filter_rare_codes`.
         min_occurrences_per_code: See :func:`filter_rare_codes`.
         sentinel_code_regex: See :func:`filter_rare_codes`.
@@ -209,6 +334,8 @@ def preprocess_meds_dataset(
         ``output_dir`` as a ``Path``.
 
     Examples:
+        Without quantization (existing behaviour):
+
         >>> with tempfile.TemporaryDirectory() as tmpdir:
         ...     shard_dir = Path(tmpdir) / "raw" / "data" / "train"
         ...     shard_dir.mkdir(parents=True)
@@ -222,6 +349,7 @@ def preprocess_meds_dataset(
         ...     out_dir = preprocess_meds_dataset(
         ...         meds_data_dir=Path(tmpdir) / "raw",
         ...         output_dir=Path(tmpdir) / "filtered",
+        ...         n_quantile_bins=None,
         ...         min_subjects_per_code=2,
         ...         min_occurrences_per_code=None,
         ...         sentinel_code_regex="MEDS_DEATH.*",
@@ -229,12 +357,49 @@ def preprocess_meds_dataset(
         ...     )
         ...     sorted(pl.read_parquet(out_dir / "data" / "train" / "0.parquet")["code"].to_list())
         ['common', 'common']
+
+        With quantization — values are binned first; the ``[-inf,3.0)`` bin (1 subject)
+        and ``GENDER//F`` (1 subject) are then dropped by ``min_subjects_per_code=2``:
+
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     shard_dir = Path(tmpdir) / "raw" / "data" / "train"
+        ...     shard_dir.mkdir(parents=True)
+        ...     pl.DataFrame(
+        ...         {
+        ...             "subject_id": [1, 2, 3, 1],
+        ...             "code": ["Lab//A", "Lab//A", "Lab//A", "GENDER//F"],
+        ...             "numeric_value": pl.Series([1.0, 3.0, 5.0, None], dtype=pl.Float32),
+        ...             "time": pl.Series([None] * 4, dtype=pl.Datetime("us")),
+        ...         }
+        ...     ).write_parquet(shard_dir / "0.parquet")
+        ...     out_dir = preprocess_meds_dataset(
+        ...         meds_data_dir=Path(tmpdir) / "raw",
+        ...         output_dir=Path(tmpdir) / "filtered",
+        ...         n_quantile_bins=2,
+        ...         min_subjects_per_code=2,
+        ...         min_occurrences_per_code=None,
+        ...         sentinel_code_regex="MEDS_DEATH.*",
+        ...         min_events_per_subject=None,
+        ...     )
+        ...     sorted(pl.read_parquet(out_dir / "data" / "train" / "0.parquet")["code"].to_list())
+        ['Lab//A//value_[3.0,inf)', 'Lab//A//value_[3.0,inf)']
     """
-    code_metadata = aggregate_code_metadata_from_meds(meds_data_dir)
-    with tempfile.TemporaryDirectory() as code_filtered_dir:
+    with ExitStack() as stack:
+        if n_quantile_bins is not None:
+            quantized_dir = stack.enter_context(tempfile.TemporaryDirectory())
+            quantize_numeric_values(
+                meds_data_dir,
+                fit_quantile_metadata(meds_data_dir, n_bins=n_quantile_bins),
+                output_dir=quantized_dir,
+            )
+            source = quantized_dir
+        else:
+            source = meds_data_dir
+
+        code_filtered_dir = stack.enter_context(tempfile.TemporaryDirectory())
         filter_rare_codes(
-            meds_data_dir,
-            code_metadata,
+            source,
+            aggregate_code_metadata_from_meds(source),
             min_subjects_per_code=min_subjects_per_code,
             min_occurrences_per_code=min_occurrences_per_code,
             sentinel_code_regex=sentinel_code_regex,

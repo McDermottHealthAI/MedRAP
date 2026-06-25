@@ -714,6 +714,7 @@ class PreprocessDatasetAppConfig:
 
     meds_data_dir: str = MISSING
     output_dir: str = MISSING
+    n_quantile_bins: int | None = None
     min_subjects_per_code: int | None = None
     min_occurrences_per_code: int | None = None
     sentinel_code_regex: str = "MEDS_DEATH.*|MEDS_BIRTH.*|.*ADMISSION.*|.*DISCHARGE.*|.*REGISTRATION.*"
@@ -755,6 +756,7 @@ def preprocess_dataset_from_config(config: Any) -> str:
     output_path = preprocess_meds_dataset(
         meds_data_dir=config.meds_data_dir,
         output_dir=config.output_dir,
+        n_quantile_bins=config.n_quantile_bins,
         min_subjects_per_code=config.min_subjects_per_code,
         min_occurrences_per_code=config.min_occurrences_per_code,
         sentinel_code_regex=config.sentinel_code_regex,
