@@ -306,17 +306,16 @@ def preprocess_meds_dataset(
     sentinel_code_regex: str,
     min_events_per_subject: int | None,
 ) -> Path:
-    """Quantize numeric values, then filter rare codes and sparse subjects.
+    """Filter rare codes, quantize numeric values, then filter sparse subjects.
 
     Pipeline order (each stage writes to a temp directory feeding the next):
 
-    1. **Quantize** (if ``n_quantile_bins`` is not ``None``): bin each measurement's
-       ``numeric_value`` into a quantile range and append the range to the code name
-       (e.g. ``Creatinine//value_[0.9,1.3)``). Bin boundaries are fit on the
-       training split only to avoid leakage. Quantization runs *before* rare-code
-       filtering so the frequency filter operates on the final quantized vocabulary.
-    2. **Filter rare codes**: drop codes below ``min_subjects_per_code`` /
+    1. **Filter rare codes**: drop codes below ``min_subjects_per_code`` /
        ``min_occurrences_per_code``, exempting ``sentinel_code_regex`` matches.
+    2. **Quantize** (if ``n_quantile_bins`` is not ``None``): bin each surviving
+       code's ``numeric_value`` into a quantile range and append the range to the
+       code name (e.g. ``Creatinine//value_[0.9,1.3)``). Bin boundaries are fit
+       on the training split of the filtered dataset to avoid leakage.
     3. **Filter sparse subjects**: drop subjects with fewer than
        ``min_events_per_subject`` distinct event timepoints.
 
@@ -358,8 +357,8 @@ def preprocess_meds_dataset(
         ...     sorted(pl.read_parquet(out_dir / "data" / "train" / "0.parquet")["code"].to_list())
         ['common', 'common']
 
-        With quantization — values are binned first; the ``[-inf,3.0)`` bin (1 subject)
-        and ``GENDER//F`` (1 subject) are then dropped by ``min_subjects_per_code=2``:
+        With quantization — ``GENDER//F`` (1 subject) is filtered first; then Lab//A's
+        3 surviving values are binned, producing two codes, both kept:
 
         >>> with tempfile.TemporaryDirectory() as tmpdir:
         ...     shard_dir = Path(tmpdir) / "raw" / "data" / "train"
@@ -382,31 +381,32 @@ def preprocess_meds_dataset(
         ...         min_events_per_subject=None,
         ...     )
         ...     sorted(pl.read_parquet(out_dir / "data" / "train" / "0.parquet")["code"].to_list())
-        ['Lab//A//value_[3.0,inf)', 'Lab//A//value_[3.0,inf)']
+        ['Lab//A//value_[-inf,3.0)', 'Lab//A//value_[3.0,inf)', 'Lab//A//value_[3.0,inf)']
     """
     with ExitStack() as stack:
-        if n_quantile_bins is not None:
-            quantized_dir = stack.enter_context(tempfile.TemporaryDirectory())
-            quantize_numeric_values(
-                meds_data_dir,
-                fit_quantile_metadata(meds_data_dir, n_bins=n_quantile_bins),
-                output_dir=quantized_dir,
-            )
-            source = quantized_dir
-        else:
-            source = meds_data_dir
-
         code_filtered_dir = stack.enter_context(tempfile.TemporaryDirectory())
         filter_rare_codes(
-            source,
-            aggregate_code_metadata_from_meds(source),
+            meds_data_dir,
+            aggregate_code_metadata_from_meds(meds_data_dir),
             min_subjects_per_code=min_subjects_per_code,
             min_occurrences_per_code=min_occurrences_per_code,
             sentinel_code_regex=sentinel_code_regex,
             output_dir=code_filtered_dir,
         )
+
+        if n_quantile_bins is not None:
+            quantized_dir = stack.enter_context(tempfile.TemporaryDirectory())
+            quantize_numeric_values(
+                code_filtered_dir,
+                fit_quantile_metadata(code_filtered_dir, n_bins=n_quantile_bins),
+                output_dir=quantized_dir,
+            )
+            source = quantized_dir
+        else:
+            source = code_filtered_dir
+
         return filter_sparse_subjects(
-            code_filtered_dir,
+            source,
             min_events_per_subject=min_events_per_subject,
             output_dir=output_dir,
         )
