@@ -16,8 +16,8 @@ from .configs import (
     instantiate_training_module,
     prepare_retrieval_dataset_from_config,
 )
-from .preprocess.label_creation import generate_tasks
 from .preprocess.preprocessing import run_meds_pipeline
+from .preprocess.task_generation import generate_tasks
 
 
 def _save_resolved(cfg: DictConfig, output_path: Path) -> None:
