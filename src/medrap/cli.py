@@ -353,6 +353,7 @@ def _load_training_module_checkpoint(cfg: DictConfig, checkpoint_path: str) -> o
     module.load_state_dict(checkpoint["state_dict"])
     return module
 
+
 def _run_train(cfg: DictConfig) -> int:
     print(OmegaConf.to_yaml(cfg))
     lightning.seed_everything(cfg.seed, workers=True)

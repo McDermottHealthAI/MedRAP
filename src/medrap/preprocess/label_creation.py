@@ -120,9 +120,7 @@ def _generate_labels_shard(
 
     in_window = (
         joined.filter(
-            (pl.col("delta_days") > 0)
-            & (pl.col("delta_days") <= horizon_days)
-            & pl.col("code").is_in(codes)
+            (pl.col("delta_days") > 0) & (pl.col("delta_days") <= horizon_days) & pl.col("code").is_in(codes)
         )
         .group_by(["subject_id", "prediction_time", "code"])
         .agg(pl.len().alias("_n"))
@@ -144,9 +142,7 @@ def _generate_labels_shard(
     for i, code in enumerate(codes):
         col = f"task_{i}"
         if code in result.columns:
-            result = result.rename({code: col}).with_columns(
-                pl.col(col).fill_null(0.0).cast(pl.Float32)
-            )
+            result = result.rename({code: col}).with_columns(pl.col(col).fill_null(0.0).cast(pl.Float32))
         else:
             result = result.with_columns(pl.lit(0.0).cast(pl.Float32).alias(col))
 
@@ -192,7 +188,9 @@ def generate_labels(
         ...             ],
         ...         }
         ...     ).write_parquet(shard_dir / "0.parquet")
-        ...     df = generate_labels(tmpdir, "train", ["A", "B"], horizon_days=7.0, min_history_days=1.0, seed=0)
+        ...     df = generate_labels(
+        ...         tmpdir, "train", ["A", "B"], horizon_days=7.0, min_history_days=1.0, seed=0
+        ...     )
         ...     set(df.columns) == {"subject_id", "prediction_time", "task_0", "task_1"}
         True
     """
@@ -251,16 +249,20 @@ def generate_tasks(
         ...                 "subject_id": [1, 1, 1, 2, 2, 2],
         ...                 "code": ["X", "Y", "X", "X", "Z", "Y"],
         ...                 "time": [
-        ...                     datetime(2020, 1, 1), datetime(2020, 1, 10), datetime(2020, 1, 20),
-        ...                     datetime(2020, 2, 1), datetime(2020, 2, 10), datetime(2020, 2, 20),
+        ...                     datetime(2020, 1, 1),
+        ...                     datetime(2020, 1, 10),
+        ...                     datetime(2020, 1, 20),
+        ...                     datetime(2020, 2, 1),
+        ...                     datetime(2020, 2, 10),
+        ...                     datetime(2020, 2, 20),
         ...                 ],
         ...             }
         ...         ).write_parquet(shard_dir / "0.parquet")
         ...     out_dir = Path(tmpdir) / "tasks"
-        ...     returned = generate_tasks(
-        ...         tmpdir, out_dir, num_tasks=3, seed=0, splits=("train", "tuning")
-        ...     )
-        ...     returned == out_dir and (out_dir / "train.parquet").exists() and (out_dir / "code_index.json").exists()
+        ...     returned = generate_tasks(tmpdir, out_dir, num_tasks=3, seed=0, splits=("train", "tuning"))
+        ...     returned == out_dir and (out_dir / "train.parquet").exists() and (
+        ...         out_dir / "code_index.json"
+        ...     ).exists()
         True
     """
     meds_data_dir = Path(meds_data_dir)

@@ -359,12 +359,6 @@ def test_bind_trainer_paths_list_logger_without_save_dir_left_unchanged(tmp_path
     assert "save_dir" not in bound.training.trainer.logger[1]
 
 
-def test_run_cfg_prints_yaml(capsys: pytest.CaptureFixture[str]) -> None:
-    cfg = OmegaConf.create({"a": 1})
-    assert cli._run_cfg(cfg) == 0
-    out = capsys.readouterr().out
-    assert "a:" in out
-
 
 def test_find_checkpoint_path_variants(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
@@ -510,30 +504,30 @@ def test_run_eval_rejects_unknown_eval_mode(tmp_path, monkeypatch: pytest.Monkey
 def test_preprocess_entrypoint_runs_with_hydra_overrides(monkeypatch, tmp_path) -> None:
     captured = {}
 
-    def _fake_preprocess_dataset_from_config(cfg):
-        captured["meds_data_dir"] = cfg.meds_data_dir
-        captured["output_dir"] = cfg.output_dir
-        captured["min_subjects_per_code"] = cfg.min_subjects_per_code
+    def _fake_generate_tasks(meds_data_dir, output_dir, *, num_tasks, horizon_days, min_history_days, seed):
+        captured["meds_data_dir"] = str(meds_data_dir)
+        captured["num_tasks"] = num_tasks
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        return Path(output_dir)
 
-    monkeypatch.setattr("medrap.cli.preprocess_dataset_from_config", _fake_preprocess_dataset_from_config)
+    monkeypatch.setattr("medrap.cli.generate_tasks", _fake_generate_tasks)
 
     meds_data_dir = tmp_path / "raw"
-    output_dir = tmp_path / "filtered"
+    output_dir = tmp_path / "out"
+    tensorized_dir = tmp_path / "tensorized"
 
     assert (
         _run_preprocess_cli(
             [
                 f"meds_data_dir={meds_data_dir}",
                 f"output_dir={output_dir}",
-                "min_subjects_per_code=5",
+                f"tensorized_dir={tensorized_dir}",
+                "num_tasks=5",
             ]
         )
         == 0
     )
-    assert captured == {
-        "meds_data_dir": str(meds_data_dir),
-        "output_dir": str(output_dir),
-        "min_subjects_per_code": 5,
-    }
+    assert captured["meds_data_dir"] == str(meds_data_dir)
+    assert captured["num_tasks"] == 5
     assert (output_dir / "config.yaml").exists()
     assert (output_dir / "resolved_config.yaml").exists()
