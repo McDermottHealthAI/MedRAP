@@ -37,7 +37,6 @@ from .prepare_retrieval.preparation import (
     OrderedFieldDocumentRenderer,
     prepare_retrieval_dataset,
 )
-from .preprocess.preprocessing import preprocess_meds_dataset
 from .train.datamodule import SyntheticSupervisedDatamodule
 from .train.lightning_module import MedRAPSupervisedLightningModule
 from .train.losses import MarginalizedRetrievalSupervisedLoss
@@ -710,57 +709,25 @@ def prepare_retrieval_dataset_from_config(config: Any) -> str:
 
 @dataclass
 class PreprocessDatasetAppConfig:
-    """Top-level app config for raw-MEDS rare-code/sparse-subject filtering."""
+    """Top-level app config for the medrap-preprocess pipeline.
+
+    Stages:
+        1. MEDS-transforms (add time features, filter rare codes/sparse subjects,
+           quantize numeric values) — skipped when ``tensorized_dir`` is set.
+        2. MTD_preprocess (tokenize + tensorize) — skipped when ``tensorized_dir`` is set.
+        3. generate_tasks (sample task codes, create binary labels).
+    """
 
     meds_data_dir: str = MISSING
     output_dir: str = MISSING
-    min_subjects_per_code: int | None = None
-    min_occurrences_per_code: int | None = None
-    sentinel_code_regex: str = "MEDS_DEATH.*|MEDS_BIRTH.*|.*ADMISSION.*|.*DISCHARGE.*|.*REGISTRATION.*"
-    min_events_per_subject: int | None = None
+    tensorized_dir: str | None = None
+    min_subjects_per_code: int = 100
+    min_events_per_subject: int = 10
+    num_tasks: int = 25
+    horizon_days: float = 7.0
+    min_history_days: float = 1.0
+    seed: int = 42
     do_overwrite: bool = False
-
-
-def preprocess_dataset_from_config(config: Any) -> str:
-    """Filter a raw MEDS dataset's rare codes and sparse subjects from config.
-
-    Args:
-        config: Structured config with ``meds_data_dir``, ``output_dir``, and
-            the filter threshold fields on :class:`PreprocessDatasetAppConfig`.
-
-    Returns:
-        Output directory path where the filtered dataset was saved.
-
-    Examples:
-        >>> import polars as pl
-        >>> with tempfile.TemporaryDirectory() as tmpdir:
-        ...     shard_dir = Path(tmpdir) / "raw" / "data" / "train"
-        ...     shard_dir.mkdir(parents=True)
-        ...     pl.DataFrame(
-        ...         {
-        ...             "subject_id": [1, 1, 2],
-        ...             "code": ["common", "rare", "common"],
-        ...             "time": [1, 2, 1],
-        ...         }
-        ...     ).write_parquet(shard_dir / "0.parquet")
-        ...     cfg = PreprocessDatasetAppConfig(
-        ...         meds_data_dir=str(Path(tmpdir) / "raw"),
-        ...         output_dir=str(Path(tmpdir) / "filtered"),
-        ...         min_subjects_per_code=2,
-        ...     )
-        ...     out_dir = preprocess_dataset_from_config(cfg)
-        ...     sorted(pl.read_parquet(Path(out_dir) / "data" / "train" / "0.parquet")["code"].to_list())
-        ['common', 'common']
-    """
-    output_path = preprocess_meds_dataset(
-        meds_data_dir=config.meds_data_dir,
-        output_dir=config.output_dir,
-        min_subjects_per_code=config.min_subjects_per_code,
-        min_occurrences_per_code=config.min_occurrences_per_code,
-        sentinel_code_regex=config.sentinel_code_regex,
-        min_events_per_subject=config.min_events_per_subject,
-    )
-    return str(output_path)
 
 
 def instantiate_datamodule(config: RAPTrainConfig | RAPEvalConfig) -> lightning.LightningDataModule:
