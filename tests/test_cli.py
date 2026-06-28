@@ -359,7 +359,6 @@ def test_bind_trainer_paths_list_logger_without_save_dir_left_unchanged(tmp_path
     assert "save_dir" not in bound.training.trainer.logger[1]
 
 
-
 def test_find_checkpoint_path_variants(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
