@@ -15,13 +15,9 @@ from .configs import (
     instantiate_datamodule,
     instantiate_training_module,
     prepare_retrieval_dataset_from_config,
-    preprocess_dataset_from_config,
 )
-
-
-def _run_cfg(cfg: DictConfig) -> int:
-    print(OmegaConf.to_yaml(cfg))
-    return 0
+from .preprocess.label_creation import generate_tasks
+from .preprocess.preprocessing import run_meds_pipeline
 
 
 def _save_resolved(cfg: DictConfig, output_path: Path) -> None:
@@ -163,6 +159,60 @@ def _prepare_output_dir(cfg: DictConfig) -> Path:
     return output_dir
 
 
+def _setup_output_dir(output_dir: Path, cfg: DictConfig) -> Path:
+    """Create or overwrite a command output directory and save configs.
+
+    Examples:
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     output_dir = Path(tmpdir) / "out"
+        ...     cfg = OmegaConf.create({"do_overwrite": False})
+        ...     returned = _setup_output_dir(output_dir, cfg)
+        ...     has_config = (output_dir / "config.yaml").exists()
+        ...     has_resolved = (output_dir / "resolved_config.yaml").exists()
+        ...     returned == output_dir and has_config and has_resolved
+        True
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     output_dir = Path(tmpdir) / "out"
+        ...     output_dir.mkdir()
+        ...     _ = (output_dir / "config.yaml").write_text("existing")
+        ...     cfg = OmegaConf.create({"do_overwrite": False})
+        ...     _setup_output_dir(output_dir, cfg)
+        Traceback (most recent call last):
+        FileExistsError: Output directory .../out already exists. Use `do_overwrite=true` to proceed.
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     output_dir = Path(tmpdir) / "out"
+        ...     output_dir.mkdir()
+        ...     stale_file = output_dir / "stale.txt"
+        ...     _ = stale_file.write_text("stale")
+        ...     _ = (output_dir / "config.yaml").write_text("existing")
+        ...     cfg = OmegaConf.create({"do_overwrite": True})
+        ...     returned = _setup_output_dir(output_dir, cfg)
+        ...     returned == output_dir and not stale_file.exists()
+        True
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     output_path = Path(tmpdir) / "out"
+        ...     _ = output_path.write_text("not a directory")
+        ...     cfg = OmegaConf.create({"do_overwrite": False})
+        ...     _setup_output_dir(output_path, cfg)
+        Traceback (most recent call last):
+        NotADirectoryError: Output directory .../out is a file, not a directory.
+    """
+    if output_dir.is_file():
+        raise NotADirectoryError(f"Output directory {output_dir} is a file, not a directory.")
+    config_path = output_dir / "config.yaml"
+    if config_path.exists():
+        if cfg.do_overwrite:
+            shutil.rmtree(output_dir, ignore_errors=True)
+        else:
+            raise FileExistsError(
+                f"Output directory {output_dir} already exists. Use `do_overwrite=true` to proceed."
+            )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    OmegaConf.save(cfg, config_path)
+    _save_resolved(cfg, output_dir / "resolved_config.yaml")
+    return output_dir
+
+
 def _prepare_train_run(cfg: DictConfig) -> Path | None:
     """Create or validate a training run directory.
 
@@ -244,127 +294,7 @@ def _prepare_eval_run(cfg: DictConfig) -> Path:
 
 
 def _prepare_retrieval_dataset_run(cfg: DictConfig) -> Path:
-    """Create or validate a retrieval-dataset preparation output directory.
-
-    Examples:
-        >>> with tempfile.TemporaryDirectory() as tmpdir:
-        ...     output_dir = Path(tmpdir) / "prepared"
-        ...     cfg = OmegaConf.create(
-        ...         {"prep": {"output": {"output_dir": str(output_dir)}}, "do_overwrite": False}
-        ...     )
-        ...     returned = _prepare_retrieval_dataset_run(cfg)
-        ...     has_config = (output_dir / "config.yaml").exists()
-        ...     has_resolved = (output_dir / "resolved_config.yaml").exists()
-        ...     returned == output_dir and has_config and has_resolved
-        True
-        >>> with tempfile.TemporaryDirectory() as tmpdir:
-        ...     output_dir = Path(tmpdir) / "prepared"
-        ...     output_dir.mkdir()
-        ...     _ = (output_dir / "config.yaml").write_text("existing")
-        ...     cfg = OmegaConf.create(
-        ...         {"prep": {"output": {"output_dir": str(output_dir)}}, "do_overwrite": False}
-        ...     )
-        ...     _prepare_retrieval_dataset_run(cfg)
-        Traceback (most recent call last):
-        FileExistsError: Output directory .../prepared already contains a prepared retrieval dataset. ...
-        >>> with tempfile.TemporaryDirectory() as tmpdir:
-        ...     output_dir = Path(tmpdir) / "prepared"
-        ...     output_dir.mkdir()
-        ...     stale_file = output_dir / "retrieval.faiss"
-        ...     _ = stale_file.write_text("stale")
-        ...     _ = (output_dir / "config.yaml").write_text("existing")
-        ...     cfg = OmegaConf.create(
-        ...         {"prep": {"output": {"output_dir": str(output_dir)}}, "do_overwrite": True}
-        ...     )
-        ...     returned = _prepare_retrieval_dataset_run(cfg)
-        ...     returned == output_dir and not stale_file.exists()
-        True
-        >>> with tempfile.TemporaryDirectory() as tmpdir:
-        ...     output_path = Path(tmpdir) / "prepared"
-        ...     _ = output_path.write_text("not a directory")
-        ...     cfg = OmegaConf.create(
-        ...         {"prep": {"output": {"output_dir": str(output_path)}}, "do_overwrite": False}
-        ...     )
-        ...     _prepare_retrieval_dataset_run(cfg)
-        Traceback (most recent call last):
-        NotADirectoryError: Output directory .../prepared is a file, not a directory.
-    """
-    output_dir = Path(cfg.prep.output.output_dir)
-    if output_dir.is_file():
-        raise NotADirectoryError(f"Output directory {output_dir} is a file, not a directory.")
-
-    config_path = output_dir / "config.yaml"
-    if config_path.exists():
-        if cfg.do_overwrite:
-            shutil.rmtree(output_dir, ignore_errors=True)
-        else:
-            raise FileExistsError(
-                f"Output directory {output_dir} already contains a prepared retrieval dataset. "
-                "Use `do_overwrite=true` to proceed."
-            )
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    OmegaConf.save(cfg, config_path)
-    _save_resolved(cfg, output_dir / "resolved_config.yaml")
-    return output_dir
-
-
-def _prepare_preprocess_run(cfg: DictConfig) -> Path:
-    """Create or validate a MEDS preprocessing output directory.
-
-    Examples:
-        >>> with tempfile.TemporaryDirectory() as tmpdir:
-        ...     output_dir = Path(tmpdir) / "filtered"
-        ...     cfg = OmegaConf.create({"output_dir": str(output_dir), "do_overwrite": False})
-        ...     returned = _prepare_preprocess_run(cfg)
-        ...     has_config = (output_dir / "config.yaml").exists()
-        ...     has_resolved = (output_dir / "resolved_config.yaml").exists()
-        ...     returned == output_dir and has_config and has_resolved
-        True
-        >>> with tempfile.TemporaryDirectory() as tmpdir:
-        ...     output_dir = Path(tmpdir) / "filtered"
-        ...     output_dir.mkdir()
-        ...     _ = (output_dir / "config.yaml").write_text("existing")
-        ...     cfg = OmegaConf.create({"output_dir": str(output_dir), "do_overwrite": False})
-        ...     _prepare_preprocess_run(cfg)
-        Traceback (most recent call last):
-        FileExistsError: Output directory .../filtered already contains a preprocessed MEDS dataset. ...
-        >>> with tempfile.TemporaryDirectory() as tmpdir:
-        ...     output_dir = Path(tmpdir) / "filtered"
-        ...     output_dir.mkdir()
-        ...     stale_file = output_dir / "data.parquet"
-        ...     _ = stale_file.write_text("stale")
-        ...     _ = (output_dir / "config.yaml").write_text("existing")
-        ...     cfg = OmegaConf.create({"output_dir": str(output_dir), "do_overwrite": True})
-        ...     returned = _prepare_preprocess_run(cfg)
-        ...     returned == output_dir and not stale_file.exists()
-        True
-        >>> with tempfile.TemporaryDirectory() as tmpdir:
-        ...     output_path = Path(tmpdir) / "filtered"
-        ...     _ = output_path.write_text("not a directory")
-        ...     cfg = OmegaConf.create({"output_dir": str(output_path), "do_overwrite": False})
-        ...     _prepare_preprocess_run(cfg)
-        Traceback (most recent call last):
-        NotADirectoryError: Output directory .../filtered is a file, not a directory.
-    """
-    output_dir = Path(cfg.output_dir)
-    if output_dir.is_file():
-        raise NotADirectoryError(f"Output directory {output_dir} is a file, not a directory.")
-
-    config_path = output_dir / "config.yaml"
-    if config_path.exists():
-        if cfg.do_overwrite:
-            shutil.rmtree(output_dir, ignore_errors=True)
-        else:
-            raise FileExistsError(
-                f"Output directory {output_dir} already contains a preprocessed MEDS dataset. "
-                "Use `do_overwrite=true` to proceed."
-            )
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    OmegaConf.save(cfg, config_path)
-    _save_resolved(cfg, output_dir / "resolved_config.yaml")
-    return output_dir
+    return _setup_output_dir(Path(cfg.prep.output.output_dir), cfg)
 
 
 def _ensure_lightning_csv_log_dirs(trainer: object) -> None:
@@ -423,7 +353,6 @@ def _load_training_module_checkpoint(cfg: DictConfig, checkpoint_path: str) -> o
     module.load_state_dict(checkpoint["state_dict"])
     return module
 
-
 def _run_train(cfg: DictConfig) -> int:
     print(OmegaConf.to_yaml(cfg))
     lightning.seed_everything(cfg.seed, workers=True)
@@ -470,12 +399,35 @@ def _run_prepare_retrieval_dataset(cfg: DictConfig) -> int:
     return 0
 
 
-def _run_preprocess(cfg: DictConfig) -> int:
+@hydra.main(version_base=None, config_path="conf", config_name="_preprocess")
+def preprocess_main(cfg: DictConfig) -> None:
+    """Run the Hydra-native MEDS preprocessing and task-generation entrypoint."""
     print(OmegaConf.to_yaml(cfg))
-    _prepare_preprocess_run(cfg)
-    output_path = preprocess_dataset_from_config(cfg)
-    print(f"Preprocessed MEDS dataset saved to {output_path}")
-    return 0
+    _setup_output_dir(Path(cfg.output_dir), cfg)
+
+    if cfg.tensorized_dir is None:
+        intermediate_dir, tensorized_dir = run_meds_pipeline(
+            cfg.meds_data_dir,
+            cfg.output_dir,
+            min_subjects_per_code=cfg.min_subjects_per_code,
+            min_events_per_subject=cfg.min_events_per_subject,
+        )
+        print(f"Intermediate MEDS dataset saved to {intermediate_dir}")
+        print(f"Tensorized dataset saved to {tensorized_dir}")
+        task_source_dir = intermediate_dir
+    else:
+        print(f"Skipping preprocessing; using existing tensorized dir: {cfg.tensorized_dir}")
+        task_source_dir = Path(cfg.meds_data_dir)
+
+    tasks_out = generate_tasks(
+        meds_data_dir=task_source_dir,
+        output_dir=Path(cfg.output_dir) / "tasks",
+        num_tasks=cfg.num_tasks,
+        horizon_days=cfg.horizon_days,
+        min_history_days=cfg.min_history_days,
+        seed=cfg.seed,
+    )
+    print(f"Task labels saved to {tasks_out}")
 
 
 @hydra.main(version_base=None, config_path="conf", config_name="_train")
@@ -494,9 +446,3 @@ def eval_main(cfg: DictConfig) -> int:
 def prepare_retrieval_dataset_main(cfg: DictConfig) -> int:
     """Run the Hydra-native retrieval-dataset preparation entrypoint."""
     return _run_prepare_retrieval_dataset(cfg)
-
-
-@hydra.main(version_base=None, config_path="conf", config_name="_preprocess")
-def preprocess_main(cfg: DictConfig) -> int:
-    """Run the Hydra-native MEDS preprocessing entrypoint."""
-    return _run_preprocess(cfg)

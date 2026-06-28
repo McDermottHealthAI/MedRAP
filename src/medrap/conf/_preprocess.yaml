@@ -1,9 +1,12 @@
 meds_data_dir: ???
 output_dir: ???
-min_subjects_per_code: null
-min_occurrences_per_code: null
-sentinel_code_regex: "MEDS_DEATH.*|MEDS_BIRTH.*|.*ADMISSION.*|.*DISCHARGE.*|.*REGISTRATION.*"
-min_events_per_subject: null
+tensorized_dir: null    # provide to skip stages 1 + 2 (MEDS-transforms + MTD_preprocess)
+min_subjects_per_code: 100
+min_events_per_subject: 10
+num_tasks: 25
+horizon_days: 7.0
+min_history_days: 1.0
+seed: 42
 do_overwrite: false
 
 hydra:
