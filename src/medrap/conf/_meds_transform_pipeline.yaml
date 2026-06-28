@@ -15,17 +15,8 @@ stages:
       _base_stage: aggregate_code_metadata
 
   - filter_measurements:
-      _match_revise:
-        - _matcher:  # preserve static measurements (no time)
-            time:
-              present: False
-        - _matcher:  # preserve sentinel codes regardless of frequency
-            code:
-              regex: "MEDS_DEATH.*|MEDS_BIRTH.*|.*ADMISSION.*|.*DISCHARGE.*|.*REGISTRATION.*|.*TIME.*"
-        - _matcher:  # filter low-frequency timed codes
-            time:
-              present: True
-            min_subjects_per_code: ${oc.decode:${oc.env:MIN_SUBJECTS_PER_CODE,100}}
+      min_subjects_per_code: ${oc.decode:${oc.env:MIN_SUBJECTS_PER_CODE,100}}
+      min_occurrences_per_code: null
 
   - filter_subjects:
       min_events_per_subject: ${oc.decode:${oc.env:MIN_EVENTS_PER_SUBJECT,10}}

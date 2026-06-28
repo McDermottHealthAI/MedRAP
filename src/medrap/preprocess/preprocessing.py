@@ -52,7 +52,7 @@ def run_meds_pipeline(
 
     pipeline_cfg = _pkg_files("medrap").joinpath("conf/_meds_transform_pipeline.yaml")
     subprocess.run(
-        ["MEDS_transform-pipeline", str(pipeline_cfg)],
+        ["MEDS_transform-pipeline", f"pipeline_config_fp={pipeline_cfg}"],
         env={
             **os.environ,
             "RAW_MEDS_DIR": str(meds_data_dir),
