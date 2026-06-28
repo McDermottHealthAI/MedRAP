@@ -49,6 +49,20 @@ def _sample_task_codes(meds_data_dir: str | Path, num_tasks: int, seed: int) -> 
         ...     codes = _sample_task_codes(tmpdir, num_tasks=5, seed=0)
         ...     codes == ["DIAG//A"]
         True
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     shard_dir = Path(tmpdir) / "data" / "train"
+        ...     shard_dir.mkdir(parents=True)
+        ...     pl.DataFrame(
+        ...         {
+        ...             "subject_id": [1],
+        ...             "code": ["TIMELINE//DELTA//years"],
+        ...             "time": [datetime(2020, 1, 1)],
+        ...         }
+        ...     ).write_parquet(shard_dir / "0.parquet")
+        ...     _sample_task_codes(tmpdir, num_tasks=5, seed=0)  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        ValueError: No eligible task codes found in .../data/train/.
     """
     data = pl.scan_parquet(Path(meds_data_dir) / "data" / "train" / "*.parquet")
     eligible = (
@@ -193,6 +207,14 @@ def generate_labels(
         ...     )
         ...     set(df.columns) == {"subject_id", "prediction_time", "task_0", "task_1"}
         True
+        >>> import tempfile
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     generate_labels(
+        ...         tmpdir, "train", ["A"], horizon_days=7.0, min_history_days=1.0, seed=0
+        ...     )  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        FileNotFoundError: No shard directory: .../data/train
     """
     shard_dir = Path(meds_data_dir) / "data" / split
     if not shard_dir.exists():
