@@ -5,6 +5,7 @@ from concrete components.
 """
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, cast
 
 import lightning
@@ -18,6 +19,8 @@ from meds_torchdata import MEDSTorchBatch, MEDSTorchDataConfig
 from meds_torchdata.extensions.lightning_datamodule import Datamodule as MEDSLightningDatamodule
 from meds_torchdata.types import SubsequenceSamplingStrategy
 from omegaconf import MISSING, OmegaConf
+from sentence_transformers import SentenceTransformer
+from transformers import AutoTokenizer
 
 from .model.encoders import MEDSCodeEncoder, TokenEmbeddingEncoder
 from .model.fusion import ConcatFusion, ReplaceFusion
@@ -33,10 +36,7 @@ from .model.retrieval_encoder import (
     TokenFeatureRetrievalEncoder,
 )
 from .model.retrievers import InMemoryRetriever, load_hf_dataset_retriever
-from .prepare_retrieval.preparation import (
-    OrderedFieldDocumentRenderer,
-    prepare_retrieval_dataset,
-)
+from .prepare_retrieval.preparation import OrderedFieldDocumentRenderer
 from .train.datamodule import SyntheticSupervisedDatamodule
 from .train.lightning_module import MedRAPSupervisedLightningModule
 from .train.losses import MarginalizedRetrievalSupervisedLoss
@@ -231,17 +231,17 @@ OrderedFieldDocumentRendererConfig = builds_any(
 )
 
 
-@dataclass
-class HFTokenizerConfig:
-    _target_: str = "transformers.AutoTokenizer.from_pretrained"
-    pretrained_model_name_or_path: str = MISSING
-
-
-@dataclass
-class SentenceTransformerEmbedderConfig:
-    _target_: str = "sentence_transformers.SentenceTransformer"
-    model_name_or_path: str = MISSING
-    device: str = "cpu"
+HFTokenizerConfig = builds_any(
+    AutoTokenizer.from_pretrained,
+    pretrained_model_name_or_path=MISSING,
+    zen_dataclass={"cls_name": "HFTokenizerConfig"},
+)
+SentenceTransformerEmbedderConfig = builds_any(
+    SentenceTransformer,
+    model_name_or_path=MISSING,
+    device="cpu",
+    zen_dataclass={"cls_name": "SentenceTransformerEmbedderConfig"},
+)
 
 
 CSVLoggerConfig = builds_any(
@@ -561,150 +561,6 @@ def instantiate_training_module(config: RAPTrainConfig) -> MedRAPSupervisedLight
     task = instantiate_any(config.training.task)
     loss_fn = instantiate_any(config.training.loss)
     return instantiate_any(config.training.module, model=plain_model, task=task, loss_fn=loss_fn)
-
-
-def prepare_retrieval_dataset_from_config(config: Any) -> str:
-    """Prepare and save a static retrieval dataset artifact from config.
-
-    Args:
-        config: Structured config containing a ``prep`` section with source,
-            rendering, tokenizer, embedder, index, and output settings.
-
-    Returns:
-        Output directory path where the prepared dataset artifact was saved.
-
-    Examples:
-        >>> cfg = PrepareRetrievalDatasetAppConfig(
-        ...     prep=PrepareRetrievalDatasetConfig(
-        ...         output=RetrievalDatasetOutputConfig(output_dir="/tmp/prepared")
-        ...     )
-        ... )
-        >>> cfg.prep.index == RetrievalDatasetIndexConfig()
-        True
-        >>> cfg.prep.output.output_dir
-        '/tmp/prepared'
-        >>> cfg.do_overwrite
-        False
-        >>> retriever_cfg = HFDatasetRetrieverConfig(dataset_path="/tmp/retrieval-artifact")
-        >>> retriever_cfg.dataset_path
-        '/tmp/retrieval-artifact'
-        >>> retriever_cfg.index_name
-        'retrieval'
-
-    Delegation to :func:`medrap.preparation.prepare_retrieval_dataset` (smoke):
-
-        >>> from pathlib import Path
-        >>> from unittest.mock import patch
-        >>> captured = {}
-        >>> def _fake_prep(*_a, **kwargs):
-        ...     captured.clear()
-        ...     captured.update(kwargs)
-        ...     return "/tmp/prepared_out"
-        >>> import medrap.configs as _cfg_mod
-        >>> with (
-        ...     patch.object(_cfg_mod, "prepare_retrieval_dataset", _fake_prep),
-        ...     patch.object(_cfg_mod, "instantiate_any", lambda _c: object()),
-        ... ):
-        ...     artifact = Path("/tmp/artifact")
-        ...     cfg = PrepareRetrievalDatasetAppConfig(
-        ...         prep=PrepareRetrievalDatasetConfig(
-        ...             output=RetrievalDatasetOutputConfig(output_dir=str(artifact))
-        ...         )
-        ...     )
-        ...     r = prepare_retrieval_dataset_from_config(cfg)
-        >>> r == "/tmp/prepared_out" and captured.get("output_dir") == str(artifact)
-        True
-
-    ``num_docs`` applies a deterministic shuffle then takes the first ``num_docs`` rows:
-
-        >>> class _RecordingDataset:
-        ...     def __init__(self) -> None:
-        ...         self.shuffle_seed: int | None = None
-        ...
-        ...     def shuffle(self, seed: int = 42):
-        ...         self.shuffle_seed = int(seed)
-        ...         return self
-        ...
-        ...     def select(self, indices):
-        ...         return ("subset", self.shuffle_seed, list(indices))
-        >>> captured_subset = {}
-        >>> def _fake_prep_subset(*_a, **kwargs):
-        ...     captured_subset.clear()
-        ...     captured_subset.update(kwargs)
-        ...     return "/tmp/prepared_subset"
-        >>> _stubs_subset = [_RecordingDataset(), object(), object(), object()]
-        >>> def _fake_inst_subset(_cfg):
-        ...     return _stubs_subset.pop(0)
-        >>> with (
-        ...     patch.object(_cfg_mod, "prepare_retrieval_dataset", _fake_prep_subset),
-        ...     patch.object(_cfg_mod, "instantiate_any", _fake_inst_subset),
-        ... ):
-        ...     cfg_subset = PrepareRetrievalDatasetAppConfig(
-        ...         prep=PrepareRetrievalDatasetConfig(
-        ...             output=RetrievalDatasetOutputConfig(output_dir="/tmp/artifact_subset"),
-        ...             num_docs=3,
-        ...             num_docs_seed=9,
-        ...         )
-        ...     )
-        ...     _r_subset = prepare_retrieval_dataset_from_config(cfg_subset)
-        >>> _r_subset == "/tmp/prepared_subset"
-        True
-        >>> captured_subset["dataset"]
-        ('subset', 9, [0, 1, 2])
-
-    Full unmocked round trip — a real dataset saved to disk, loaded via
-    :class:`LoadHFDatasetFromDiskConfig`, and prepared through the real
-    ``instantiate_any`` wiring (no mocking):
-
-        >>> from datasets import Dataset
-        >>> from hydra_zen import builds
-        >>> TokenizerConfig = builds(DoctestTokenizer, populate_full_signature=False)
-        >>> EmbedderConfig = builds(DoctestEmbedder, populate_full_signature=False)
-        >>> with tempfile.TemporaryDirectory() as tmpdir:
-        ...     source_path = Path(tmpdir) / "source"
-        ...     Dataset.from_dict({"text": ["alpha", "beta"]}).save_to_disk(str(source_path))
-        ...     real_cfg = PrepareRetrievalDatasetAppConfig(
-        ...         prep=PrepareRetrievalDatasetConfig(
-        ...             source=LoadHFDatasetFromDiskConfig(dataset_path=str(source_path)),
-        ...             document=OrderedFieldDocumentRendererConfig(fields=["text"]),
-        ...             tokenizer=TokenizerConfig(),
-        ...             embedder=EmbedderConfig(),
-        ...             index=RetrievalDatasetIndexConfig(max_length=4),
-        ...             output=RetrievalDatasetOutputConfig(output_dir=str(Path(tmpdir) / "prepared")),
-        ...         )
-        ...     )
-        ...     real_output_dir = prepare_retrieval_dataset_from_config(real_cfg)
-        ...     (Path(real_output_dir) / "retrieval.faiss").exists()
-        True
-    """
-    prep_cfg = config.prep
-    dataset = instantiate_any(prep_cfg.source)
-    if prep_cfg.num_docs is not None:
-        dataset = dataset.shuffle(seed=int(prep_cfg.num_docs_seed)).select(range(int(prep_cfg.num_docs)))
-    renderer = instantiate_any(prep_cfg.document)
-    tokenizer = instantiate_any(prep_cfg.tokenizer)
-    embedder = instantiate_any(prep_cfg.embedder)
-
-    output_path = prepare_retrieval_dataset(
-        dataset=dataset,
-        renderer=renderer,
-        tokenizer=tokenizer,
-        embedder=embedder,
-        output_dir=prep_cfg.output.output_dir,
-        doc_text_column=prep_cfg.index.doc_text_column,
-        doc_tokens_column=prep_cfg.index.doc_tokens_column,
-        doc_attention_mask_column=prep_cfg.index.doc_attention_mask_column,
-        doc_key_embeddings_column=prep_cfg.index.doc_key_embeddings_column,
-        doc_ids_column=prep_cfg.index.doc_ids_column,
-        source_id_column=prep_cfg.index.source_id_column,
-        index_name=prep_cfg.index.index_name,
-        max_length=prep_cfg.index.max_length,
-        tokenization_batch_size=prep_cfg.index.tokenization_batch_size,
-        embedding_batch_size=prep_cfg.index.embedding_batch_size,
-        encode_batch_size=prep_cfg.index.encode_batch_size,
-        string_factory=prep_cfg.index.string_factory,
-    )
-    return str(output_path)
 
 
 @dataclass

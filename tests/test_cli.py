@@ -105,6 +105,7 @@ def test_prepare_retrieval_dataset_entrypoint_runs_with_hydra_overrides(monkeypa
         captured["device"] = cfg.prep.embedder.device
         captured["output_dir"] = cfg.prep.output.output_dir
         captured["max_length"] = cfg.prep.index.max_length
+        return output_dir
 
     monkeypatch.setattr(
         "medrap.cli.prepare_retrieval_dataset_from_config", _fake_prepare_retrieval_dataset_from_config

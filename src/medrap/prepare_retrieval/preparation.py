@@ -2,10 +2,14 @@
 
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from datasets import Dataset
+from hydra_zen import instantiate
+
+if TYPE_CHECKING:
+    from omegaconf import DictConfig
 
 
 class OrderedFieldDocumentRenderer:
@@ -213,3 +217,26 @@ def prepare_retrieval_dataset(
     prepared.drop_index(index_name)
     prepared.save_to_disk(str(output_path))
     return output_path
+
+
+def prepare_retrieval_dataset_from_config(cfg: "DictConfig") -> Path:
+    """Prepare a retrieval dataset artifact from a Hydra config.
+
+    Args:
+        cfg: Top-level ``PrepareRetrievalDatasetAppConfig`` OmegaConf node.
+
+    Returns:
+        Output directory containing the saved dataset artifact and FAISS index.
+    """
+    prep = cfg.prep
+    dataset = instantiate(prep.source)
+    if cfg.get("num_docs") is not None:
+        dataset = dataset.shuffle(seed=prep.num_docs_seed).select(range(prep.num_docs))
+    return prepare_retrieval_dataset(
+        dataset=dataset,
+        renderer=instantiate(prep.document),
+        tokenizer=instantiate(prep.tokenizer),
+        embedder=instantiate(prep.embedder),
+        output_dir=prep.output.output_dir,
+        **{k: v for k, v in prep.index.items()},
+    )
