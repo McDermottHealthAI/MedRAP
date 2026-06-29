@@ -230,7 +230,7 @@ def prepare_retrieval_dataset_from_config(cfg: "DictConfig") -> Path:
     """
     prep = cfg.prep
     dataset = instantiate(prep.source)
-    if cfg.get("num_docs") is not None:
+    if prep.num_docs is not None:
         dataset = dataset.shuffle(seed=prep.num_docs_seed).select(range(prep.num_docs))
     return prepare_retrieval_dataset(
         dataset=dataset,
@@ -238,5 +238,5 @@ def prepare_retrieval_dataset_from_config(cfg: "DictConfig") -> Path:
         tokenizer=instantiate(prep.tokenizer),
         embedder=instantiate(prep.embedder),
         output_dir=prep.output.output_dir,
-        **{k: v for k, v in prep.index.items()},
+        **dict(prep.index),
     )
