@@ -227,6 +227,59 @@ def prepare_retrieval_dataset_from_config(cfg: "DictConfig") -> Path:
 
     Returns:
         Output directory containing the saved dataset artifact and FAISS index.
+
+    Examples:
+        >>> from datasets import Dataset
+        >>> from hydra_zen import builds
+        >>> from medrap.configs import (
+        ...     LoadHFDatasetFromDiskConfig,
+        ...     OrderedFieldDocumentRendererConfig,
+        ...     PrepareRetrievalDatasetAppConfig,
+        ...     PrepareRetrievalDatasetConfig,
+        ...     RetrievalDatasetIndexConfig,
+        ...     RetrievalDatasetOutputConfig,
+        ... )
+        >>> TokenizerCfg = builds(DoctestTokenizer, populate_full_signature=False)
+        >>> EmbedderCfg = builds(DoctestEmbedder, populate_full_signature=False)
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     src = Path(tmpdir) / "source"
+        ...     Dataset.from_dict({"text": ["alpha", "beta"]}).save_to_disk(str(src))
+        ...     cfg = OmegaConf.structured(
+        ...         PrepareRetrievalDatasetAppConfig(
+        ...             prep=PrepareRetrievalDatasetConfig(
+        ...                 source=LoadHFDatasetFromDiskConfig(dataset_path=str(src)),
+        ...                 document=OrderedFieldDocumentRendererConfig(fields=["text"]),
+        ...                 tokenizer=TokenizerCfg(),
+        ...                 embedder=EmbedderCfg(),
+        ...                 index=RetrievalDatasetIndexConfig(max_length=4),
+        ...                 output=RetrievalDatasetOutputConfig(output_dir=str(Path(tmpdir) / "prepared")),
+        ...             )
+        ...         )
+        ...     )
+        ...     out = prepare_retrieval_dataset_from_config(cfg)
+        ...     (Path(str(out)) / "retrieval.faiss").exists()
+        True
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     src = Path(tmpdir) / "source"
+        ...     Dataset.from_dict({"text": ["alpha", "beta", "gamma"]}).save_to_disk(str(src))
+        ...     cfg = OmegaConf.structured(
+        ...         PrepareRetrievalDatasetAppConfig(
+        ...             prep=PrepareRetrievalDatasetConfig(
+        ...                 source=LoadHFDatasetFromDiskConfig(dataset_path=str(src)),
+        ...                 document=OrderedFieldDocumentRendererConfig(fields=["text"]),
+        ...                 tokenizer=TokenizerCfg(),
+        ...                 embedder=EmbedderCfg(),
+        ...                 index=RetrievalDatasetIndexConfig(max_length=4),
+        ...                 output=RetrievalDatasetOutputConfig(output_dir=str(Path(tmpdir) / "prepared")),
+        ...                 num_docs=2,
+        ...             )
+        ...         )
+        ...     )
+        ...     out = prepare_retrieval_dataset_from_config(cfg)
+        ...     from datasets import load_from_disk
+        ...
+        ...     len(load_from_disk(str(out)))
+        2
     """
     prep = cfg.prep
     dataset = instantiate(prep.source)
