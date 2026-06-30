@@ -5,7 +5,6 @@ from concrete components.
 """
 
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, cast
 
 import lightning
