@@ -280,6 +280,10 @@ class MultiTaskBinaryClassificationTask(SupervisedTask):
         >>> task = MultiTaskBinaryClassificationTask(num_tasks=3)
         >>> task.output_dim
         3
+        >>> MultiTaskBinaryClassificationTask(num_tasks=0)  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        ValueError: num_tasks must be a positive integer, got 0
     """
 
     def __init__(self, *, num_tasks: int) -> None:
@@ -311,6 +315,18 @@ class MultiTaskBinaryClassificationTask(SupervisedTask):
             >>> targets = task.extract_targets(batch)
             >>> tuple(targets.shape)
             (2, 2)
+            >>> targets.dtype
+            torch.float32
+            >>> no_labels = MEDSTorchBatch(
+            ...     code=torch.LongTensor([[1, 2]]),
+            ...     numeric_value=torch.zeros(1, 2),
+            ...     numeric_value_mask=torch.zeros(1, 2, dtype=torch.bool),
+            ...     time_delta_days=torch.zeros(1, 2),
+            ... )
+            >>> task.extract_targets(no_labels)  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: Expected multi_task_labels on the MEDS batch.
         """
         labels = getattr(batch, "multi_task_labels", None)
         if not isinstance(labels, Tensor):
@@ -328,6 +344,25 @@ class MultiTaskBinaryClassificationTask(SupervisedTask):
             >>> targets = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
             >>> float(task.metrics(preds, targets)["accuracy"])
             1.0
+            >>> float(
+            ...     task.metrics(
+            ...         ModelOutput(logits=torch.tensor([[10.0, -10.0]])),
+            ...         torch.tensor([[0.0, float("nan")]]),
+            ...     )["accuracy"]
+            ... )
+            0.0
+            >>> float(
+            ...     task.metrics(ModelOutput(logits=torch.zeros(2, 2)), torch.full((2, 2), float("nan")))[
+            ...         "accuracy"
+            ...     ]
+            ... )
+            0.0
+            >>> task.metrics(
+            ...     ModelOutput(logits=torch.zeros(1, 2)), {"x": torch.zeros(1, 2)}
+            ... )  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: MultiTaskBinaryClassificationTask expects tensor targets.
         """
         if not isinstance(targets, Tensor):
             raise ValueError("MultiTaskBinaryClassificationTask expects tensor targets.")

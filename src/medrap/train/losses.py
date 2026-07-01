@@ -42,6 +42,26 @@ class MultiTaskBCELoss(SupervisedLoss):
 
         Returns:
             Scalar loss.
+
+        Examples:
+            >>> import torch
+            >>> from medrap.types import ModelOutput
+            >>> loss_fn = MultiTaskBCELoss()
+            >>> expected = torch.nn.functional.binary_cross_entropy_with_logits(torch.zeros(1), torch.ones(1))
+            >>> torch.isclose(
+            ...     loss_fn(ModelOutput(logits=torch.zeros(1, 2)), torch.tensor([[1.0, float("nan")]])),
+            ...     expected,
+            ... )
+            tensor(True)
+            >>> logits_g = torch.zeros(2, 3, requires_grad=True)
+            >>> loss = loss_fn(ModelOutput(logits=logits_g), torch.ones(2, 3))
+            >>> loss.backward()
+            >>> logits_g.grad is not None
+            True
+            >>> loss_fn(ModelOutput(logits=torch.zeros(2, 3)), {"x": torch.zeros(2, 3)})  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: MultiTaskBCELoss expects tensor targets.
         """
         if not isinstance(targets, Tensor):
             raise ValueError("MultiTaskBCELoss expects tensor targets.")
@@ -146,6 +166,25 @@ class MultiTaskBCEMarginalizedLoss(SupervisedLoss):
             >>> import torch
             >>> from medrap.types import ModelOutput
             >>> loss_fn = MultiTaskBCEMarginalizedLoss(num_tasks=2)
+            >>> per_doc = torch.randn(2, 4, 2, requires_grad=True)
+            >>> scores = torch.randn(2, 4, requires_grad=True)
+            >>> pred = ModelOutput(
+            ...     logits=torch.zeros(2, 2),
+            ...     metadata={"per_doc_logits": per_doc, "differentiable_doc_scores": scores},
+            ... )
+            >>> targets = torch.tensor([[1.0, float("nan")], [0.0, 1.0]])
+            >>> loss = loss_fn(pred, targets)
+            >>> loss.shape
+            torch.Size([])
+            >>> float(loss.detach()) > 0
+            True
+            >>> loss.backward()
+            >>> scores.grad is not None and per_doc.grad is not None
+            True
+            >>> loss_fn(ModelOutput(logits=torch.zeros(2, 2)), {"x": torch.zeros(2, 2)})  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: MultiTaskBCEMarginalizedLoss expects tensor targets.
             >>> bad_pred = ModelOutput(
             ...     logits=torch.zeros(2, 2),
             ...     metadata={
