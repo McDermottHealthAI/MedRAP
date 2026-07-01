@@ -8,7 +8,6 @@ from .configs import (
     RAPAppConfig,
     float_tensor_config,
     instantiate_model,
-    prepare_retrieval_dataset_from_config,
 )
 from .model.encoders import (
     MEDSCodeEncoder,
@@ -36,7 +35,11 @@ from .model.retrievers import (
     load_hf_dataset_retriever,
     load_in_memory_retriever,
 )
-from .prepare_retrieval.preparation import OrderedFieldDocumentRenderer, prepare_retrieval_dataset
+from .prepare_retrieval.preparation import (
+    OrderedFieldDocumentRenderer,
+    prepare_retrieval_dataset,
+    prepare_retrieval_dataset_from_config,
+)
 from .train.lightning_module import MedRAPSupervisedLightningModule
 from .train.losses import MultiTaskBCELoss, MultiTaskBCEMarginalizedLoss
 from .train.multitask_datamodule import MultiTaskMEDSDatamodule, MultiTaskMEDSDataset, load_code_index

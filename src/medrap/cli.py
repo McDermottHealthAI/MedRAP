@@ -11,11 +11,8 @@ from hydra_zen import instantiate
 from lightning.pytorch.loggers import CSVLogger
 from omegaconf import DictConfig, OmegaConf
 
-from .configs import (
-    instantiate_datamodule,
-    instantiate_training_module,
-    prepare_retrieval_dataset_from_config,
-)
+from .configs import instantiate_datamodule, instantiate_training_module
+from .prepare_retrieval.preparation import prepare_retrieval_dataset_from_config
 from .preprocess.preprocessing import run_meds_pipeline
 from .preprocess.task_generation import generate_tasks
 
@@ -293,10 +290,6 @@ def _prepare_eval_run(cfg: DictConfig) -> Path:
     return output_dir
 
 
-def _prepare_retrieval_dataset_run(cfg: DictConfig) -> Path:
-    return _setup_output_dir(Path(cfg.prep.output.output_dir), cfg)
-
-
 def _ensure_lightning_csv_log_dirs(trainer: object) -> None:
     """Create CSVLogger ``log_dir`` trees before the first metrics flush.
 
@@ -392,14 +385,6 @@ def _run_eval(cfg: DictConfig) -> int:
     raise ValueError(f"eval_mode must be 'validate' or 'test'; got {cfg.eval_mode!r}")
 
 
-def _run_prepare_retrieval_dataset(cfg: DictConfig) -> int:
-    print(OmegaConf.to_yaml(cfg))
-    _prepare_retrieval_dataset_run(cfg)
-    output_path = prepare_retrieval_dataset_from_config(cfg)
-    print(f"Prepared retrieval dataset saved to {output_path}")
-    return 0
-
-
 @hydra.main(version_base=None, config_path="conf", config_name="_preprocess")
 def preprocess_main(cfg: DictConfig) -> None:
     """Run the Hydra-native MEDS preprocessing and task-generation entrypoint."""
@@ -431,6 +416,15 @@ def preprocess_main(cfg: DictConfig) -> None:
     print(f"Task labels saved to {tasks_out}")
 
 
+@hydra.main(version_base=None, config_path="conf", config_name="_prepare_retrieval_dataset")
+def prepare_retrieval_dataset_main(cfg: DictConfig) -> None:
+    """Run the Hydra-native retrieval-dataset preparation entrypoint."""
+    print(OmegaConf.to_yaml(cfg))
+    _setup_output_dir(Path(cfg.prep.output.output_dir), cfg)
+    output_path = prepare_retrieval_dataset_from_config(cfg)
+    print(f"Prepared retrieval dataset saved to {output_path}")
+
+
 @hydra.main(version_base=None, config_path="conf", config_name="_train")
 def train_main(cfg: DictConfig) -> int:
     """Run the Hydra-native training entrypoint."""
@@ -441,9 +435,3 @@ def train_main(cfg: DictConfig) -> int:
 def eval_main(cfg: DictConfig) -> int:
     """Run the Hydra-native evaluation entrypoint."""
     return _run_eval(cfg)
-
-
-@hydra.main(version_base=None, config_path="conf", config_name="_prepare_retrieval_dataset")
-def prepare_retrieval_dataset_main(cfg: DictConfig) -> int:
-    """Run the Hydra-native retrieval-dataset preparation entrypoint."""
-    return _run_prepare_retrieval_dataset(cfg)
