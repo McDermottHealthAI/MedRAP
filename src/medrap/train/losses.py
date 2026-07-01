@@ -5,7 +5,7 @@ import torch.nn.functional as functional
 from torch import Tensor, nn
 
 from ..types import ModelOutput
-from .task import SupervisedLoss, TaskTargets
+from .task import SupervisedLoss, TaskTargets, _flatten_binary_logits, _flatten_binary_targets
 
 
 class MultiTaskBCELoss(SupervisedLoss):
@@ -152,6 +152,11 @@ class MultiTaskBCEMarginalizedLoss(SupervisedLoss):
             raise ValueError(
                 "MultiTaskBCEMarginalizedLoss requires marginalized_retrieval=True; "
                 "metadata missing 'per_doc_logits'."
+            )
+        if per_doc_logits.shape[2] != self.num_tasks:
+            raise ValueError(
+                f"MultiTaskBCEMarginalizedLoss(num_tasks={self.num_tasks}) expects "
+                f"per_doc_logits shaped (B, K, {self.num_tasks}), got {tuple(per_doc_logits.shape)}"
             )
         if not isinstance(doc_scores, Tensor):
             raise ValueError(
@@ -311,41 +316,41 @@ class MarginalizedRetrievalSupervisedLoss(SupervisedLoss):
 
         Missing or invalid metadata:
 
-            >>> MarginalizedRetrievalSupervisedLoss()(
-            ...     ModelOutput(logits=torch.zeros(2, 2)), {"x": torch.tensor(1.0)}
-            ... )  # doctest: +ELLIPSIS
-            Traceback (most recent call last):
-            ...
-            ValueError: ...tensor targets...
-            >>> MarginalizedRetrievalSupervisedLoss()(
-            ...     ModelOutput(logits=torch.zeros(1, 2), metadata={}), torch.tensor([0.0])
-            ... )  # doctest: +ELLIPSIS
-            Traceback (most recent call last):
-            ...
-            ValueError: ...per_doc_logits...
-            >>> MarginalizedRetrievalSupervisedLoss()(
-            ...     ModelOutput(
-            ...         logits=torch.zeros(1, 2),
-            ...         metadata={"per_doc_logits": torch.zeros(1, 2, 2)},
-            ...     ),
-            ...     torch.tensor([0.0]),
-            ... )  # doctest: +ELLIPSIS
-            Traceback (most recent call last):
-            ...
-            ValueError: ...differentiable_doc_scores...
-            >>> MarginalizedRetrievalSupervisedLoss()(
-            ...     ModelOutput(
-            ...         logits=torch.zeros(1, 2),
-            ...         metadata={
-            ...             "per_doc_logits": torch.zeros(1, 2, 2),
-            ...             "differentiable_doc_scores": torch.zeros(1, 2, 3),
-            ...         },
-            ...     ),
-            ...     torch.tensor([0.0]),
-            ... )  # doctest: +ELLIPSIS
-            Traceback (most recent call last):
-            ...
-            ValueError: ...(B, K)...
+        >>> MarginalizedRetrievalSupervisedLoss()(
+        ...     ModelOutput(logits=torch.zeros(2, 2)), {"x": torch.tensor(1.0)}
+        ... )  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+        ...
+        ValueError: ...tensor targets...
+        >>> MarginalizedRetrievalSupervisedLoss()(
+        ...     ModelOutput(logits=torch.zeros(1, 2), metadata={}), torch.tensor([0.0])
+        ... )  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+        ...
+        ValueError: ...per_doc_logits...
+        >>> MarginalizedRetrievalSupervisedLoss()(
+        ...     ModelOutput(
+        ...         logits=torch.zeros(1, 2),
+        ...         metadata={"per_doc_logits": torch.zeros(1, 2, 2)},
+        ...     ),
+        ...     torch.tensor([0.0]),
+        ... )  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+        ...
+        ValueError: ...differentiable_doc_scores...
+        >>> MarginalizedRetrievalSupervisedLoss()(
+        ...     ModelOutput(
+        ...         logits=torch.zeros(1, 2),
+        ...         metadata={
+        ...             "per_doc_logits": torch.zeros(1, 2, 2),
+        ...             "differentiable_doc_scores": torch.zeros(1, 2, 3),
+        ...         },
+        ...     ),
+        ...     torch.tensor([0.0]),
+        ... )  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+        ...
+        ValueError: ...(B, K)...
     """
 
     def __init__(self) -> None:
@@ -370,3 +375,51 @@ class MarginalizedRetrievalSupervisedLoss(SupervisedLoss):
             doc_scores=doc_scores,
             targets=targets_long,
         )
+
+
+class BinaryClassificationLoss(SupervisedLoss):
+    """Binary BCE-with-logits loss for scalar binary predictions.
+
+    Returns:
+        BinaryClassificationLoss: Loss helper that accepts ``ModelOutput``
+        predictions with logits shaped ``(B, 1)`` and binary tensor targets
+        shaped ``(B,)``.
+    """
+
+    def forward(self, predictions: ModelOutput, targets: TaskTargets) -> Tensor:
+        """Compute BCE-with-logits loss from binary predictions and targets.
+
+        Args:
+            predictions: ``ModelOutput`` predictions with logits shaped
+                ``(B, 1)``.
+            targets: Binary tensor targets shaped ``(B,)``.
+
+        Returns:
+            Tensor: Scalar loss tensor with shape ``()``.
+
+        Examples:
+            >>> import torch
+            >>> from medrap.types import ModelOutput
+            >>> loss_fn = BinaryClassificationLoss()
+            >>> predictions = ModelOutput(logits=torch.FloatTensor([[0.0], [2.0]]))
+            >>> targets = torch.BoolTensor([False, True])
+            >>> round(float(loss_fn(predictions, targets)), 4)
+            0.41
+            >>> loss_fn(
+            ...     ModelOutput(logits=torch.FloatTensor([[0.0], [2.0]])),
+            ...     {"labels": torch.FloatTensor([0.0, 1.0])},
+            ... )  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: BinaryClassificationLoss expects tensor targets, not structured targets.
+            >>> loss_fn(
+            ...     ModelOutput(logits=torch.FloatTensor([[0.0], [2.0]])),
+            ...     torch.BoolTensor([[False], [True]]),
+            ... )  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: BinaryClassificationLoss expects targets shaped (B,); got (2, 1)
+        """
+        flat_logits = _flatten_binary_logits(predictions, owner="BinaryClassificationLoss")
+        flat_targets = _flatten_binary_targets(targets, owner="BinaryClassificationLoss")
+        return torch.nn.functional.binary_cross_entropy_with_logits(flat_logits, flat_targets)

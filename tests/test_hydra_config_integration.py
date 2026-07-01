@@ -1,13 +1,14 @@
 import torch
 from datasets import Dataset
 from hydra import compose, initialize_config_module
+from hydra_zen import instantiate
 from meds_torchdata import MEDSTorchBatch
 from torch import nn
 
-from medrap.configs import instantiate_datamodule, instantiate_model, instantiate_training_module
 from medrap.model.model import RetrievalAugmentedModel
 from medrap.model.retrievers import HFDatasetRetriever
 from medrap.prepare_retrieval.preparation import OrderedFieldDocumentRenderer, prepare_retrieval_dataset
+from medrap.train.factory import instantiate_training_module
 from medrap.train.lightning_module import MedRAPSupervisedLightningModule
 from medrap.train.task import SupervisedTask
 
@@ -32,7 +33,7 @@ def test_train_config_composes_training_layer() -> None:
         )
 
     lightning_module = instantiate_training_module(cfg)
-    datamodule = instantiate_datamodule(cfg)
+    datamodule = instantiate(cfg.training.datamodule)
 
     assert isinstance(lightning_module, MedRAPSupervisedLightningModule)
     assert isinstance(lightning_module.model, RetrievalAugmentedModel)
@@ -57,7 +58,7 @@ def test_eval_config_composes_training_layer() -> None:
         )
 
     lightning_module = instantiate_training_module(cfg)
-    datamodule = instantiate_datamodule(cfg)
+    datamodule = instantiate(cfg.training.datamodule)
 
     assert isinstance(lightning_module, MedRAPSupervisedLightningModule)
     assert isinstance(lightning_module.model, RetrievalAugmentedModel)
@@ -85,7 +86,7 @@ def test_train_config_supports_meds_datamodule_overrides(tmp_path) -> None:
             ],
         )
 
-    datamodule = instantiate_datamodule(cfg)
+    datamodule = instantiate(cfg.training.datamodule)
 
     assert datamodule.__class__.__name__ == "Datamodule"
 
@@ -180,7 +181,7 @@ def test_eval_config_supports_saved_hf_dataset_retriever(tmp_path) -> None:
             ],
         )
 
-    model = instantiate_model(cfg)
+    model = instantiate_training_module(cfg).model
 
     assert isinstance(model, RetrievalAugmentedModel)
     assert isinstance(model.retriever, HFDatasetRetriever)

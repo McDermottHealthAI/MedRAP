@@ -13,37 +13,7 @@ from torch import Tensor
 from torchmetrics.functional.classification import binary_auroc
 
 from ..types import ModelOutput
-
-
-def _positive_class_probs(logits: Tensor) -> Tensor:
-    """Map binary logits to probabilities of the positive class (shape ``(N,)``).
-
-    Examples:
-        >>> import torch
-        >>> p = _positive_class_probs(torch.tensor([[0.0, 1.0], [1.0, 0.0]]))
-        >>> tuple(p.shape)
-        (2,)
-        >>> bool(p[0] > p[1])
-        True
-        >>> p1 = _positive_class_probs(torch.tensor([[0.0], [2.0]]))
-        >>> bool(p1[1] > p1[0])
-        True
-        >>> _positive_class_probs(torch.zeros(3))  # doctest: +ELLIPSIS
-        Traceback (most recent call last):
-        ...
-        ValueError: Expected logits (N, C)...
-        >>> _positive_class_probs(torch.zeros(2, 3))  # doctest: +ELLIPSIS
-        Traceback (most recent call last):
-        ...
-        ValueError: ...1 or 2 output dims...
-    """
-    if logits.ndim != 2:
-        raise ValueError(f"Expected logits (N, C), got {tuple(logits.shape)}")
-    if logits.shape[1] == 2:
-        return torch.softmax(logits, dim=-1)[:, 1]
-    if logits.shape[1] == 1:
-        return torch.sigmoid(logits.squeeze(-1))
-    raise ValueError(f"Expected 1 or 2 output dims for binary AUROC, got {logits.shape[1]}")
+from .metrics import positive_class_probs
 
 
 def _resolve_val_dataloader(trainer: pl.Trainer):
@@ -436,7 +406,7 @@ class EndOfFitValAUROCCallback(Callback):
                 targets = task.extract_targets(batch)
                 if not isinstance(targets, Tensor):
                     continue
-                probs_chunks.append(_positive_class_probs(out.logits).detach().float().cpu())
+                probs_chunks.append(positive_class_probs(out.logits).detach().float().cpu())
                 target_chunks.append(targets.detach().float().cpu().view(-1))
 
         if not probs_chunks:
