@@ -10,10 +10,9 @@ import torch
 from lightning.pytorch.callbacks import Callback
 from lightning.pytorch.loggers import WandbLogger
 from torch import Tensor
-from torchmetrics.functional.classification import binary_auroc
 
 from ..types import ModelOutput
-from .metrics import positive_class_probs
+from .metrics import binary_auroc_torch, positive_class_probs
 
 
 def _resolve_val_dataloader(trainer: pl.Trainer):
@@ -276,7 +275,7 @@ class EndOfFitValAUROCCallback(Callback):
         ...     ModelOutput(logits=torch.tensor([[0.0]])),
         ...     ModelOutput(logits=torch.tensor([[1.0]])),
         ... ]
-        >>> with patch("medrap.train.callbacks.binary_auroc", side_effect=RuntimeError("fail")):
+        >>> with patch("medrap.train.callbacks.binary_auroc_torch", return_value=None):
         ...     EndOfFitValAUROCCallback().on_fit_end(
         ...         SimpleNamespace(
         ...             sanity_checking=False,
@@ -303,7 +302,7 @@ class EndOfFitValAUROCCallback(Callback):
         ...     ModelOutput(logits=torch.tensor([[0.0]])),
         ...     ModelOutput(logits=torch.tensor([[1.0]])),
         ... ]
-        >>> with patch("medrap.train.callbacks.binary_auroc", return_value=torch.tensor(float("nan"))):
+        >>> with patch("medrap.train.callbacks.binary_auroc_torch", return_value=None):
         ...     EndOfFitValAUROCCallback().on_fit_end(
         ...         SimpleNamespace(
         ...             sanity_checking=False,
@@ -417,15 +416,8 @@ class EndOfFitValAUROCCallback(Callback):
         if probs.shape[0] == 0:
             return
 
-        unique = torch.unique(targets.long())
-        if unique.numel() < 2:
-            return
-
-        try:
-            score = binary_auroc(probs, targets.long())
-        except Exception:
-            return
-        if torch.isnan(score):
+        score = binary_auroc_torch(targets.float(), probs)
+        if score is None:
             return
 
         value = float(score.item())
