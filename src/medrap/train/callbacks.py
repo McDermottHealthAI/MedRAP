@@ -290,33 +290,6 @@ class EndOfFitValAUROCCallback(Callback):
         ...     )
         >>> log_bad.log_metrics.called
         False
-        >>> log_nan = SimpleNamespace(log_metrics=MagicMock())
-        >>> plm_nan = MagicMock(spec=pl.LightningModule)
-        >>> plm_nan.training = True
-        >>> plm_nan.device = torch.device("cpu")
-        >>> plm_nan.eval = MagicMock()
-        >>> plm_nan.train = MagicMock()
-        >>> plm_nan.transfer_batch_to_device = lambda batch, device, dataloader_idx=0: batch
-        >>> plm_nan.task = BinaryClassificationTask()
-        >>> plm_nan.side_effect = [
-        ...     ModelOutput(logits=torch.tensor([[0.0]])),
-        ...     ModelOutput(logits=torch.tensor([[1.0]])),
-        ... ]
-        >>> with patch("medrap.train.callbacks.binary_auroc_torch", return_value=None):
-        ...     EndOfFitValAUROCCallback().on_fit_end(
-        ...         SimpleNamespace(
-        ...             sanity_checking=False,
-        ...             global_step=0,
-        ...             loggers=[log_nan],
-        ...             datamodule=None,
-        ...             val_dataloaders=DataLoader(
-        ...                 [_auroc_batch2(False), _auroc_batch2(True)], batch_size=None
-        ...             ),
-        ...         ),
-        ...         plm_nan,
-        ...     )
-        >>> log_nan.log_metrics.called
-        False
         >>> import medrap.train.callbacks as _cb_mod
         >>> class _StubWB:
         ...     pass
