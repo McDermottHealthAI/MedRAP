@@ -141,6 +141,22 @@ class MultiTaskBCEMarginalizedLoss(SupervisedLoss):
 
         Returns:
             Scalar loss.
+
+        Examples:
+            >>> import torch
+            >>> from medrap.types import ModelOutput
+            >>> loss_fn = MultiTaskBCEMarginalizedLoss(num_tasks=2)
+            >>> bad_pred = ModelOutput(
+            ...     logits=torch.zeros(2, 2),
+            ...     metadata={
+            ...         "per_doc_logits": torch.zeros(2, 4, 3),
+            ...         "differentiable_doc_scores": torch.zeros(2, 4),
+            ...     },
+            ... )
+            >>> loss_fn(bad_pred, torch.zeros(2, 2))  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: MultiTaskBCEMarginalizedLoss(num_tasks=2) expects per_doc_logits shaped (B, K, 2)...
         """
         if not isinstance(targets, Tensor):
             raise ValueError("MultiTaskBCEMarginalizedLoss expects tensor targets.")

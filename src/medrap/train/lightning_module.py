@@ -486,6 +486,15 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
             ... }
             >>> id(task.scale) in optimized_params
             True
+            >>> from types import SimpleNamespace
+            >>> warmup_module = MedRAPSupervisedLightningModule(
+            ...     model=ModelOutputBinaryModel(), warmup_steps=10
+            ... )
+            >>> warmup_module._trainer = SimpleNamespace(estimated_stepping_batches=float("inf"))
+            >>> warmup_module.configure_optimizers()  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: configure_optimizers: cannot build cosine LR schedule...
         """
         optimizer = self.optimizer_factory(self._grouped_parameters())
         if self.warmup_steps == 0:
