@@ -349,8 +349,6 @@ def test_lightning_module_test_step_runs(
     assert "test/loss" in metrics[0]
 
 
-
-
 def test_configure_optimizers_with_warmup_returns_scheduler_dict(
     supervised_batch: MEDSTorchBatch,
     model_output_binary_model: nn.Module,

@@ -470,5 +470,3 @@ class PreprocessDatasetAppConfig:
     min_history_days: float = 1.0
     seed: int = 42
     do_overwrite: bool = False
-
-

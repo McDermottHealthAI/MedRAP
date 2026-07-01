@@ -35,9 +35,7 @@ def _extract_boolean_value(batch: MEDSTorchBatch, label_field: str, owner: str) 
     if targets.ndim == 2 and targets.shape[1] == 1:
         targets = targets.squeeze(1)
     elif targets.ndim != 1:
-        raise ValueError(
-            f"{owner} expects {label_field} shaped (B,) or (B, 1); got {tuple(targets.shape)}"
-        )
+        raise ValueError(f"{owner} expects {label_field} shaped (B,) or (B, 1); got {tuple(targets.shape)}")
     return targets.float()
 
 
@@ -338,5 +336,3 @@ class MultiTaskBinaryClassificationTask(SupervisedTask):
         preds = (logits >= 0).float()
         correct = (preds == targets.nan_to_num(0.0)).float()
         return {"accuracy": (correct * valid.float()).sum() / valid.float().sum().clamp(min=1)}
-
-
