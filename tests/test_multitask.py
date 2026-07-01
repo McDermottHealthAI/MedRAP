@@ -80,7 +80,8 @@ class TestMultiTaskMEDSDataset:
     def test_load_mt_labels_rejects_unknown_split(self, tmp_path):
         dataset = object.__new__(MultiTaskMEDSDataset)
         dataset._num_tasks = 2
-        dataset._mt_lookup = {}
+        dataset._mt_index = {}
+        dataset._mt_matrix = torch.empty(0, 2, dtype=torch.float32)
         with pytest.raises(ValueError, match="Unknown split"):
             dataset._load_mt_labels(tmp_path, "bad")
 

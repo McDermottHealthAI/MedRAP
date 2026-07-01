@@ -65,7 +65,8 @@ class MultiTaskMEDSDataset(MEDSPytorchDataset):
         subject_ids = df["subject_id"].to_list()
         pred_times = df["prediction_time"].to_list()
         self._mt_index = {
-            (int(sid), pt): i for i, (sid, pt) in enumerate(zip(subject_ids, pred_times, strict=False))
+            (int(sid), pt.replace(tzinfo=None)): i
+            for i, (sid, pt) in enumerate(zip(subject_ids, pred_times, strict=False))
         }
         log.info("Loaded %d multi-task label rows for split %s.", len(self._mt_index), split)
 
@@ -74,7 +75,7 @@ class MultiTaskMEDSDataset(MEDSPytorchDataset):
 
         subject_id = int(self.index[idx][0])
         pred_time = self.schema_df[idx, "prediction_time"]
-        key = (subject_id, pred_time)
+        key = (subject_id, pred_time.replace(tzinfo=None))
 
         row_idx = self._mt_index.get(key)
         labels = (
