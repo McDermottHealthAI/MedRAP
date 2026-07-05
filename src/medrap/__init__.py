@@ -7,7 +7,6 @@ from .configs import (
     PrepareRetrievalDatasetConfig,
     RAPAppConfig,
     float_tensor_config,
-    instantiate_model,
 )
 from .model.encoders import (
     MEDSCodeEncoder,
@@ -41,9 +40,15 @@ from .prepare_retrieval.preparation import (
     prepare_retrieval_dataset_from_config,
 )
 from .train.lightning_module import MedRAPSupervisedLightningModule
-from .train.losses import MultiTaskBCELoss, MultiTaskBCEMarginalizedLoss
+from .train.losses import (
+    BinaryClassificationLoss,
+    MarginalizedRetrievalLoss,
+    MarginalizedRetrievalSupervisedLoss,
+    MultiTaskBCELoss,
+    MultiTaskBCEMarginalizedLoss,
+)
 from .train.multitask_datamodule import MultiTaskMEDSDatamodule, MultiTaskMEDSDataset, load_code_index
-from .train.task import BinaryClassificationLoss, BinaryClassificationTask, MultiTaskBinaryClassificationTask
+from .train.task import BinaryClassificationTask, MultiTaskBinaryClassificationTask
 from .types import (
     EncoderOutput,
     FusionInput,
@@ -73,6 +78,8 @@ __all__ = [
     "LinearProjectionRetrievalEncoder",
     "LinearQueryProjector",
     "MEDSCodeEncoder",
+    "MarginalizedRetrievalLoss",
+    "MarginalizedRetrievalSupervisedLoss",
     "MaskedMeanPooling",
     "MedRAPSupervisedLightningModule",
     "ModelOutput",
@@ -103,7 +110,6 @@ __all__ = [
     "TimeDeltaRoPEPatientEncoder",
     "TokenEmbeddingEncoder",
     "float_tensor_config",
-    "instantiate_model",
     "load_code_index",
     "load_hf_dataset_retriever",
     "load_in_memory_retriever",

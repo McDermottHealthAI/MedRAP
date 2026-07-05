@@ -11,10 +11,10 @@ from hydra_zen import instantiate
 from lightning.pytorch.loggers import CSVLogger
 from omegaconf import DictConfig, OmegaConf
 
-from .configs import instantiate_datamodule, instantiate_training_module
 from .prepare_retrieval.preparation import prepare_retrieval_dataset_from_config
 from .preprocess.preprocessing import run_meds_pipeline
 from .preprocess.task_generation import generate_tasks
+from .train.factory import instantiate_training_module
 
 
 def _save_resolved(cfg: DictConfig, output_path: Path) -> None:
@@ -210,8 +210,11 @@ def _setup_output_dir(output_dir: Path, cfg: DictConfig) -> Path:
     return output_dir
 
 
-def _prepare_train_run(cfg: DictConfig) -> Path | None:
+def _prepare_train_run(cfg: DictConfig) -> tuple[Path, Path | None]:
     """Create or validate a training run directory.
+
+    Returns:
+        Tuple of (output_dir, ckpt_path). ckpt_path is set only when resuming.
 
     Examples:
         >>> with tempfile.TemporaryDirectory() as tmpdir:
@@ -228,7 +231,8 @@ def _prepare_train_run(cfg: DictConfig) -> Path | None:
         ...             "training": {"trainer": {"default_root_dir": "."}},
         ...         }
         ...     )
-        ...     _prepare_train_run(cfg) is None
+        ...     out_dir, ckpt = _prepare_train_run(cfg)
+        ...     ckpt is None
         True
         >>> stale_file.exists()
         False
@@ -271,7 +275,7 @@ def _prepare_train_run(cfg: DictConfig) -> Path | None:
         OmegaConf.save(cfg, config_path)
         _save_resolved_config(cfg, output_dir / "resolved_config.yaml")
 
-    return ckpt_path
+    return output_dir, ckpt_path
 
 
 def _prepare_eval_run(cfg: DictConfig) -> Path:
@@ -347,42 +351,8 @@ def _load_training_module_checkpoint(cfg: DictConfig, checkpoint_path: str) -> o
     return module
 
 
-def _run_train(cfg: DictConfig) -> int:
-    print(OmegaConf.to_yaml(cfg))
-    lightning.seed_everything(cfg.seed, workers=True)
-    output_dir = _prepare_output_dir(cfg)
-    ckpt_path = _prepare_train_run(cfg)
-    module = instantiate_training_module(cfg)
-    bound_cfg = _bind_trainer_paths(cfg, output_dir=output_dir)
-    trainer = instantiate(bound_cfg.training.trainer)
-    _ensure_lightning_csv_log_dirs(trainer)
-    datamodule = instantiate_datamodule(cfg)
-
-    trainer.fit(module, datamodule=datamodule, ckpt_path=str(ckpt_path) if ckpt_path else None)
-    _copy_best_checkpoint(trainer, output_dir)
-    return 0
-
-
-def _run_eval(cfg: DictConfig) -> int:
-    print(OmegaConf.to_yaml(cfg))
-    output_dir = _prepare_eval_run(cfg)
-    checkpoint_path = cfg.checkpoint_path
-    if not checkpoint_path:
-        raise ValueError("checkpoint_path must be set for medrap-eval.")
-
-    module = _load_training_module_checkpoint(cfg, checkpoint_path)
-    bound_cfg = _bind_trainer_paths(cfg, output_dir=output_dir)
-    trainer = instantiate(bound_cfg.training.trainer)
-    _ensure_lightning_csv_log_dirs(trainer)
-    datamodule = instantiate_datamodule(cfg)
-
-    if cfg.eval_mode == "validate":
-        trainer.validate(module, datamodule=datamodule)
-        return 0
-    if cfg.eval_mode == "test":
-        trainer.test(module, datamodule=datamodule)
-        return 0
-    raise ValueError(f"eval_mode must be 'validate' or 'test'; got {cfg.eval_mode!r}")
+def _instantiate_datamodule(cfg: DictConfig) -> object:
+    return instantiate(cfg.training.datamodule)
 
 
 @hydra.main(version_base=None, config_path="conf", config_name="_preprocess")
@@ -426,12 +396,37 @@ def prepare_retrieval_dataset_main(cfg: DictConfig) -> None:
 
 
 @hydra.main(version_base=None, config_path="conf", config_name="_train")
-def train_main(cfg: DictConfig) -> int:
+def train_main(cfg: DictConfig) -> None:
     """Run the Hydra-native training entrypoint."""
-    return _run_train(cfg)
+    print(OmegaConf.to_yaml(cfg))
+    lightning.seed_everything(cfg.seed, workers=True)
+    output_dir, ckpt_path = _prepare_train_run(cfg)
+    module = instantiate_training_module(cfg)
+    bound_cfg = _bind_trainer_paths(cfg, output_dir=output_dir)
+    trainer = instantiate(bound_cfg.training.trainer)
+    _ensure_lightning_csv_log_dirs(trainer)
+    datamodule = _instantiate_datamodule(cfg)
+    trainer.fit(module, datamodule=datamodule, ckpt_path=str(ckpt_path) if ckpt_path else None)
+    _copy_best_checkpoint(trainer, output_dir)
 
 
 @hydra.main(version_base=None, config_path="conf", config_name="_eval")
 def eval_main(cfg: DictConfig) -> int:
     """Run the Hydra-native evaluation entrypoint."""
-    return _run_eval(cfg)
+    print(OmegaConf.to_yaml(cfg))
+    output_dir = _prepare_eval_run(cfg)
+    checkpoint_path = cfg.checkpoint_path
+    if not checkpoint_path:
+        raise ValueError("checkpoint_path must be set for medrap-eval.")
+    module = _load_training_module_checkpoint(cfg, checkpoint_path)
+    bound_cfg = _bind_trainer_paths(cfg, output_dir=output_dir)
+    trainer = instantiate(bound_cfg.training.trainer)
+    _ensure_lightning_csv_log_dirs(trainer)
+    datamodule = _instantiate_datamodule(cfg)
+    if cfg.eval_mode == "validate":
+        trainer.validate(module, datamodule=datamodule)
+        return 0
+    if cfg.eval_mode == "test":
+        trainer.test(module, datamodule=datamodule)
+        return 0
+    raise ValueError(f"eval_mode must be 'validate' or 'test'; got {cfg.eval_mode!r}")

@@ -10,10 +10,10 @@ from torch.optim import Optimizer
 from transformers import get_cosine_schedule_with_warmup
 
 from ..types import ModelOutput
+from .losses import BinaryClassificationLoss
 from .metrics import binary_auroc_torch, multitask_auroc_torch, positive_class_probs
 from .retrieval_logging import model_diagnostic_scalars
 from .task import (
-    BinaryClassificationLoss,
     BinaryClassificationTask,
     SupervisedLoss,
     SupervisedTask,
@@ -90,7 +90,7 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
         """
         return self.model(batch)
 
-    def _iter_no_decay_names(self) -> set[str]:
+    def _no_decay_names(self) -> set[str]:
         no_decay_names: set[str] = set()
         norm_modules = (
             nn.BatchNorm1d,
@@ -111,7 +111,7 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
         return no_decay_names
 
     def _grouped_parameters(self) -> list[dict[str, object]]:
-        no_decay_names = self._iter_no_decay_names()
+        no_decay_names = self._no_decay_names()
         decay_params: list[nn.Parameter] = []
         no_decay_params: list[nn.Parameter] = []
 
@@ -131,6 +131,32 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
         return groups
 
     def _run_supervised_step(self, raw_batch: MEDSTorchBatch, *, stage: str) -> Tensor:
+        """Run one supervised forward pass, compute loss, and log diagnostics.
+
+        Examples:
+            >>> from medrap.train.losses import MarginalizedRetrievalSupervisedLoss
+            >>> from medrap.train.task import MarginalizedBinaryClassificationTask
+            >>> class _MargModel(nn.Module):
+            ...     def forward(self, batch: MEDSTorchBatch) -> ModelOutput:
+            ...         return ModelOutput(
+            ...             logits=torch.zeros(2, 2),
+            ...             metadata={
+            ...                 "differentiable_doc_scores": torch.randn(2, 3),
+            ...                 "per_doc_logits": torch.randn(2, 3, 2),
+            ...             },
+            ...         )
+            >>> mm = MedRAPSupervisedLightningModule(
+            ...     model=_MargModel(),
+            ...     task=MarginalizedBinaryClassificationTask(),
+            ...     loss_fn=MarginalizedRetrievalSupervisedLoss(),
+            ... )
+            >>> log_names: list = []
+            >>> mm.log = lambda *a, **k: log_names.append(a[0])
+            >>> mm.log_dict = lambda d, *a, **k: log_names.extend(d)
+            >>> _ = mm._run_supervised_step(make_supervised_batch(), stage="train")
+            >>> any(str(n).startswith("retrieval/train/") for n in log_names)
+            True
+        """
         predictions = self.forward(raw_batch)
         targets = self.task.extract_targets(raw_batch)
         if isinstance(targets, torch.Tensor):
@@ -159,11 +185,9 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
                 prog_bar=not is_train,
                 batch_size=batch_size,
             )
-        diagnostics_enabled = self.diagnostics_every_n_steps > 0
-        should_log_train_diagnostics = (
-            diagnostics_enabled and is_train and (self.global_step % self.diagnostics_every_n_steps == 0)
-        )
-        if diagnostics_enabled and (should_log_train_diagnostics or not is_train):
+        if self.diagnostics_every_n_steps > 0 and (
+            not is_train or self.global_step % self.diagnostics_every_n_steps == 0
+        ):
             self.log_dict(
                 model_diagnostic_scalars(predictions, raw_batch, stage=stage),
                 on_step=is_train,
@@ -349,6 +373,33 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
             (2, 1, 1)
             >>> tuple(result["doc_key_embeddings"].shape)
             (2, 1, 1, 4)
+
+            Batch without labels: ``'targets'`` is absent from the result.
+
+            >>> unlabeled = MEDSTorchBatch(
+            ...     code=torch.LongTensor([[1, 2, 3]]),
+            ...     numeric_value=torch.zeros(1, 3),
+            ...     numeric_value_mask=torch.zeros(1, 3, dtype=torch.bool),
+            ...     time_delta_days=torch.zeros(1, 3),
+            ... )
+            >>> "targets" not in module.predict_step(unlabeled, batch_idx=0)
+            True
+
+            Marginalized-retrieval metadata is passed through to the result dict.
+
+            >>> class _MargPredModel(nn.Module):
+            ...     def forward(self, batch: MEDSTorchBatch) -> ModelOutput:
+            ...         return ModelOutput(
+            ...             logits=torch.zeros(2, 1),
+            ...             metadata={
+            ...                 "per_doc_logits": torch.zeros(2, 3, 1),
+            ...                 "differentiable_doc_scores": torch.zeros(2, 3),
+            ...             },
+            ...         )
+            >>> marg_module = MedRAPSupervisedLightningModule(model=_MargPredModel())
+            >>> marg_result = marg_module.predict_step(make_supervised_batch(), batch_idx=0)
+            >>> "per_doc_logits" in marg_result and "differentiable_doc_scores" in marg_result
+            True
         """
         predictions = self.forward(batch)
         meta = predictions.metadata
@@ -361,7 +412,7 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
             targets = self.task.extract_targets(batch)
             if isinstance(targets, Tensor):
                 result["targets"] = targets.detach().cpu()
-        except Exception:
+        except (AttributeError, ValueError):
             pass
 
         query_out = meta.get("query_output")
@@ -382,7 +433,7 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
 
         return result
 
-    def configure_optimizers(self) -> Optimizer:
+    def configure_optimizers(self) -> Optimizer | dict[str, object]:
         """Construct the optimizer for the wrapped plain model.
 
         Returns:
@@ -435,36 +486,30 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
             ... }
             >>> id(task.scale) in optimized_params
             True
-            >>> from medrap.train.losses import MarginalizedRetrievalSupervisedLoss
-            >>> from medrap.train.task import MarginalizedBinaryClassificationTask
-            >>> class _MargModel(nn.Module):
-            ...     def forward(self, batch: MEDSTorchBatch) -> ModelOutput:
-            ...         return ModelOutput(
-            ...             logits=torch.zeros(2, 2),
-            ...             metadata={
-            ...                 "differentiable_doc_scores": torch.randn(2, 3),
-            ...                 "per_doc_logits": torch.randn(2, 3, 2),
-            ...             },
-            ...         )
-            >>> mm = MedRAPSupervisedLightningModule(
-            ...     model=_MargModel(),
-            ...     task=MarginalizedBinaryClassificationTask(),
-            ...     loss_fn=MarginalizedRetrievalSupervisedLoss(),
+            >>> from types import SimpleNamespace
+            >>> warmup_module = MedRAPSupervisedLightningModule(
+            ...     model=ModelOutputBinaryModel(), warmup_steps=10
             ... )
-            >>> log_names: list = []
-            >>> mm.log = lambda *a, **k: log_names.append(a[0])
-            >>> mm.log_dict = lambda d, *a, **k: log_names.extend(d)
-            >>> _ = mm._run_supervised_step(make_supervised_batch(), stage="train")
-            >>> any(str(n).startswith("retrieval/train/") for n in log_names)
-            True
+            >>> warmup_module._trainer = SimpleNamespace(estimated_stepping_batches=float("inf"))
+            >>> warmup_module.configure_optimizers()  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: configure_optimizers: cannot build cosine LR schedule...
         """
         optimizer = self.optimizer_factory(self._grouped_parameters())
         if self.warmup_steps == 0:
             return optimizer
+        num_steps = self.trainer.estimated_stepping_batches
+        if not isinstance(num_steps, int):
+            raise ValueError(
+                "configure_optimizers: cannot build cosine LR schedule because "
+                "estimated_stepping_batches is not an integer (the dataset may not implement "
+                "__len__). Use a dataset with a known length or pass max_steps to the Trainer."
+            )
         scheduler = get_cosine_schedule_with_warmup(
             optimizer,
             num_warmup_steps=self.warmup_steps,
-            num_training_steps=self.trainer.estimated_stepping_batches,
+            num_training_steps=num_steps,
         )
         return {
             "optimizer": optimizer,

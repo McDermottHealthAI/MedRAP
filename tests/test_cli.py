@@ -164,7 +164,8 @@ def test_prepare_train_run_overwrite_removes_stale_files(tmp_path: Path) -> None
         }
     )
     OmegaConf.save(cfg, output_dir / "config.yaml")
-    assert cli._prepare_train_run(cfg) is None
+    _, ckpt_path = cli._prepare_train_run(cfg)
+    assert ckpt_path is None
     assert not stale.exists()
 
 
@@ -247,17 +248,17 @@ def test_ensure_lightning_csv_log_dirs_creates_version_directory(tmp_path) -> No
 
 
 def test_run_eval_requires_checkpoint_path_before_loading(tmp_path) -> None:
-    cfg = OmegaConf.create(
-        {
-            "output_dir": str(tmp_path / "eval"),
-            "checkpoint_path": "",
-            "eval_mode": "validate",
-            "training": {"trainer": {"default_root_dir": "."}},
-        }
+    _assert_cli_failure(
+        lambda: _run_eval_cli(
+            [
+                f"output_dir={tmp_path / 'eval'}",
+                "checkpoint_path=",
+                "training/datamodule=synthetic",
+            ]
+        ),
+        allowed_exceptions=(SystemExit, ValueError),
+        expected_message="checkpoint_path must be set",
     )
-
-    with pytest.raises(ValueError, match="checkpoint_path must be set"):
-        cli._run_eval(cfg)
 
 
 def test_bind_trainer_paths_sets_single_logger_save_dir(tmp_path) -> None:
@@ -479,6 +480,8 @@ def test_copy_best_checkpoint_noops_without_callback_or_path(tmp_path: Path) -> 
 
 def test_run_eval_rejects_unknown_eval_mode(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     class StubTrainer:
+        loggers: list = []  # noqa: RUF012
+
         def validate(self, module, datamodule=None) -> None:  # pragma: no cover
             raise AssertionError("validate should not run")
 
@@ -487,18 +490,20 @@ def test_run_eval_rejects_unknown_eval_mode(tmp_path, monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(cli, "_load_training_module_checkpoint", lambda cfg, checkpoint_path: object())
     monkeypatch.setattr(cli, "instantiate", lambda trainer_cfg: StubTrainer())
-    monkeypatch.setattr(cli, "instantiate_datamodule", lambda cfg: object())
-    cfg = OmegaConf.create(
-        {
-            "output_dir": str(tmp_path / "eval"),
-            "checkpoint_path": str(tmp_path / "model.ckpt"),
-            "eval_mode": "predict",
-            "training": {"trainer": {"default_root_dir": "."}},
-        }
-    )
+    monkeypatch.setattr(cli, "_instantiate_datamodule", lambda cfg: object())
 
-    with pytest.raises(ValueError, match="eval_mode must be 'validate' or 'test'"):
-        cli._run_eval(cfg)
+    _assert_cli_failure(
+        lambda: _run_eval_cli(
+            [
+                f"output_dir={tmp_path / 'eval'}",
+                f"checkpoint_path={tmp_path / 'model.ckpt'}",
+                "eval_mode=predict",
+                "training/datamodule=synthetic",
+            ]
+        ),
+        allowed_exceptions=(SystemExit, ValueError),
+        expected_message="eval_mode must be 'validate' or 'test'",
+    )
 
 
 def test_preprocess_entrypoint_runs_with_hydra_overrides(monkeypatch, tmp_path) -> None:
