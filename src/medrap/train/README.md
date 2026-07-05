@@ -150,13 +150,22 @@ medrap-train \
   output_dir=<path/to/run>
 ```
 
-To also train the retriever end-to-end via REALM-style marginalization:
+To also train the retriever end-to-end via REALM-style marginalization, add
+`marginalized_retrieval=true` and switch the loss:
 
 ```bash
+medrap-train \
   training/task=multitask_binary \
   training/loss=multitask_binary_bce_marginalized \
+  training/datamodule=meds_multitask \
   marginalized_retrieval=true \
-  ...
+  training.task.num_tasks=<N> \
+  training.datamodule.num_tasks=<N> \
+  training.datamodule.mt_labels_dir=<path/to/mt_labels> \
+  training.datamodule.config.tensorized_cohort_dir=<path/to/tensorized> \
+  training.datamodule.config.max_seq_len=512 \
+  training.datamodule.config.task_labels_dir=<path/to/mt_labels> \
+  output_dir=<path/to/run>
 ```
 
 ## Module reference
