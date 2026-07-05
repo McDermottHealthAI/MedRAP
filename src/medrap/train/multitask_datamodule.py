@@ -45,7 +45,8 @@ class MultiTaskMEDSDataset(MEDSPytorchDataset):
     ) -> None:
         super().__init__(config, split)
         self._num_tasks = num_tasks
-        self._mt_lookup: dict[tuple[int, object], torch.Tensor] = {}
+        self._mt_index: dict[tuple[int, object], int] = {}
+        self._mt_matrix: torch.Tensor = torch.empty(0, num_tasks, dtype=torch.float32)
         self._load_mt_labels(Path(mt_labels_dir), split)
 
     def _load_mt_labels(self, labels_dir: Path, split: str) -> None:
@@ -60,24 +61,28 @@ class MultiTaskMEDSDataset(MEDSPytorchDataset):
         task_cols = [f"task_{i}" for i in range(self._num_tasks)]
         df = pl.read_parquet(label_path, columns=["subject_id", "prediction_time", *task_cols])
 
-        for row in df.iter_rows(named=True):
-            subject_id = int(row["subject_id"])
-            pred_time = row["prediction_time"]  # datetime.datetime — hashable
-            values = [float(row[c]) for c in task_cols]
-            self._mt_lookup[(subject_id, pred_time)] = torch.tensor(values, dtype=torch.float32)
-
-        log.info("Loaded %d multi-task label rows for split %s.", len(self._mt_lookup), split)
+        self._mt_matrix = torch.tensor(df.select(task_cols).to_numpy(), dtype=torch.float32)
+        subject_ids = df["subject_id"].to_list()
+        pred_times = df["prediction_time"].to_list()
+        self._mt_index = {
+            (int(sid), pt.replace(tzinfo=None)): i
+            for i, (sid, pt) in enumerate(zip(subject_ids, pred_times, strict=False))
+        }
+        log.info("Loaded %d multi-task label rows for split %s.", len(self._mt_index), split)
 
     def _seeded_getitem(self, idx: int, seed: int | None = None) -> dict[str, Any]:
         item = super()._seeded_getitem(idx, seed)
 
         subject_id = int(self.index[idx][0])
-        pred_time = self.schema_df["prediction_time"][idx]  # datetime.datetime
-        key = (subject_id, pred_time)
+        pred_time = self.schema_df[idx, "prediction_time"]
+        key = (subject_id, pred_time.replace(tzinfo=None))
 
-        labels = self._mt_lookup.get(key)
-        if labels is None:
-            labels = torch.full((self._num_tasks,), float("nan"), dtype=torch.float32)
+        row_idx = self._mt_index.get(key)
+        labels = (
+            self._mt_matrix[row_idx].clone()
+            if row_idx is not None
+            else torch.full((self._num_tasks,), float("nan"), dtype=torch.float32)
+        )
 
         item[MT_LABEL_KEY] = labels
         return item
@@ -124,6 +129,9 @@ class MultiTaskMEDSDatamodule(lightning.LightningDataModule):
             num_workers=num_workers,
             pin_memory=pin_memory,
         )
+
+    def setup(self, stage: str | None = None) -> None:
+        self._inner.setup(stage)
 
     def train_dataloader(self) -> DataLoader:
         return self._inner.train_dataloader()
