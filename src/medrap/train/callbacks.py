@@ -10,10 +10,9 @@ import torch
 from lightning.pytorch.callbacks import Callback
 from lightning.pytorch.loggers import WandbLogger
 from torch import Tensor
-from torchmetrics.functional.classification import binary_auroc
 
 from ..types import ModelOutput
-from .metrics import positive_class_probs
+from .metrics import binary_auroc_torch, positive_class_probs
 
 
 def _resolve_val_dataloader(trainer: pl.Trainer):
@@ -276,7 +275,7 @@ class EndOfFitValAUROCCallback(Callback):
         ...     ModelOutput(logits=torch.tensor([[0.0]])),
         ...     ModelOutput(logits=torch.tensor([[1.0]])),
         ... ]
-        >>> with patch("medrap.train.callbacks.binary_auroc", side_effect=RuntimeError("fail")):
+        >>> with patch("medrap.train.callbacks.binary_auroc_torch", return_value=None):
         ...     EndOfFitValAUROCCallback().on_fit_end(
         ...         SimpleNamespace(
         ...             sanity_checking=False,
@@ -290,33 +289,6 @@ class EndOfFitValAUROCCallback(Callback):
         ...         plm_bad,
         ...     )
         >>> log_bad.log_metrics.called
-        False
-        >>> log_nan = SimpleNamespace(log_metrics=MagicMock())
-        >>> plm_nan = MagicMock(spec=pl.LightningModule)
-        >>> plm_nan.training = True
-        >>> plm_nan.device = torch.device("cpu")
-        >>> plm_nan.eval = MagicMock()
-        >>> plm_nan.train = MagicMock()
-        >>> plm_nan.transfer_batch_to_device = lambda batch, device, dataloader_idx=0: batch
-        >>> plm_nan.task = BinaryClassificationTask()
-        >>> plm_nan.side_effect = [
-        ...     ModelOutput(logits=torch.tensor([[0.0]])),
-        ...     ModelOutput(logits=torch.tensor([[1.0]])),
-        ... ]
-        >>> with patch("medrap.train.callbacks.binary_auroc", return_value=torch.tensor(float("nan"))):
-        ...     EndOfFitValAUROCCallback().on_fit_end(
-        ...         SimpleNamespace(
-        ...             sanity_checking=False,
-        ...             global_step=0,
-        ...             loggers=[log_nan],
-        ...             datamodule=None,
-        ...             val_dataloaders=DataLoader(
-        ...                 [_auroc_batch2(False), _auroc_batch2(True)], batch_size=None
-        ...             ),
-        ...         ),
-        ...         plm_nan,
-        ...     )
-        >>> log_nan.log_metrics.called
         False
         >>> import medrap.train.callbacks as _cb_mod
         >>> class _StubWB:
@@ -417,15 +389,8 @@ class EndOfFitValAUROCCallback(Callback):
         if probs.shape[0] == 0:
             return
 
-        unique = torch.unique(targets.long())
-        if unique.numel() < 2:
-            return
-
-        try:
-            score = binary_auroc(probs, targets.long())
-        except Exception:
-            return
-        if torch.isnan(score):
+        score = binary_auroc_torch(targets.float(), probs)
+        if score is None:
             return
 
         value = float(score.item())
