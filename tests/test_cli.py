@@ -509,7 +509,17 @@ def test_run_eval_rejects_unknown_eval_mode(tmp_path, monkeypatch: pytest.Monkey
 def test_preprocess_entrypoint_runs_with_hydra_overrides(monkeypatch, tmp_path) -> None:
     captured = {}
 
-    def _fake_generate_tasks(meds_data_dir, output_dir, *, num_tasks, horizon_days, min_history_days, seed):
+    def _fake_generate_tasks(
+        meds_data_dir,
+        output_dir,
+        *,
+        num_tasks,
+        horizon_days,
+        min_history_days,
+        seed,
+        min_positive_count,
+        candidate_pool_multiplier,
+    ):
         captured["meds_data_dir"] = str(meds_data_dir)
         captured["num_tasks"] = num_tasks
         Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -549,7 +559,17 @@ def test_preprocess_entrypoint_runs_without_tensorized_dir(monkeypatch, tmp_path
         captured["meds_data_dir"] = str(meds_data_dir)
         return inter, tens
 
-    def _fake_generate_tasks(meds_data_dir, output_dir, *, num_tasks, horizon_days, min_history_days, seed):
+    def _fake_generate_tasks(
+        meds_data_dir,
+        output_dir,
+        *,
+        num_tasks,
+        horizon_days,
+        min_history_days,
+        seed,
+        min_positive_count,
+        candidate_pool_multiplier,
+    ):
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         return Path(output_dir)
 

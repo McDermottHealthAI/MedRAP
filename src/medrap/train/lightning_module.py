@@ -231,22 +231,33 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
     def _validation_auroc_metrics(self, targets: Tensor, logits: Tensor) -> dict[str, float]:
         """Compute validation-loop AUROC metrics from accumulated tensors.
 
+        Always logs ``val/auroc/n_tasks`` and ``val/auroc/n_valid_tasks`` when AUROC
+        is computable at all, so a fully-degenerate validation split (e.g. sampled
+        task codes with no in-window positive occurrences, leaving every task with a
+        single observed class) is visible as ``n_valid_tasks=0`` in the logs instead
+        of the metric silently never appearing.
+
         Examples:
             >>> module = MedRAPSupervisedLightningModule(model=ModelOutputBinaryModel())
             >>> module._validation_auroc_metrics(torch.ones(2, 1), torch.zeros(2, 1))
-            {}
+            {'val/auroc/n_tasks': 1.0, 'val/auroc/n_valid_tasks': 0.0}
             >>> module._validation_auroc_metrics(torch.FloatTensor([0, 1]), torch.zeros(2, 3))
             {}
             >>> module._validation_auroc_metrics(torch.FloatTensor([1, 1]), torch.zeros(2, 1))
-            {}
+            {'val/auroc/n_tasks': 1.0, 'val/auroc/n_valid_tasks': 0.0}
         """
         if targets.ndim == 2 and logits.ndim == 2 and targets.shape == logits.shape:
             per_task = multitask_auroc_torch(targets, logits)
-            if not per_task:
-                return {}
-            metrics = {"val/auroc/mean": sum(per_task.values()) / len(per_task)}
-            if self.validation_auroc_log_per_task:
-                metrics.update({f"val/auroc/task_{task_idx}": value for task_idx, value in per_task.items()})
+            metrics: dict[str, float] = {
+                "val/auroc/n_tasks": float(targets.shape[1]),
+                "val/auroc/n_valid_tasks": float(len(per_task)),
+            }
+            if per_task:
+                metrics["val/auroc/mean"] = sum(per_task.values()) / len(per_task)
+                if self.validation_auroc_log_per_task:
+                    metrics.update(
+                        {f"val/auroc/task_{task_idx}": value for task_idx, value in per_task.items()}
+                    )
             return metrics
 
         try:
@@ -255,7 +266,7 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
             return {}
         score = binary_auroc_torch(targets, probs)
         if score is None or not torch.isfinite(score):
-            return {}
+            return {"val/auroc/n_tasks": 1.0, "val/auroc/n_valid_tasks": 0.0}
         return {"val/auroc": float(score.detach().cpu().item())}
 
     def training_step(self, batch: MEDSTorchBatch, _batch_idx: int) -> Tensor:

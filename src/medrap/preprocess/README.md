@@ -23,6 +23,8 @@ Key options (all have defaults):
 | `horizon_days`           | 7.0     | How far ahead to look for a code occurrence           |
 | `min_history_days`       | 1.0     | Minimum history required before a prediction time     |
 | `seed`                   | 42      | Random seed for task sampling and prediction times    |
+| `min_positive_count`     | 10      | Minimum in-window positive occurrences (train split) a candidate code needs to be selected as a task |
+| `candidate_pool_multiplier` | 20   | Candidate codes windowed-tested per requested task before filtering by `min_positive_count` |
 
 ### Skipping stage 1 (use existing tensorized data)
 
@@ -79,6 +81,20 @@ for each subject in every split:
     whose timeline is too short for this window are excluded.
 - For each task code, the label is `1.0` if the code appears within
     `horizon_days` after the prediction time, otherwise `0.0`.
+
+Candidate codes are windowed-tested (`candidate_pool_multiplier * num_tasks`
+of them, sampled uniformly) and only kept if they have at least
+`min_positive_count` in-window positive occurrences on the train split. This
+matters because `min_subjects_per_code` (stage 1) only guarantees a code
+occurred *somewhere* in a subject's lifetime record — it says nothing about
+whether the code falls inside any single subject's much narrower
+`horizon_days`-wide prediction window. Without this filter, uniformly-sampled
+codes are frequently rare enough, relative to the windowed definition, to
+produce an all-negative task with no learning signal and an undefined
+validation AUROC. If fewer than `num_tasks` candidates pass the filter,
+`generate_tasks` raises a `ValueError` rather than silently returning
+degenerate tasks — raise `candidate_pool_multiplier`, lower
+`min_positive_count`, or lower `num_tasks` in response.
 
 Output goes to `output_dir/tasks/` and contains one parquet per split plus
 `code_index.json` (mapping task index → code string) and `metadata.json`.
