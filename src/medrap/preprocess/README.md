@@ -15,16 +15,15 @@ medrap-preprocess \
 
 Key options (all have defaults):
 
-| Option                      | Default | Description                                                                                          |
-| --------------------------- | ------- | ---------------------------------------------------------------------------------------------------- |
-| `min_subjects_per_code`     | 100     | Drop codes appearing in fewer than this many subjects                                                |
-| `min_events_per_subject`    | 10      | Drop subjects with fewer distinct events than this                                                   |
-| `num_tasks`                 | 25      | Number of prediction tasks to generate                                                               |
-| `horizon_days`              | 7.0     | How far ahead to look for a code occurrence                                                          |
-| `min_history_days`          | 1.0     | Minimum history required before a prediction time                                                    |
-| `seed`                      | 42      | Random seed for task sampling and prediction times                                                   |
-| `min_positive_count`        | 10      | Minimum in-window positive occurrences (train split) a candidate code needs to be selected as a task |
-| `candidate_pool_multiplier` | 20      | Candidate codes windowed-tested per requested task before filtering by `min_positive_count`          |
+| Option                   | Default | Description                                                                                          |
+| ------------------------ | ------- | ---------------------------------------------------------------------------------------------------- |
+| `min_subjects_per_code`  | 100     | Drop codes appearing in fewer than this many subjects                                                |
+| `min_events_per_subject` | 10      | Drop subjects with fewer distinct events than this                                                   |
+| `num_tasks`              | 25      | Number of prediction tasks to generate                                                               |
+| `horizon_days`           | 7.0     | How far ahead to look for a code occurrence                                                          |
+| `min_history_days`       | 1.0     | Minimum history required before a prediction time                                                    |
+| `seed`                   | 42      | Random seed for task sampling and prediction times                                                   |
+| `min_positive_count`     | 10      | Minimum in-window positive occurrences (train split) a candidate code needs to be selected as a task |
 
 ### Skipping stage 1 (use existing tensorized data)
 
@@ -82,19 +81,20 @@ for each subject in every split:
 - For each task code, the label is `1.0` if the code appears within
     `horizon_days` after the prediction time, otherwise `0.0`.
 
-Candidate codes are windowed-tested (`candidate_pool_multiplier * num_tasks`
-of them, sampled uniformly) and only kept if they have at least
-`min_positive_count` in-window positive occurrences on the train split. This
-matters because `min_subjects_per_code` (stage 1) only guarantees a code
-occurred *somewhere* in a subject's lifetime record — it says nothing about
-whether the code falls inside any single subject's much narrower
-`horizon_days`-wide prediction window. Without this filter, uniformly-sampled
-codes are frequently rare enough, relative to the windowed definition, to
-produce an all-negative task with no learning signal and an undefined
-validation AUROC. If fewer than `num_tasks` candidates pass the filter,
-`generate_tasks` raises a `ValueError` rather than silently returning
-degenerate tasks — raise `candidate_pool_multiplier`, lower
-`min_positive_count`, or lower `num_tasks` in response.
+Every eligible code is windowed-tested (a memory-efficient group-by, not a
+wide pivot, so this scales to the full vocabulary) and only kept as a
+candidate task if it has at least `min_positive_count` in-window positive
+occurrences on the train split. This matters because `min_subjects_per_code`
+(stage 1) only guarantees a code occurred *somewhere* in a subject's lifetime
+record — it says nothing about whether the code falls inside any single
+subject's much narrower `horizon_days`-wide prediction window. On a
+long-tailed clinical vocabulary, only a small fraction of lifetime-frequent
+codes also clear this much narrower windowed bar; without the filter,
+uniformly-sampled codes frequently produce an all-negative task with no
+learning signal and an undefined validation AUROC. If fewer than `num_tasks`
+codes pass the filter, `generate_tasks` raises a `ValueError` rather than
+silently returning degenerate tasks — lower `min_positive_count` or
+`num_tasks` in response.
 
 Output goes to `output_dir/tasks/` and contains one parquet per split plus
 `code_index.json` (mapping task index → code string) and `metadata.json`.
