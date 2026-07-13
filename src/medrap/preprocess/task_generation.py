@@ -100,9 +100,7 @@ def _sample_task_codes(
         ...             "time": [datetime(2020, 1, 1), datetime(2020, 1, 2), datetime(2020, 1, 1)],
         ...         }
         ...     ).write_parquet(shard_dir / "0.parquet")
-        ...     _sample_task_codes(
-        ...         tmpdir, num_tasks=1, seed=0, min_positive_count=10
-        ...     )  # doctest: +ELLIPSIS
+        ...     _sample_task_codes(tmpdir, num_tasks=1, seed=0, min_positive_count=10)  # doctest: +ELLIPSIS
         Traceback (most recent call last):
             ...
         ValueError: Only 0/1 candidate codes had >= 10 in-window positive occurrences...
