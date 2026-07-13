@@ -8,7 +8,6 @@ horizon_days: 7.0
 min_history_days: 1.0
 seed: 42
 min_positive_count: 10 # min in-window positive occurrences for a sampled task code to be kept
-candidate_pool_multiplier: 20 # candidate codes windowed-tested per requested task
 do_overwrite: false
 
 hydra:
