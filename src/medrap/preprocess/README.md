@@ -23,7 +23,9 @@ Key options (all have defaults):
 | `horizon_days`           | 7.0     | How far ahead to look for a code occurrence                                                          |
 | `min_history_days`       | 1.0     | Minimum history required before a prediction time                                                    |
 | `seed`                   | 42      | Random seed for task sampling and prediction times                                                   |
-| `min_positive_count`     | 10      | Minimum in-window positive occurrences (train split) a candidate code needs to be selected as a task |
+| `min_positive_count`     | 10      | Minimum in-window positive subjects, on every split, a candidate code needs to be selected as a task |
+| `min_positive_rate`      | 0.01    | Minimum in-window positive rate, on every split, a candidate code needs to be selected as a task     |
+| `max_positive_rate`      | 0.5     | Maximum in-window positive rate, on every split, a candidate code may have to be selected as a task  |
 
 ### Skipping stage 1 (use existing tensorized data)
 
@@ -83,18 +85,25 @@ for each subject in every split:
 
 Every eligible code is windowed-tested (a memory-efficient group-by, not a
 wide pivot, so this scales to the full vocabulary) and only kept as a
-candidate task if it has at least `min_positive_count` in-window positive
-occurrences on the train split. This matters because `min_subjects_per_code`
-(stage 1) only guarantees a code occurred *somewhere* in a subject's lifetime
-record — it says nothing about whether the code falls inside any single
-subject's much narrower `horizon_days`-wide prediction window. On a
-long-tailed clinical vocabulary, only a small fraction of lifetime-frequent
-codes also clear this much narrower windowed bar; without the filter,
-uniformly-sampled codes frequently produce an all-negative task with no
-learning signal and an undefined validation AUROC. If fewer than `num_tasks`
-codes pass the filter, `generate_tasks` raises a `ValueError` rather than
-silently returning degenerate tasks — lower `min_positive_count` or
-`num_tasks` in response.
+candidate task if it clears `min_positive_count` **and** a
+`[min_positive_rate, max_positive_rate]` in-window positive-rate band — on
+**every** split that will be generated (train, tuning, held_out), not just
+train. Checking every split matters because splits differ in size: a code can
+clear an absolute count on a large train split while its positive *rate*,
+applied to a much smaller tuning/held_out split, implies an expected positive
+count near zero there — collapsing that split's label to a single class, with
+no learning signal and an undefined/dropped validation AUROC for that task
+specifically. This is on top of the general problem that
+`min_subjects_per_code` (stage 1) only guarantees a code occurred *somewhere*
+in a subject's lifetime record — it says nothing about whether the code falls
+inside any single subject's much narrower `horizon_days`-wide prediction
+window. On a long-tailed clinical vocabulary, only a small fraction of
+lifetime-frequent codes also clear this much narrower windowed bar; without
+the filter, uniformly-sampled codes frequently produce a degenerate task with
+no learning signal. If fewer than `num_tasks` codes pass on every split,
+`generate_tasks` raises a `ValueError` rather than silently returning
+degenerate tasks — loosen `min_positive_count`/`min_positive_rate`/
+`max_positive_rate` or lower `num_tasks` in response.
 
 Output goes to `output_dir/tasks/` and contains one parquet per split plus
 `code_index.json` (mapping task index → code string) and `metadata.json`.
