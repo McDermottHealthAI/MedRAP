@@ -22,13 +22,27 @@ AUROC for that task. Checking rate + count on every split at selection time (usi
 the same windowed-occurrence definition and anchor sampling that will actually be
 used to build the labels) guarantees a chosen code cannot collapse in any split
 that ships.
+
+On a granular, long-tailed code vocabulary (e.g. an unfiltered raw MEDS cohort),
+codes tend to be either rare (fail the count floor) or, once frequent, common
+enough to exceed ``max_positive_rate`` -- there is often no code sitting in the
+ideal band on every split at once, especially for large ``num_tasks`` requests.
+Rather than fail outright the moment the ideal band is undersupplied,
+:func:`_sample_task_codes` falls back to ranking the remaining non-degenerate
+codes (at least one positive and one negative subject on every split) by how far
+outside the ideal band they fall, and fills the request with the closest ones.
+It only raises when there are not even enough non-degenerate codes to satisfy
+``num_tasks`` at all.
 """
 
 import json
+import logging
 from pathlib import Path
 
 import numpy as np
 import polars as pl
+
+log = logging.getLogger(__name__)
 
 
 def _sample_task_codes(
@@ -49,10 +63,11 @@ def _sample_task_codes(
     tokens) is windowed-tested via :func:`_count_in_window_positive_subjects`
     (a memory-efficient group-by, not a wide pivot, so this scales to testing
     every eligible code regardless of how many there are) on *each* split in
-    ``splits``, then ``num_tasks`` codes are sampled uniformly from those that
-    pass, on *every* split, both an absolute floor (``min_positive_count``) and
-    a rate band (``min_positive_rate`` to ``max_positive_rate``) of in-window
-    positive subjects.
+    ``splits``. Codes that pass, on *every* split, both an absolute floor
+    (``min_positive_count``) and a rate band (``min_positive_rate`` to
+    ``max_positive_rate``) of in-window positive subjects form the *ideal* set;
+    if it has at least ``num_tasks`` codes, ``num_tasks`` of them are sampled
+    uniformly at random.
 
     Checking every split -- not just train -- matters because splits differ in
     size: a code can clear an absolute count on a large train split while its
@@ -64,9 +79,15 @@ def _sample_task_codes(
     band by chance in a nearly-empty split.
 
     On a real long-tailed clinical vocabulary, only a small fraction of
-    lifetime-frequent codes also clear the much narrower windowed bar, so
-    testing every eligible code (rather than a random subsample) avoids
-    under-sampling the pass rate and failing to find enough tasks.
+    lifetime-frequent codes also clear the much narrower windowed bar. If the
+    ideal set is smaller than ``num_tasks``, the remaining slots are filled with
+    the non-degenerate codes (at least one positive and one negative subject on
+    every split) that fall closest to the ideal band, ranked by the worst-split
+    distance outside it; a code with a merely-too-high rate but many positive
+    examples ranks ahead of one that clears the rate band on luck alone with only
+    a handful of positives. This only raises when even that relaxed, non-degenerate
+    pool can't supply ``num_tasks`` codes -- it never silently returns fewer than
+    requested, and it never fails just because the ideal band is undersupplied.
 
     Args:
         meds_data_dir: Root of a MEDS dataset (``data/train/*.parquet``).
@@ -88,12 +109,14 @@ def _sample_task_codes(
             the splits label generation will actually produce.
 
     Returns:
-        List of ``num_tasks`` code strings, each within the rate/count bounds
-        on every split in ``splits``.
+        List of ``num_tasks`` code strings. All are non-degenerate on every
+        split in ``splits``; as many as possible are also within the ideal
+        rate/count band on every split.
 
     Raises:
         ValueError: If no eligible codes are found, or fewer than ``num_tasks``
-            eligible codes meet the rate/count thresholds on every split.
+            eligible codes are non-degenerate (at least one positive and one
+            negative subject) on every split.
 
     Examples:
         >>> import tempfile
@@ -120,6 +143,37 @@ def _sample_task_codes(
         ...     )
         ...     codes == ["DIAG//COMMON"]
         True
+
+        When the ideal band is undersupplied but enough non-degenerate codes
+        exist, the shortfall is filled with the codes closest to the ideal band
+        instead of raising -- here ``DIAG//OTHER`` (27/40, rate 0.675) is only
+        merely too common, while ``DIAG//RARE2`` (3/40, rate 0.075) clears the
+        rate band but badly misses the count floor, so ``OTHER`` is preferred:
+
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     shard_dir = Path(tmpdir) / "data" / "train"
+        ...     shard_dir.mkdir(parents=True)
+        ...     rows = {"subject_id": [], "code": [], "time": []}
+        ...     for subject_id in range(40):
+        ...         start = datetime(2020, 1, 1) + timedelta(days=subject_id)
+        ...         rows["subject_id"] += [subject_id, subject_id, subject_id]
+        ...         if subject_id < 10:
+        ...             mid_code = "DIAG//COMMON"
+        ...         elif subject_id < 13:
+        ...             mid_code = "DIAG//RARE2"
+        ...         else:
+        ...             mid_code = "DIAG//OTHER"
+        ...         rows["code"] += ["DIAG//NEVER", mid_code, "TIMELINE//DELTA//years"]
+        ...         rows["time"] += [start, start + timedelta(days=5), start + timedelta(days=10)]
+        ...     pl.DataFrame(rows).write_parquet(shard_dir / "0.parquet")
+        ...     codes = _sample_task_codes(
+        ...         tmpdir, num_tasks=2, seed=0, min_positive_count=10, splits=("train",)
+        ...     )
+        ...     sorted(codes) == ["DIAG//COMMON", "DIAG//OTHER"]
+        True
+
+        Raises only when even the relaxed, non-degenerate pool is too small:
+
         >>> with tempfile.TemporaryDirectory() as tmpdir:
         ...     shard_dir = Path(tmpdir) / "data" / "train"
         ...     shard_dir.mkdir(parents=True)
@@ -135,7 +189,7 @@ def _sample_task_codes(
         ...     )  # doctest: +ELLIPSIS
         Traceback (most recent call last):
             ...
-        ValueError: Only 0/1 eligible codes had >= 10 in-window positive subjects and rate...
+        ValueError: Only 0/1 eligible codes had at least one positive and one negative subject...
         >>> with tempfile.TemporaryDirectory() as tmpdir:
         ...     shard_dir = Path(tmpdir) / "data" / "train"
         ...     shard_dir.mkdir(parents=True)
@@ -170,29 +224,65 @@ def _sample_task_codes(
         for split in splits
     }
 
-    def _passes(code: str) -> bool:
-        for counts, total in per_split.values():
+    def _split_stats(code: str) -> list[tuple[int, int]]:
+        return [(counts.get(code, 0), total) for counts, total in per_split.values()]
+
+    def _passes_ideal(code: str) -> bool:
+        for count, total in _split_stats(code):
             if total == 0:
                 return False
-            count = counts.get(code, 0)
             rate = count / total
             if count < min_positive_count or not (min_positive_rate <= rate <= max_positive_rate):
                 return False
         return True
 
-    passing = [code for code in eligible if _passes(code)]
-    if len(passing) < num_tasks:
+    def _passes_hard_floor(code: str) -> bool:
+        """Non-degenerate on every split: at least one positive and one negative subject."""
+        return all(total > 0 and 1 <= count < total for count, total in _split_stats(code))
+
+    def _relaxation_score(code: str) -> float:
+        """0.0 if ``code`` is within the ideal band on every split; otherwise the worst-split
+        distance outside that band (relative to ``min_positive_count``/the rate band width)."""
+        worst = 0.0
+        for count, total in _split_stats(code):
+            rate = count / total
+            count_gap = max(0, min_positive_count - count) / max(min_positive_count, 1)
+            rate_gap = max(0.0, min_positive_rate - rate, rate - max_positive_rate)
+            worst = max(worst, count_gap, rate_gap)
+        return worst
+
+    ideal = [code for code in eligible if _passes_ideal(code)]
+    rng = np.random.default_rng(seed)
+
+    if len(ideal) >= num_tasks:
+        chosen = rng.choice(ideal, size=num_tasks, replace=False)
+        return chosen.tolist()
+
+    hard_floor = [code for code in eligible if _passes_hard_floor(code)]
+    if len(hard_floor) < num_tasks:
         raise ValueError(
-            f"Only {len(passing)}/{num_tasks} eligible codes had >= {min_positive_count} "
-            f"in-window positive subjects and rate in [{min_positive_rate}, {max_positive_rate}] "
-            f"on every split in {splits} (horizon_days={horizon_days}, "
-            f"min_history_days={min_history_days}) among {len(eligible)} eligible codes. "
-            "Lower min_positive_count/min_positive_rate, raise max_positive_rate, or lower num_tasks."
+            f"Only {len(hard_floor)}/{num_tasks} eligible codes had at least one positive and "
+            f"one negative subject on every split in {splits} (a hard floor for any usable task); "
+            f"only {len(ideal)} of those also met the ideal >= {min_positive_count} in-window "
+            f"positive subjects and rate in [{min_positive_rate}, {max_positive_rate}] band on "
+            f"every split, among {len(eligible)} eligible codes (horizon_days={horizon_days}, "
+            f"min_history_days={min_history_days}). Lower num_tasks, or widen "
+            "min_positive_rate/max_positive_rate/min_positive_count."
         )
 
-    rng = np.random.default_rng(seed)
-    chosen = rng.choice(passing, size=num_tasks, replace=False)
-    return chosen.tolist()
+    log.warning(
+        "Only %d/%d eligible codes met the ideal task-selection band on every split; filling the "
+        "remaining %d slots with the closest non-degenerate codes by rate/count distance from that band.",
+        len(ideal),
+        num_tasks,
+        num_tasks - len(ideal),
+    )
+
+    ideal_set = set(ideal)
+    fallback_pool = [code for code in hard_floor if code not in ideal_set]
+    rng.shuffle(fallback_pool)  # break exact score ties without biasing toward file/collection order
+    fallback_pool.sort(key=_relaxation_score)
+    return ideal + fallback_pool[: num_tasks - len(ideal)]
 
 
 def _sample_prediction_anchors(
