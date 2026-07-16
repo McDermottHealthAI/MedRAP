@@ -14,6 +14,7 @@ from omegaconf import DictConfig, OmegaConf
 from .prepare_retrieval.preparation import prepare_retrieval_dataset_from_config
 from .preprocess.preprocessing import run_meds_pipeline
 from .preprocess.task_generation import generate_tasks
+from .retrieve.retrieval import run_retrieval
 from .train.factory import instantiate_training_module
 
 
@@ -294,6 +295,22 @@ def _prepare_eval_run(cfg: DictConfig) -> Path:
     return output_dir
 
 
+def _prepare_retrieve_run(cfg: DictConfig) -> Path:
+    output_dir = _prepare_output_dir(cfg)
+    config_path = output_dir / "config.yaml"
+
+    if config_path.exists():
+        raise FileExistsError(
+            f"Output directory {output_dir} already contains a saved MedRAP retrieve run. "
+            "Use a different `output_dir`."
+        )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    OmegaConf.save(cfg, config_path)
+    _save_resolved_config(cfg, output_dir / "resolved_config.yaml")
+    return output_dir
+
+
 def _ensure_lightning_csv_log_dirs(trainer: object) -> None:
     """Create CSVLogger ``log_dir`` trees before the first metrics flush.
 
@@ -433,3 +450,18 @@ def eval_main(cfg: DictConfig) -> int:
         trainer.test(module, datamodule=datamodule)
         return 0
     raise ValueError(f"eval_mode must be 'validate' or 'test'; got {cfg.eval_mode!r}")
+
+
+@hydra.main(version_base=None, config_path="conf", config_name="_retrieve")
+def retrieve_main(cfg: DictConfig) -> None:
+    """Run the Hydra-native retrieval entrypoint."""
+    print(OmegaConf.to_yaml(cfg))
+    output_dir = _prepare_retrieve_run(cfg)
+    checkpoint_path = cfg.checkpoint_path
+    if not checkpoint_path:
+        raise ValueError("checkpoint_path must be set for medrap-retrieve.")
+    module = _load_training_module_checkpoint(cfg, checkpoint_path)
+    bound_cfg = _bind_trainer_paths(cfg, output_dir=output_dir)
+    trainer = instantiate(bound_cfg.training.trainer)
+    output_path = run_retrieval(cfg, module=module, trainer=trainer)
+    print(f"Retrieved documents saved to {output_path}")
