@@ -92,6 +92,7 @@ medrap-train = "medrap.cli:train_main"
 medrap-eval = "medrap.cli:eval_main"
 medrap-prepare-retrieval-dataset = "medrap.cli:prepare_retrieval_dataset_main"
 medrap-preprocess = "medrap.cli:preprocess_main"
+medrap-retrieve = "medrap.cli:retrieve_main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "src/medrap"]

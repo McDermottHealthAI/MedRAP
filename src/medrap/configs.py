@@ -403,6 +403,21 @@ class RAPEvalConfig(PipelineConfig):
 
 
 @dataclass
+class RAPRetrieveConfig(PipelineConfig):
+    """Top-level retrieve config mirroring eval execution fields."""
+
+    head: ComponentConfig = field(default_factory=lambda: LinearHeadConfig(out_dim=1))
+    training: TrainingConfig = field(
+        default_factory=lambda: TrainingConfig(trainer=LightningEvalTrainerConfig())
+    )
+    output_dir: str = MISSING
+    checkpoint_path: str = MISSING
+    index_dataframe_dir: str = MISSING
+    splits: tuple[str, ...] = ("train", "tuning", "held_out")
+    batch_size: int = 32
+
+
+@dataclass
 class RetrievalDatasetIndexConfig:
     """Configuration for offline retrieval artifact columns and FAISS index."""
 
