@@ -300,10 +300,13 @@ def _prepare_retrieve_run(cfg: DictConfig) -> Path:
     config_path = output_dir / "config.yaml"
 
     if config_path.exists():
-        raise FileExistsError(
-            f"Output directory {output_dir} already contains a saved MedRAP retrieve run. "
-            "Use a different `output_dir`."
-        )
+        if cfg.do_overwrite:
+            shutil.rmtree(output_dir, ignore_errors=True)
+        else:
+            raise FileExistsError(
+                f"Output directory {output_dir} already contains a saved MedRAP retrieve run. "
+                "Use `do_overwrite=true` or a different `output_dir`."
+            )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     OmegaConf.save(cfg, config_path)

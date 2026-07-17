@@ -57,10 +57,12 @@ medrap-retrieve \
     rebuilt from config and the checkpoint `state_dict` is loaded, the same way
     `medrap-eval` does.
 2. **Per-split retrieval** -- because a patient-timepoint's subject belongs to
-    exactly one MEDS split, for each split in `splits` a `MEDSPytorchDataset` is
-    built with `task_labels_dir=index_dataframe_dir` (`meds_torchdata` keeps only
-    the rows belonging to that split), and `trainer.predict()` collects
-    `doc_ids`/`doc_scores` for every row.
+    exactly one MEDS split, for each split in `splits` that has data in the
+    tensorized cohort a `MEDSPytorchDataset` is built with
+    `task_labels_dir=index_dataframe_dir` (`meds_torchdata` keeps only the rows
+    belonging to that split), and `trainer.predict()` collects
+    `doc_ids`/`doc_scores` for every row. A split with no data in the cohort
+    (e.g. no `held_out` split) is skipped rather than treated as an error.
 3. **Left join** -- the per-split results are concatenated and left-joined
     against the *full* input index dataframe, so every input patient-timepoint is
     represented in the output -- with null `doc_ids`/`doc_scores` for any row

@@ -67,6 +67,29 @@ def _build_dataset_config(cfg: DictConfig, *, task_labels_dir: str | Path) -> ME
     )
 
 
+def _split_has_schema(dataset_config: MEDSTorchDataConfig, split: str) -> bool:
+    """Return whether ``dataset_config``'s tensorized cohort has any shard for ``split``.
+
+    Mirrors the check ``MEDSPytorchDataset.__init__`` performs internally; lets
+    callers skip a split with no shards (e.g. a cohort with no ``held_out`` split)
+    instead of hitting the ``FileNotFoundError`` it raises when no shard matches.
+
+    Examples:
+        >>> import tempfile
+        >>> from pathlib import Path
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     schema_dir = Path(tmpdir) / "tokenization" / "schemas" / "train"
+        ...     schema_dir.mkdir(parents=True)
+        ...     _ = (schema_dir / "0.parquet").touch()
+        ...     config = MEDSTorchDataConfig(tensorized_cohort_dir=tmpdir, max_seq_len=8)
+        ...     _split_has_schema(config, "train")
+        ...     _split_has_schema(config, "held_out")
+        True
+        False
+    """
+    return any(shard.startswith(f"{split}/") for shard, _ in dataset_config.schema_fps)
+
+
 def _squeeze_retrieval_step(tensor: Tensor, *, name: str) -> list:
     """Convert a ``(N, R, K)`` retrieval tensor to a per-row python list, requiring ``R == 1``.
 
@@ -97,6 +120,8 @@ def _predict_split(
     dataset: MEDSPytorchDataset,
     *,
     batch_size: int,
+    num_workers: int = 0,
+    pin_memory: bool = False,
 ) -> pl.DataFrame | None:
     """Run retrieval prediction over one split's dataset and return a per-row result frame.
 
@@ -107,12 +132,41 @@ def _predict_split(
 
     Raises:
         ValueError: If the configured retriever does not provide ``doc_ids`` or
-            ``doc_scores``.
+            ``doc_scores``, or if ``trainer`` uses more than one device -- a
+            multi-device ``trainer.predict()`` is not guaranteed to return batches
+            in dataset order, which would silently misalign results against
+            ``dataset.schema_df`` (see ``medrap.extraction.extract_artifacts``,
+            which guards against the same risk).
+
+    Examples:
+        >>> from types import SimpleNamespace
+        >>> class _FakeDataset:
+        ...     def __len__(self):
+        ...         return 3
+        >>> fake_trainer = SimpleNamespace(num_devices=2)
+        >>> _predict_split(None, fake_trainer, _FakeDataset(), batch_size=1)  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        ValueError: medrap-retrieve requires a single-device trainer...
     """
     if len(dataset) == 0:
         return None
 
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=dataset.collate)
+    num_devices = getattr(trainer, "num_devices", 1)
+    if num_devices and num_devices > 1:
+        raise ValueError(
+            "medrap-retrieve requires a single-device trainer; multi-device predict "
+            f"can return rank-interleaved outputs (got num_devices={num_devices})."
+        )
+
+    dataloader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=dataset.collate,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+    )
     predictions = trainer.predict(module, dataloaders=dataloader)
     collated = collate_prediction_batches(predictions)
 
@@ -162,18 +216,33 @@ def run_retrieval(cfg: DictConfig, *, module: lightning.LightningModule, trainer
     )
 
     dataset_config = _build_dataset_config(cfg, task_labels_dir=index_dataframe_dir)
+    dm_cfg = cfg.training.datamodule
+    num_workers = dm_cfg.get("num_workers", None) or 0
+    pin_memory = bool(dm_cfg.get("pin_memory", None) or False)
 
     per_split_frames = []
     for split in cfg.splits:
+        if not _split_has_schema(dataset_config, split):
+            continue
         dataset = MEDSPytorchDataset(dataset_config, split=split)
-        frame = _predict_split(module, trainer, dataset, batch_size=cfg.batch_size)
+        frame = _predict_split(
+            module,
+            trainer,
+            dataset,
+            batch_size=cfg.batch_size,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+        )
         if frame is not None:
             per_split_frames.append(frame)
 
     results = (
         pl.concat(per_split_frames, how="vertical")
         if per_split_frames
-        else pl.DataFrame(schema={"subject_id": pl.Int64, "prediction_time": pl.Datetime("us")})
+        else index_df.clear().with_columns(
+            pl.lit(None, dtype=pl.List(pl.Int64)).alias("doc_ids"),
+            pl.lit(None, dtype=pl.List(pl.Float64)).alias("doc_scores"),
+        )
     )
 
     output = index_df.join(results, on=["subject_id", "prediction_time"], how="left")

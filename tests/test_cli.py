@@ -252,6 +252,97 @@ def test_retrieve_entrypoint_runs_end_to_end(
     assert known_rows["doc_scores"].null_count() == 0
 
 
+def test_retrieve_entrypoint_supports_do_overwrite(
+    tmp_path,
+    tensorized_MEDS_dataset_with_task,
+    tensorized_MEDS_dataset_with_index,
+) -> None:
+    cohort_dir, task_root_dir, task_name = tensorized_MEDS_dataset_with_task
+    _, index_root_dir, index_name = tensorized_MEDS_dataset_with_index
+    task_labels_dir = task_root_dir / task_name
+    index_dataframe_dir = index_root_dir / index_name
+
+    train_dir = tmp_path / "train"
+    assert (
+        _run_train_cli(
+            [
+                f"output_dir={train_dir}",
+                "training/datamodule=meds",
+                f"training.datamodule.config.tensorized_cohort_dir={cohort_dir}",
+                "training.datamodule.config.max_seq_len=10",
+                f"training.datamodule.config.task_labels_dir={task_labels_dir}",
+            ]
+        )
+        == 0
+    )
+    checkpoint_path = train_dir / "checkpoints" / "last.ckpt"
+
+    retrieve_overrides = [
+        f"output_dir={tmp_path / 'retrieve'}",
+        f"checkpoint_path={checkpoint_path}",
+        "training/datamodule=meds",
+        f"training.datamodule.config.tensorized_cohort_dir={cohort_dir}",
+        "training.datamodule.config.max_seq_len=10",
+        f"index_dataframe_dir={index_dataframe_dir}",
+    ]
+    assert _run_retrieve_cli(retrieve_overrides) == 0
+
+    _assert_cli_failure(
+        lambda: _run_retrieve_cli(retrieve_overrides),
+        allowed_exceptions=(SystemExit, FileExistsError),
+        expected_message="already contains a saved MedRAP retrieve run",
+    )
+
+    assert _run_retrieve_cli([*retrieve_overrides, "do_overwrite=true"]) == 0
+
+
+def test_retrieve_entrypoint_skips_split_with_no_schema(
+    tmp_path,
+    tensorized_MEDS_dataset_with_task,
+    tensorized_MEDS_dataset_with_index,
+) -> None:
+    """A split name with no corresponding schema shard is skipped, not a crash."""
+    cohort_dir, task_root_dir, task_name = tensorized_MEDS_dataset_with_task
+    _, index_root_dir, index_name = tensorized_MEDS_dataset_with_index
+    task_labels_dir = task_root_dir / task_name
+    index_dataframe_dir = index_root_dir / index_name
+
+    train_dir = tmp_path / "train"
+    assert (
+        _run_train_cli(
+            [
+                f"output_dir={train_dir}",
+                "training/datamodule=meds",
+                f"training.datamodule.config.tensorized_cohort_dir={cohort_dir}",
+                "training.datamodule.config.max_seq_len=10",
+                f"training.datamodule.config.task_labels_dir={task_labels_dir}",
+            ]
+        )
+        == 0
+    )
+    checkpoint_path = train_dir / "checkpoints" / "last.ckpt"
+
+    retrieve_dir = tmp_path / "retrieve"
+    assert (
+        _run_retrieve_cli(
+            [
+                f"output_dir={retrieve_dir}",
+                f"checkpoint_path={checkpoint_path}",
+                "training/datamodule=meds",
+                f"training.datamodule.config.tensorized_cohort_dir={cohort_dir}",
+                "training.datamodule.config.max_seq_len=10",
+                f"index_dataframe_dir={index_dataframe_dir}",
+                "splits=[train,tuning,held_out,imaginary_split]",
+            ]
+        )
+        == 0
+    )
+
+    result = pl.read_parquet(retrieve_dir / "retrieved_documents.parquet")
+    assert result["doc_ids"].null_count() == 0
+    assert result["doc_scores"].null_count() == 0
+
+
 def test_prepare_train_run_overwrite_removes_stale_files(tmp_path: Path) -> None:
     output_dir = tmp_path / "train"
     output_dir.mkdir()
