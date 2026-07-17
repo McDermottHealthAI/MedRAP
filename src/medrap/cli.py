@@ -11,6 +11,7 @@ from hydra_zen import instantiate
 from lightning.pytorch.loggers import CSVLogger
 from omegaconf import DictConfig, OmegaConf
 
+from .predict_probabilities.probabilities import run_predict_probabilities
 from .prepare_retrieval.preparation import prepare_retrieval_dataset_from_config
 from .preprocess.preprocessing import run_meds_pipeline
 from .preprocess.task_generation import generate_tasks
@@ -279,35 +280,25 @@ def _prepare_train_run(cfg: DictConfig) -> tuple[Path, Path | None]:
     return output_dir, ckpt_path
 
 
-def _prepare_eval_run(cfg: DictConfig) -> Path:
+def _prepare_inference_run(cfg: DictConfig, *, run_kind: str) -> Path:
+    """Create a fresh output directory for a one-shot inference run and save its config.
+
+    Shared by ``medrap-eval``, ``medrap-retrieve``, and
+    ``medrap-predict-probabilities``; ``run_kind`` names the command in the
+    collision error message (e.g. ``"eval"``, ``"retrieve"``,
+    ``"predict-probabilities"``). Honors ``do_overwrite`` when the composed config
+    defines it (``_eval.yaml`` does not, so eval runs always require a fresh
+    ``output_dir`` unless the caller explicitly overrides ``do_overwrite=true``).
+    """
     output_dir = _prepare_output_dir(cfg)
     config_path = output_dir / "config.yaml"
 
     if config_path.exists():
-        if cfg.do_overwrite:
+        if cfg.get("do_overwrite", False):
             shutil.rmtree(output_dir, ignore_errors=True)
         else:
             raise FileExistsError(
-                f"Output directory {output_dir} already contains a saved MedRAP eval run. "
-                "Use `do_overwrite=true` or a different `output_dir`."
-            )
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    OmegaConf.save(cfg, config_path)
-    _save_resolved_config(cfg, output_dir / "resolved_config.yaml")
-    return output_dir
-
-
-def _prepare_retrieve_run(cfg: DictConfig) -> Path:
-    output_dir = _prepare_output_dir(cfg)
-    config_path = output_dir / "config.yaml"
-
-    if config_path.exists():
-        if cfg.do_overwrite:
-            shutil.rmtree(output_dir, ignore_errors=True)
-        else:
-            raise FileExistsError(
-                f"Output directory {output_dir} already contains a saved MedRAP retrieve run. "
+                f"Output directory {output_dir} already contains a saved MedRAP {run_kind} run. "
                 "Use `do_overwrite=true` or a different `output_dir`."
             )
 
@@ -437,7 +428,7 @@ def train_main(cfg: DictConfig) -> None:
 def eval_main(cfg: DictConfig) -> int:
     """Run the Hydra-native evaluation entrypoint."""
     print(OmegaConf.to_yaml(cfg))
-    output_dir = _prepare_eval_run(cfg)
+    output_dir = _prepare_inference_run(cfg, run_kind="eval")
     checkpoint_path = cfg.checkpoint_path
     if not checkpoint_path:
         raise ValueError("checkpoint_path must be set for medrap-eval.")
@@ -459,7 +450,7 @@ def eval_main(cfg: DictConfig) -> int:
 def retrieve_main(cfg: DictConfig) -> None:
     """Run the Hydra-native retrieval entrypoint."""
     print(OmegaConf.to_yaml(cfg))
-    output_dir = _prepare_retrieve_run(cfg)
+    output_dir = _prepare_inference_run(cfg, run_kind="retrieve")
     checkpoint_path = cfg.checkpoint_path
     if not checkpoint_path:
         raise ValueError("checkpoint_path must be set for medrap-retrieve.")
@@ -468,3 +459,18 @@ def retrieve_main(cfg: DictConfig) -> None:
     trainer = instantiate(bound_cfg.training.trainer)
     output_path = run_retrieval(cfg, module=module, trainer=trainer)
     print(f"Retrieved documents saved to {output_path}")
+
+
+@hydra.main(version_base=None, config_path="conf", config_name="_predict_probabilities")
+def predict_probabilities_main(cfg: DictConfig) -> None:
+    """Run the Hydra-native predicted-probabilities entrypoint."""
+    print(OmegaConf.to_yaml(cfg))
+    output_dir = _prepare_inference_run(cfg, run_kind="predict-probabilities")
+    checkpoint_path = cfg.checkpoint_path
+    if not checkpoint_path:
+        raise ValueError("checkpoint_path must be set for medrap-predict-probabilities.")
+    module = _load_training_module_checkpoint(cfg, checkpoint_path)
+    bound_cfg = _bind_trainer_paths(cfg, output_dir=output_dir)
+    trainer = instantiate(bound_cfg.training.trainer)
+    output_path = run_predict_probabilities(cfg, module=module, trainer=trainer)
+    print(f"Predicted probabilities saved to {output_path}")
