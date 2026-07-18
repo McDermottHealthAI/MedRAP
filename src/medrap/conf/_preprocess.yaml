@@ -7,9 +7,6 @@ num_tasks: 25
 horizon_days: 7.0
 min_history_days: 1.0
 seed: 42
-min_positive_count: 10 # min in-window positive subjects for a sampled task code to be kept, on every split
-min_positive_rate: 0.01 # min in-window positive rate for a sampled task code to be kept, on every split
-max_positive_rate: 0.5 # max in-window positive rate for a sampled task code to be kept, on every split
 do_overwrite: false
 
 hydra:

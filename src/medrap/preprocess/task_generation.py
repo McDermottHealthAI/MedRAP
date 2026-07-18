@@ -4,35 +4,12 @@ Prediction time is sampled uniformly at random from the per-subject window
 ``[first_event + min_history_days, last_event - horizon_days]``.
 Subjects whose timeline is shorter than ``min_history_days + horizon_days`` are excluded.
 
-Task codes are sampled randomly from codes present in the train split, excluding
-synthetic time tokens (``TIMELINE//`` prefix) added by the MEDS-transforms pipeline,
-then filtered to codes with an *in-window* positive rate within
-``[min_positive_rate, max_positive_rate]`` and an absolute count of at least
-``min_positive_count``, all three checked independently on *every* split that will
-be generated -- not just train (see :func:`_sample_task_codes`). The upstream
-MEDS-transforms ``min_subjects_per_code`` filter only guarantees a code occurred
-somewhere in a subject's lifetime record; it says nothing about how often the code
-falls inside one subject's randomly-sampled ``horizon_days``-wide prediction window,
-which is what the task label actually measures. A code can also clear an
-absolute-count bar on the (typically much larger) train split while its positive
-rate is low enough that the same rate, applied to a smaller tuning/held_out split,
-rounds down to zero or one positive subject there -- collapsing that split's label
-to a single class, with no learning signal and an undefined/dropped validation
-AUROC for that task. Checking rate + count on every split at selection time (using
-the same windowed-occurrence definition and anchor sampling that will actually be
-used to build the labels) guarantees a chosen code cannot collapse in any split
-that ships.
-
-On a granular, long-tailed code vocabulary (e.g. an unfiltered raw MEDS cohort),
-codes tend to be either rare (fail the count floor) or, once frequent, common
-enough to exceed ``max_positive_rate`` -- there is often no code sitting in the
-ideal band on every split at once, especially for large ``num_tasks`` requests.
-Rather than fail outright the moment the ideal band is undersupplied,
-:func:`_sample_task_codes` falls back to ranking the remaining non-degenerate
-codes (at least one positive and one negative subject on every split) by how far
-outside the ideal band they fall, and fills the request with the closest ones.
-It only raises when there are not even enough non-degenerate codes to satisfy
-``num_tasks`` at all.
+Task codes are sampled uniformly at random from codes present in the train split,
+excluding synthetic time tokens (``TIMELINE//`` prefix) added by the MEDS-transforms
+pipeline (see :func:`_sample_task_codes`). There is no positive-rate or count
+filtering -- a randomly chosen code can turn out rare or degenerate (all-positive or
+all-negative) on a given split; that is a property of the sampled task, not something
+this module tries to correct for.
 """
 
 import json
@@ -45,151 +22,44 @@ import polars as pl
 log = logging.getLogger(__name__)
 
 
-def _sample_task_codes(
-    meds_data_dir: str | Path,
-    num_tasks: int,
-    seed: int,
-    *,
-    horizon_days: float = 7.0,
-    min_history_days: float = 1.0,
-    min_positive_count: int = 10,
-    min_positive_rate: float = 0.01,
-    max_positive_rate: float = 0.5,
-    splits: tuple[str, ...] = ("train", "tuning", "held_out"),
-) -> list[str]:
-    """Sample ``num_tasks`` codes whose in-window positive rate is learnable on every split.
+def _sample_task_codes(meds_data_dir: str | Path, num_tasks: int, seed: int) -> list[str]:
+    """Sample ``num_tasks`` codes uniformly at random from the train split.
 
     Every code present in the train split (excluding synthetic ``TIMELINE//``
-    tokens) is windowed-tested via :func:`_count_in_window_positive_subjects`
-    (a memory-efficient group-by, not a wide pivot, so this scales to testing
-    every eligible code regardless of how many there are) on *each* split in
-    ``splits``. Codes that pass, on *every* split, both an absolute floor
-    (``min_positive_count``) and a rate band (``min_positive_rate`` to
-    ``max_positive_rate``) of in-window positive subjects form the *ideal* set;
-    if it has at least ``num_tasks`` codes, ``num_tasks`` of them are sampled
-    uniformly at random.
-
-    Checking every split -- not just train -- matters because splits differ in
-    size: a code can clear an absolute count on a large train split while its
-    positive *rate*, applied to a much smaller tuning/held_out split, implies an
-    expected positive count near zero there, collapsing that split's label to a
-    single class (no learning signal, dropped/undefined AUROC for that task). A
-    rate-based bound scales with split size in a way an absolute count alone
-    cannot; the absolute floor still guards against a code that clears the rate
-    band by chance in a nearly-empty split.
-
-    On a real long-tailed clinical vocabulary, only a small fraction of
-    lifetime-frequent codes also clear the much narrower windowed bar. If the
-    ideal set is smaller than ``num_tasks``, the remaining slots are filled with
-    the non-degenerate codes (at least one positive and one negative subject on
-    every split) that fall closest to the ideal band, ranked by the worst-split
-    distance outside it; a code with a merely-too-high rate but many positive
-    examples ranks ahead of one that clears the rate band on luck alone with only
-    a handful of positives. This only raises when even that relaxed, non-degenerate
-    pool can't supply ``num_tasks`` codes -- it never silently returns fewer than
-    requested, and it never fails just because the ideal band is undersupplied.
+    tokens added by the MEDS-transforms pipeline) is equally eligible; no
+    positive-rate or count filtering is applied. A sampled code may turn out
+    rare or degenerate (all-positive or all-negative) on a given split.
 
     Args:
         meds_data_dir: Root of a MEDS dataset (``data/train/*.parquet``).
         num_tasks: Number of codes to sample.
         seed: Random seed.
-        horizon_days: Days after prediction time to look for code occurrence
-            (must match the value passed to label generation).
-        min_history_days: Minimum days of history before the prediction anchor
-            (must match the value passed to label generation).
-        min_positive_count: Minimum number of in-window positive subjects a code
-            must have on every split in ``splits`` to be eligible as a task.
-        min_positive_rate: Minimum in-window positive rate (positive subjects /
-            subjects with a valid prediction window) a code must have on every
-            split in ``splits``.
-        max_positive_rate: Maximum in-window positive rate a code may have on
-            every split in ``splits`` (guards against near-constant "always
-            occurs" codes, symmetric to the rare-code guard above).
-        splits: Splits the code must pass the rate/count bounds on; should match
-            the splits label generation will actually produce.
 
     Returns:
-        List of ``num_tasks`` code strings. All are non-degenerate on every
-        split in ``splits``; as many as possible are also within the ideal
-        rate/count band on every split.
+        List of ``num_tasks`` code strings, sampled without replacement.
 
     Raises:
         ValueError: If no eligible codes are found, or fewer than ``num_tasks``
-            eligible codes are non-degenerate (at least one positive and one
-            negative subject) on every split.
+            eligible codes exist.
 
     Examples:
         >>> import tempfile
-        >>> from datetime import datetime, timedelta
-        >>> with tempfile.TemporaryDirectory() as tmpdir:
-        ...     shard_dir = Path(tmpdir) / "data" / "train"
-        ...     shard_dir.mkdir(parents=True)
-        ...     rows = {"subject_id": [], "code": [], "time": []}
-        ...     for subject_id in range(40):
-        ...         start = datetime(2020, 1, 1) + timedelta(days=subject_id)
-        ...         rows["subject_id"] += [subject_id, subject_id, subject_id]
-        ...         # NEVER sits at t=0 (always before the prediction window, so it never
-        ...         # counts as an in-window positive). The code at t=5 days always falls
-        ...         # inside the window given the default horizon_days=7, min_history_days=1;
-        ...         # the TIMELINE marker at t=10 days opens a wide enough window to begin with.
-        ...         # COMMON gets it for 10/40 subjects (rate 0.25, passes); RARE gets it for
-        ...         # the other 30/40 (rate 0.75, fails max_positive_rate=0.5).
-        ...         mid_code = "DIAG//COMMON" if subject_id < 10 else "DIAG//RARE"
-        ...         rows["code"] += ["DIAG//NEVER", mid_code, "TIMELINE//DELTA//years"]
-        ...         rows["time"] += [start, start + timedelta(days=5), start + timedelta(days=10)]
-        ...     pl.DataFrame(rows).write_parquet(shard_dir / "0.parquet")
-        ...     codes = _sample_task_codes(
-        ...         tmpdir, num_tasks=1, seed=0, min_positive_count=10, splits=("train",)
-        ...     )
-        ...     codes == ["DIAG//COMMON"]
-        True
-
-        When the ideal band is undersupplied but enough non-degenerate codes
-        exist, the shortfall is filled with the codes closest to the ideal band
-        instead of raising -- here ``DIAG//OTHER`` (27/40, rate 0.675) is only
-        merely too common, while ``DIAG//RARE2`` (3/40, rate 0.075) clears the
-        rate band but badly misses the count floor, so ``OTHER`` is preferred:
-
-        >>> with tempfile.TemporaryDirectory() as tmpdir:
-        ...     shard_dir = Path(tmpdir) / "data" / "train"
-        ...     shard_dir.mkdir(parents=True)
-        ...     rows = {"subject_id": [], "code": [], "time": []}
-        ...     for subject_id in range(40):
-        ...         start = datetime(2020, 1, 1) + timedelta(days=subject_id)
-        ...         rows["subject_id"] += [subject_id, subject_id, subject_id]
-        ...         if subject_id < 10:
-        ...             mid_code = "DIAG//COMMON"
-        ...         elif subject_id < 13:
-        ...             mid_code = "DIAG//RARE2"
-        ...         else:
-        ...             mid_code = "DIAG//OTHER"
-        ...         rows["code"] += ["DIAG//NEVER", mid_code, "TIMELINE//DELTA//years"]
-        ...         rows["time"] += [start, start + timedelta(days=5), start + timedelta(days=10)]
-        ...     pl.DataFrame(rows).write_parquet(shard_dir / "0.parquet")
-        ...     codes = _sample_task_codes(
-        ...         tmpdir, num_tasks=2, seed=0, min_positive_count=10, splits=("train",)
-        ...     )
-        ...     sorted(codes) == ["DIAG//COMMON", "DIAG//OTHER"]
-        True
-
-        Raises only when even the relaxed, non-degenerate pool is too small:
-
+        >>> from datetime import datetime
         >>> with tempfile.TemporaryDirectory() as tmpdir:
         ...     shard_dir = Path(tmpdir) / "data" / "train"
         ...     shard_dir.mkdir(parents=True)
         ...     pl.DataFrame(
         ...         {
-        ...             "subject_id": [1, 1, 2],
-        ...             "code": ["DIAG//A", "TIMELINE//DELTA//years", "DIAG//A"],
-        ...             "time": [datetime(2020, 1, 1), datetime(2020, 1, 2), datetime(2020, 1, 1)],
+        ...             "subject_id": [1, 1, 1],
+        ...             "code": ["DIAG//A", "DIAG//B", "TIMELINE//DELTA//years"],
+        ...             "time": [datetime(2020, 1, 1), datetime(2020, 1, 2), datetime(2020, 1, 3)],
         ...         }
         ...     ).write_parquet(shard_dir / "0.parquet")
-        ...     _sample_task_codes(
-        ...         tmpdir, num_tasks=1, seed=0, min_positive_count=10, splits=("train",)
-        ...     )  # doctest: +ELLIPSIS
-        Traceback (most recent call last):
-            ...
-        ValueError: Only 0/1 eligible codes had at least one positive and one negative subject...
+        ...     sorted(_sample_task_codes(tmpdir, num_tasks=2, seed=0))
+        ['DIAG//A', 'DIAG//B']
+
+        Raises when there aren't enough eligible codes:
+
         >>> with tempfile.TemporaryDirectory() as tmpdir:
         ...     shard_dir = Path(tmpdir) / "data" / "train"
         ...     shard_dir.mkdir(parents=True)
@@ -200,7 +70,7 @@ def _sample_task_codes(
         ...             "time": [datetime(2020, 1, 1)],
         ...         }
         ...     ).write_parquet(shard_dir / "0.parquet")
-        ...     _sample_task_codes(tmpdir, num_tasks=5, seed=0, splits=("train",))  # doctest: +ELLIPSIS
+        ...     _sample_task_codes(tmpdir, num_tasks=5, seed=0)  # doctest: +ELLIPSIS
         Traceback (most recent call last):
             ...
         ValueError: No eligible task codes found in .../data/train/.
@@ -216,73 +86,14 @@ def _sample_task_codes(
     )
     if not eligible:
         raise ValueError(f"No eligible task codes found in {meds_data_dir}/data/train/.")
-
-    per_split = {
-        split: _count_in_window_positive_subjects(
-            meds_data_dir, split, eligible, horizon_days, min_history_days, seed
-        )
-        for split in splits
-    }
-
-    def _split_stats(code: str) -> list[tuple[int, int]]:
-        return [(counts.get(code, 0), total) for counts, total in per_split.values()]
-
-    def _passes_ideal(code: str) -> bool:
-        for count, total in _split_stats(code):
-            if total == 0:
-                return False
-            rate = count / total
-            if count < min_positive_count or not (min_positive_rate <= rate <= max_positive_rate):
-                return False
-        return True
-
-    def _passes_hard_floor(code: str) -> bool:
-        """Non-degenerate on every split: at least one positive and one negative subject."""
-        return all(total > 0 and 1 <= count < total for count, total in _split_stats(code))
-
-    def _relaxation_score(code: str) -> float:
-        """0.0 if ``code`` is within the ideal band on every split; otherwise the worst-split
-        distance outside that band (relative to ``min_positive_count``/the rate band width)."""
-        worst = 0.0
-        for count, total in _split_stats(code):
-            rate = count / total
-            count_gap = max(0, min_positive_count - count) / max(min_positive_count, 1)
-            rate_gap = max(0.0, min_positive_rate - rate, rate - max_positive_rate)
-            worst = max(worst, count_gap, rate_gap)
-        return worst
-
-    ideal = [code for code in eligible if _passes_ideal(code)]
-    rng = np.random.default_rng(seed)
-
-    if len(ideal) >= num_tasks:
-        chosen = rng.choice(ideal, size=num_tasks, replace=False)
-        return chosen.tolist()
-
-    hard_floor = [code for code in eligible if _passes_hard_floor(code)]
-    if len(hard_floor) < num_tasks:
+    if len(eligible) < num_tasks:
         raise ValueError(
-            f"Only {len(hard_floor)}/{num_tasks} eligible codes had at least one positive and "
-            f"one negative subject on every split in {splits} (a hard floor for any usable task); "
-            f"only {len(ideal)} of those also met the ideal >= {min_positive_count} in-window "
-            f"positive subjects and rate in [{min_positive_rate}, {max_positive_rate}] band on "
-            f"every split, among {len(eligible)} eligible codes (horizon_days={horizon_days}, "
-            f"min_history_days={min_history_days}). Lower num_tasks, or widen "
-            "min_positive_rate/max_positive_rate/min_positive_count."
+            f"Only {len(eligible)} eligible task codes found in {meds_data_dir}/data/train/, "
+            f"fewer than the requested num_tasks={num_tasks}."
         )
 
-    log.warning(
-        "Only %d/%d eligible codes met the ideal task-selection band on every split; filling the "
-        "remaining %d slots with the closest non-degenerate codes by rate/count distance from that band.",
-        len(ideal),
-        num_tasks,
-        num_tasks - len(ideal),
-    )
-
-    ideal_set = set(ideal)
-    fallback_pool = [code for code in hard_floor if code not in ideal_set]
-    rng.shuffle(fallback_pool)  # break exact score ties without biasing toward file/collection order
-    fallback_pool.sort(key=_relaxation_score)
-    return ideal + fallback_pool[: num_tasks - len(ideal)]
+    rng = np.random.default_rng(seed)
+    return rng.choice(eligible, size=num_tasks, replace=False).tolist()
 
 
 def _sample_prediction_anchors(
@@ -335,90 +146,6 @@ def _sample_prediction_anchors(
         .with_columns(pl.from_epoch("prediction_us", time_unit="us").alias("prediction_time"))
         .select(["subject_id", "prediction_time"])
     )
-
-
-def _count_in_window_positive_subjects(
-    meds_data_dir: str | Path,
-    split: str,
-    candidate_codes: list[str],
-    horizon_days: float,
-    min_history_days: float,
-    seed: int,
-) -> tuple[dict[str, int], int]:
-    """Count in-window positive subjects per candidate code, without a wide pivot.
-
-    Uses the same windowed-occurrence definition and anchor sampling as
-    :func:`generate_labels` (same seed reproduces identical anchors, since anchor
-    sampling depends only on each subject's event bounds, not on which codes are
-    being tested), but aggregates counts as a long ``code -> count`` table instead
-    of a ``(subject, code)`` wide matrix. This lets it scale to testing every
-    eligible code at once, which a wide pivot cannot do memory-efficiently.
-
-    Args:
-        meds_data_dir: Root of a MEDS dataset.
-        split: Split name (e.g. ``"train"``).
-        candidate_codes: Codes to count.
-        horizon_days: Days after prediction time to look for code occurrence.
-        min_history_days: Minimum days of history before the prediction anchor.
-        seed: Random seed for reproducible anchor sampling.
-
-    Returns:
-        Tuple of (dict mapping code -> number of distinct subjects with an
-        in-window occurrence, omitting codes with zero; total number of subjects
-        with a valid prediction window on this split, i.e. the rate denominator).
-
-    Examples:
-        >>> import tempfile
-        >>> from datetime import datetime, timedelta
-        >>> with tempfile.TemporaryDirectory() as tmpdir:
-        ...     shard_dir = Path(tmpdir) / "data" / "train"
-        ...     shard_dir.mkdir(parents=True)
-        ...     rows = {"subject_id": [], "code": [], "time": []}
-        ...     for subject_id in range(3):
-        ...         start = datetime(2020, 1, 1) + timedelta(days=subject_id)
-        ...         rows["subject_id"] += [subject_id, subject_id, subject_id]
-        ...         rows["code"] += ["DIAG//RARE", "DIAG//COMMON", "TIMELINE//DELTA//years"]
-        ...         rows["time"] += [start, start + timedelta(days=5), start + timedelta(days=10)]
-        ...     pl.DataFrame(rows).write_parquet(shard_dir / "0.parquet")
-        ...     _count_in_window_positive_subjects(
-        ...         tmpdir,
-        ...         "train",
-        ...         ["DIAG//RARE", "DIAG//COMMON"],
-        ...         horizon_days=7.0,
-        ...         min_history_days=1.0,
-        ...         seed=0,
-        ...     )
-        ({'DIAG//COMMON': 3}, 3)
-    """
-    shard_dir = Path(meds_data_dir) / "data" / split
-    if not shard_dir.exists():
-        raise FileNotFoundError(f"No shard directory: {shard_dir}")
-
-    rng = np.random.default_rng(seed)
-    counts: dict[str, int] = {}
-    total_subjects = 0
-    for shard_path in sorted(shard_dir.glob("*.parquet")):
-        df = pl.read_parquet(shard_path, columns=["subject_id", "time", "code"]).filter(
-            pl.col("time").is_not_null()
-        )
-        anchors = _sample_prediction_anchors(df, horizon_days, min_history_days, rng)
-        if anchors is None:
-            continue
-        total_subjects += anchors.height
-
-        events = df.filter(pl.col("code").is_in(candidate_codes))
-        joined = anchors.join(events, on="subject_id", how="inner").with_columns(
-            ((pl.col("time") - pl.col("prediction_time")).dt.total_seconds() / 86400.0).alias("delta_days")
-        )
-        in_window = joined.filter((pl.col("delta_days") > 0) & (pl.col("delta_days") <= horizon_days))
-        if in_window.is_empty():
-            continue
-
-        grouped = in_window.group_by("code").agg(pl.col("subject_id").n_unique().alias("n"))
-        for code, n in zip(grouped["code"], grouped["n"], strict=False):
-            counts[code] = counts.get(code, 0) + n
-
-    return counts, total_subjects
 
 
 def _generate_labels_shard(
@@ -552,17 +279,15 @@ def generate_tasks(
     horizon_days: float = 7.0,
     min_history_days: float = 1.0,
     seed: int = 42,
-    min_positive_count: int = 10,
-    min_positive_rate: float = 0.01,
-    max_positive_rate: float = 0.5,
     splits: tuple[str, ...] = ("train", "tuning", "held_out"),
 ) -> Path:
     """Create multi-task binary labels from a MEDS cohort.
 
-    Task codes are sampled randomly from codes present in the train split
-    (excluding synthetic ``TIMELINE//`` tokens), then filtered to codes with an
-    in-window positive rate/count that's learnable on *every* split in
-    ``splits``; see :func:`_sample_task_codes`.
+    Task codes are sampled uniformly at random from codes present in the train
+    split (excluding synthetic ``TIMELINE//`` tokens); see
+    :func:`_sample_task_codes`. No positive-rate or count filtering is applied.
+    Prediction time is sampled independently per split, per subject; see
+    :func:`_sample_prediction_anchors`.
 
     Args:
         meds_data_dir: Root of a MEDS dataset (``data/{split}/*.parquet``).
@@ -571,14 +296,7 @@ def generate_tasks(
         horizon_days: Days after prediction time to look for code occurrence.
         min_history_days: Minimum days of history before the prediction anchor.
         seed: Random seed for task selection and anchor sampling.
-        min_positive_count: Minimum in-window positive subjects a candidate code
-            must have on every split in ``splits`` to be selected as a task.
-        min_positive_rate: Minimum in-window positive rate a candidate code must
-            have on every split in ``splits``.
-        max_positive_rate: Maximum in-window positive rate a candidate code may
-            have on every split in ``splits``.
-        splits: Splits to generate labels for, and to require the rate/count
-            bounds hold on.
+        splits: Splits to generate labels for.
 
     Returns:
         ``output_dir`` as a ``Path``.
@@ -591,39 +309,24 @@ def generate_tasks(
         ...         shard_dir = Path(tmpdir) / "data" / split
         ...         shard_dir.mkdir(parents=True)
         ...         rows = {"subject_id": [], "code": [], "time": []}
-        ...         for subject_id in range(40):
+        ...         for subject_id in range(5):
         ...             start = datetime(2020, 1, 1) + timedelta(days=subject_id)
-        ...             rows["subject_id"] += [subject_id, subject_id, subject_id]
-        ...             # See _sample_task_codes docstring: COMMON gets a 0.25 in-window
-        ...             # rate (passes), RARE gets 0.75 (fails max_positive_rate=0.5).
-        ...             mid_code = "DIAG//COMMON" if subject_id < 10 else "DIAG//RARE"
-        ...             rows["code"] += ["DIAG//NEVER", mid_code, "TIMELINE//DELTA//years"]
-        ...             rows["time"] += [start, start + timedelta(days=5), start + timedelta(days=10)]
+        ...             rows["subject_id"] += [subject_id, subject_id]
+        ...             rows["code"] += ["DIAG//A", "TIMELINE//DELTA//years"]
+        ...             rows["time"] += [start, start + timedelta(days=20)]
         ...         pl.DataFrame(rows).write_parquet(shard_dir / "0.parquet")
         ...     out_dir = Path(tmpdir) / "tasks"
-        ...     returned = generate_tasks(
-        ...         tmpdir, out_dir, num_tasks=1, seed=0, min_positive_count=10, splits=("train", "tuning")
-        ...     )
+        ...     returned = generate_tasks(tmpdir, out_dir, num_tasks=1, seed=0, splits=("train", "tuning"))
         ...     codes = json.loads((out_dir / "code_index.json").read_text())
         ...     is_ok = returned == out_dir and (out_dir / "train.parquet").exists()
-        ...     is_ok and codes == {"0": "DIAG//COMMON"}
+        ...     is_ok and codes == {"0": "DIAG//A"}
         True
     """
     meds_data_dir = Path(meds_data_dir)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    codes = _sample_task_codes(
-        meds_data_dir,
-        num_tasks=num_tasks,
-        seed=seed,
-        horizon_days=horizon_days,
-        min_history_days=min_history_days,
-        min_positive_count=min_positive_count,
-        min_positive_rate=min_positive_rate,
-        max_positive_rate=max_positive_rate,
-        splits=splits,
-    )
+    codes = _sample_task_codes(meds_data_dir, num_tasks=num_tasks, seed=seed)
 
     for split in splits:
         df = generate_labels(meds_data_dir, split, codes, horizon_days, min_history_days, seed)
