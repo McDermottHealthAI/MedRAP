@@ -15,14 +15,14 @@ medrap-preprocess \
 
 Key options (all have defaults):
 
-| Option                   | Default | Description                                                                                          |
-| ------------------------ | ------- | ---------------------------------------------------------------------------------------------------- |
-| `min_subjects_per_code`  | 100     | Drop codes appearing in fewer than this many subjects                                                |
-| `min_events_per_subject` | 10      | Drop subjects with fewer distinct events than this                                                   |
-| `num_tasks`              | 25      | Number of prediction tasks to generate                                                               |
-| `horizon_days`           | 7.0     | How far ahead to look for a code occurrence                                                          |
-| `min_history_days`       | 1.0     | Minimum history required before a prediction time                                                    |
-| `seed`                   | 42      | Random seed for task sampling and prediction times                                                   |
+| Option                   | Default | Description                                           |
+| ------------------------ | ------- | ----------------------------------------------------- |
+| `min_subjects_per_code`  | 100     | Drop codes appearing in fewer than this many subjects |
+| `min_events_per_subject` | 10      | Drop subjects with fewer distinct events than this    |
+| `num_tasks`              | 25      | Number of prediction tasks to generate                |
+| `horizon_days`           | 7.0     | How far ahead to look for a code occurrence           |
+| `min_history_days`       | 1.0     | Minimum history required before a prediction time     |
+| `seed`                   | 42      | Random seed for task sampling and prediction times    |
 
 ### Skipping stage 1 (use existing tensorized data)
 
