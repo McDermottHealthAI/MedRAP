@@ -39,8 +39,11 @@ def _select_task_codes(
         num_tasks: Number of codes to select.
         seed: Random seed; only used when ``code_selection="random"``.
         code_selection: ``"random"`` (uniform, without replacement) or
-            ``"most_frequent"`` (the ``num_tasks`` codes with the highest event
-            count in the train split, ties broken arbitrarily).
+            ``"most_frequent"`` (the ``num_tasks`` codes with the highest
+            *distinct-subject* count in the train split -- not event-row count,
+            since a code measured repeatedly on a small subject subset can have
+            a huge row count while still being near-zero prevalence in the
+            per-subject labels this module produces; ties broken by code string).
 
     Returns:
         List of ``num_tasks`` code strings.
@@ -65,20 +68,23 @@ def _select_task_codes(
         ...     sorted(_select_task_codes(tmpdir, num_tasks=2, seed=0))
         ['DIAG//A', 'DIAG//B']
 
-        ``most_frequent`` picks the highest-count codes, not a random draw:
+        ``most_frequent`` picks the codes with the most distinct subjects, not
+        the most event rows: ``DIAG//A`` has 5 rows but only 1 subject
+        (repeated measurements), while ``DIAG//B`` has 3 rows across 3
+        subjects -- ``B`` wins despite fewer rows:
 
         >>> with tempfile.TemporaryDirectory() as tmpdir:
         ...     shard_dir = Path(tmpdir) / "data" / "train"
         ...     shard_dir.mkdir(parents=True)
         ...     pl.DataFrame(
         ...         {
-        ...             "subject_id": [1, 1, 1, 2, 2, 3],
-        ...             "code": ["DIAG//A", "DIAG//A", "DIAG//B", "DIAG//A", "DIAG//B", "DIAG//C"],
-        ...             "time": [datetime(2020, 1, i + 1) for i in range(6)],
+        ...             "subject_id": [1, 1, 1, 1, 1, 2, 3, 4],
+        ...             "code": ["DIAG//A"] * 5 + ["DIAG//B"] * 3,
+        ...             "time": [datetime(2020, 1, i + 1) for i in range(8)],
         ...         }
         ...     ).write_parquet(shard_dir / "0.parquet")
-        ...     _select_task_codes(tmpdir, num_tasks=2, seed=0, code_selection="most_frequent")
-        ['DIAG//A', 'DIAG//B']
+        ...     _select_task_codes(tmpdir, num_tasks=1, seed=0, code_selection="most_frequent")
+        ['DIAG//B']
 
         Raises when there aren't enough eligible codes:
 
@@ -107,7 +113,17 @@ def _select_task_codes(
     )
 
     if code_selection == "most_frequent":
-        counts = data.group_by("code").agg(pl.len().alias("n")).sort("n", descending=True).collect()
+        # Ranked by distinct-subject count, not event-row count: a code measured
+        # repeatedly on a small subset of subjects (e.g. hourly ICU labs) can have
+        # a huge row count while still being near-zero prevalence in the per-subject
+        # labels this module produces (one label per subject). Subject count is what
+        # min_subjects_per_code filtering already uses elsewhere in this pipeline.
+        counts = (
+            data.group_by("code")
+            .agg(pl.col("subject_id").n_unique().alias("n_subjects"))
+            .sort(["n_subjects", "code"], descending=[True, False])
+            .collect()
+        )
         eligible = counts["code"].to_list()
     else:
         eligible = data.select("code").unique().collect()["code"].to_list()
