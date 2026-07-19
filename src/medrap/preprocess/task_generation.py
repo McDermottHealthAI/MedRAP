@@ -4,12 +4,13 @@ Prediction time is sampled uniformly at random from the per-subject window
 ``[first_event + min_history_days, last_event - horizon_days]``.
 Subjects whose timeline is shorter than ``min_history_days + horizon_days`` are excluded.
 
-Task codes are sampled uniformly at random from codes present in the train split,
-excluding synthetic time tokens (``TIMELINE//`` prefix) added by the MEDS-transforms
-pipeline (see :func:`_sample_task_codes`). There is no positive-rate or count
-filtering -- a randomly chosen code can turn out rare or degenerate (all-positive or
-all-negative) on a given split; that is a property of the sampled task, not something
-this module tries to correct for.
+Task codes are selected from codes present in the train split, excluding synthetic
+time tokens (``TIMELINE//`` prefix) added by the MEDS-transforms pipeline; see
+:func:`_select_task_codes` for the two selection strategies (``"random"``,
+``"most_frequent"``). There is no positive-rate or count filtering beyond that --
+a selected code can still turn out rare or degenerate (all-positive or all-negative)
+on a given split; that is a property of the selected task, not something this module
+tries to correct for.
 """
 
 import json
@@ -22,25 +23,31 @@ import polars as pl
 log = logging.getLogger(__name__)
 
 
-def _sample_task_codes(meds_data_dir: str | Path, num_tasks: int, seed: int) -> list[str]:
-    """Sample ``num_tasks`` codes uniformly at random from the train split.
+def _select_task_codes(
+    meds_data_dir: str | Path, num_tasks: int, seed: int, code_selection: str = "random"
+) -> list[str]:
+    """Select ``num_tasks`` codes from the train split, per ``code_selection``.
 
     Every code present in the train split (excluding synthetic ``TIMELINE//``
-    tokens added by the MEDS-transforms pipeline) is equally eligible; no
-    positive-rate or count filtering is applied. A sampled code may turn out
-    rare or degenerate (all-positive or all-negative) on a given split.
+    tokens added by the MEDS-transforms pipeline) is eligible; no positive-rate
+    or count filtering is applied beyond the selection strategy itself. A
+    selected code may still turn out rare or degenerate (all-positive or
+    all-negative) on a given split.
 
     Args:
         meds_data_dir: Root of a MEDS dataset (``data/train/*.parquet``).
-        num_tasks: Number of codes to sample.
-        seed: Random seed.
+        num_tasks: Number of codes to select.
+        seed: Random seed; only used when ``code_selection="random"``.
+        code_selection: ``"random"`` (uniform, without replacement) or
+            ``"most_frequent"`` (the ``num_tasks`` codes with the highest event
+            count in the train split, ties broken arbitrarily).
 
     Returns:
-        List of ``num_tasks`` code strings, sampled without replacement.
+        List of ``num_tasks`` code strings.
 
     Raises:
-        ValueError: If no eligible codes are found, or fewer than ``num_tasks``
-            eligible codes exist.
+        ValueError: If no eligible codes are found, fewer than ``num_tasks``
+            eligible codes exist, or ``code_selection`` is not recognized.
 
     Examples:
         >>> import tempfile
@@ -55,7 +62,22 @@ def _sample_task_codes(meds_data_dir: str | Path, num_tasks: int, seed: int) -> 
         ...             "time": [datetime(2020, 1, 1), datetime(2020, 1, 2), datetime(2020, 1, 3)],
         ...         }
         ...     ).write_parquet(shard_dir / "0.parquet")
-        ...     sorted(_sample_task_codes(tmpdir, num_tasks=2, seed=0))
+        ...     sorted(_select_task_codes(tmpdir, num_tasks=2, seed=0))
+        ['DIAG//A', 'DIAG//B']
+
+        ``most_frequent`` picks the highest-count codes, not a random draw:
+
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     shard_dir = Path(tmpdir) / "data" / "train"
+        ...     shard_dir.mkdir(parents=True)
+        ...     pl.DataFrame(
+        ...         {
+        ...             "subject_id": [1, 1, 1, 2, 2, 3],
+        ...             "code": ["DIAG//A", "DIAG//A", "DIAG//B", "DIAG//A", "DIAG//B", "DIAG//C"],
+        ...             "time": [datetime(2020, 1, i + 1) for i in range(6)],
+        ...         }
+        ...     ).write_parquet(shard_dir / "0.parquet")
+        ...     _select_task_codes(tmpdir, num_tasks=2, seed=0, code_selection="most_frequent")
         ['DIAG//A', 'DIAG//B']
 
         Raises when there aren't enough eligible codes:
@@ -70,20 +92,26 @@ def _sample_task_codes(meds_data_dir: str | Path, num_tasks: int, seed: int) -> 
         ...             "time": [datetime(2020, 1, 1)],
         ...         }
         ...     ).write_parquet(shard_dir / "0.parquet")
-        ...     _sample_task_codes(tmpdir, num_tasks=5, seed=0)  # doctest: +ELLIPSIS
+        ...     _select_task_codes(tmpdir, num_tasks=5, seed=0)  # doctest: +ELLIPSIS
         Traceback (most recent call last):
             ...
         ValueError: No eligible task codes found in .../data/train/.
     """
-    data = pl.scan_parquet(Path(meds_data_dir) / "data" / "train" / "*.parquet")
-    eligible = (
-        data.filter(pl.col("time").is_not_null())
-        .filter(~pl.col("code").str.starts_with("TIMELINE//"))
-        .select("code")
-        .unique()
-        .collect()["code"]
-        .to_list()
+    if code_selection not in ("random", "most_frequent"):
+        raise ValueError(
+            f"Unrecognized code_selection={code_selection!r}; expected 'random' or 'most_frequent'."
+        )
+
+    data = pl.scan_parquet(Path(meds_data_dir) / "data" / "train" / "*.parquet").filter(
+        pl.col("time").is_not_null(), ~pl.col("code").str.starts_with("TIMELINE//")
     )
+
+    if code_selection == "most_frequent":
+        counts = data.group_by("code").agg(pl.len().alias("n")).sort("n", descending=True).collect()
+        eligible = counts["code"].to_list()
+    else:
+        eligible = data.select("code").unique().collect()["code"].to_list()
+
     if not eligible:
         raise ValueError(f"No eligible task codes found in {meds_data_dir}/data/train/.")
     if len(eligible) < num_tasks:
@@ -91,6 +119,9 @@ def _sample_task_codes(meds_data_dir: str | Path, num_tasks: int, seed: int) -> 
             f"Only {len(eligible)} eligible task codes found in {meds_data_dir}/data/train/, "
             f"fewer than the requested num_tasks={num_tasks}."
         )
+
+    if code_selection == "most_frequent":
+        return eligible[:num_tasks]
 
     rng = np.random.default_rng(seed)
     return rng.choice(eligible, size=num_tasks, replace=False).tolist()
@@ -216,7 +247,7 @@ def generate_labels(
     Args:
         meds_data_dir: Root of a MEDS dataset.
         split: Split name (e.g. ``"train"``).
-        codes: Task codes from :func:`_sample_task_codes`.
+        codes: Task codes from :func:`_select_task_codes`.
         horizon_days: Days after prediction time to look for code occurrence.
         min_history_days: Minimum days of history before the prediction anchor.
         seed: Random seed for reproducible anchor sampling.
@@ -280,23 +311,28 @@ def generate_tasks(
     min_history_days: float = 1.0,
     seed: int = 42,
     splits: tuple[str, ...] = ("train", "tuning", "held_out"),
+    code_selection: str = "random",
 ) -> Path:
     """Create multi-task binary labels from a MEDS cohort.
 
-    Task codes are sampled uniformly at random from codes present in the train
-    split (excluding synthetic ``TIMELINE//`` tokens); see
-    :func:`_sample_task_codes`. No positive-rate or count filtering is applied.
-    Prediction time is sampled independently per split, per subject; see
+    Task codes are selected from codes present in the train split (excluding
+    synthetic ``TIMELINE//`` tokens) per ``code_selection``; see
+    :func:`_select_task_codes`. No positive-rate or count filtering is applied
+    beyond that. Prediction time is sampled independently per split, per
+    subject, regardless of ``code_selection``; see
     :func:`_sample_prediction_anchors`.
 
     Args:
         meds_data_dir: Root of a MEDS dataset (``data/{split}/*.parquet``).
         output_dir: Directory to write output files into.
-        num_tasks: Number of task codes to sample.
+        num_tasks: Number of task codes to select.
         horizon_days: Days after prediction time to look for code occurrence.
         min_history_days: Minimum days of history before the prediction anchor.
-        seed: Random seed for task selection and anchor sampling.
+        seed: Random seed for task selection (when ``code_selection="random"``)
+            and anchor sampling.
         splits: Splits to generate labels for.
+        code_selection: ``"random"`` or ``"most_frequent"``; see
+            :func:`_select_task_codes`.
 
     Returns:
         ``output_dir`` as a ``Path``.
@@ -326,7 +362,7 @@ def generate_tasks(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    codes = _sample_task_codes(meds_data_dir, num_tasks=num_tasks, seed=seed)
+    codes = _select_task_codes(meds_data_dir, num_tasks=num_tasks, seed=seed, code_selection=code_selection)
 
     for split in splits:
         df = generate_labels(meds_data_dir, split, codes, horizon_days, min_history_days, seed)
@@ -344,6 +380,7 @@ def generate_tasks(
                 "horizon_days": horizon_days,
                 "min_history_days": min_history_days,
                 "seed": seed,
+                "code_selection": code_selection,
                 "codes": codes,
             },
             indent=2,

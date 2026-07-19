@@ -7,6 +7,7 @@ num_tasks: 25
 horizon_days: 7.0
 min_history_days: 1.0
 seed: 42
+code_selection: random # random | most_frequent
 do_overwrite: false
 
 hydra:
