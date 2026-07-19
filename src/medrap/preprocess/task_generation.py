@@ -5,18 +5,20 @@ Prediction time is sampled uniformly at random from the per-subject window
 Subjects whose timeline is shorter than ``min_history_days + horizon_days`` are excluded.
 
 Task codes are selected from codes present in the train split, excluding synthetic
-time tokens (``TIMELINE//`` prefix) added by the MEDS-transforms pipeline; see
-:func:`_select_task_codes` for the two selection strategies (``"random"``,
-``"most_frequent"``). There is no positive-rate or count filtering beyond that --
-a selected code can still turn out rare or degenerate (all-positive or all-negative)
-on a given split; that is a property of the selected task, not something this module
-tries to correct for.
+time tokens (``TIMELINE//`` prefix) added by the MEDS-transforms pipeline and
+``meds.birth_code`` (structurally always before the prediction window, see
+:func:`_select_task_codes`); see that function for the two selection strategies
+(``"random"``, ``"most_frequent"``). There is no positive-rate or count filtering
+beyond that -- a selected code can still turn out rare or degenerate (all-positive
+or all-negative) on a given split; that is a property of the selected task, not
+something this module tries to correct for.
 """
 
 import json
 import logging
 from pathlib import Path
 
+import meds
 import numpy as np
 import polars as pl
 
@@ -28,11 +30,15 @@ def _select_task_codes(
 ) -> list[str]:
     """Select ``num_tasks`` codes from the train split, per ``code_selection``.
 
-    Every code present in the train split (excluding synthetic ``TIMELINE//``
-    tokens added by the MEDS-transforms pipeline) is eligible; no positive-rate
-    or count filtering is applied beyond the selection strategy itself. A
-    selected code may still turn out rare or degenerate (all-positive or
-    all-negative) on a given split.
+    Every code present in the train split is eligible, excluding synthetic
+    ``TIMELINE//`` tokens added by the MEDS-transforms pipeline and
+    ``meds.birth_code`` (structurally always before the prediction window,
+    since it's the first event on a subject's timeline and prediction times
+    are sampled after ``first_event + min_history_days`` -- see
+    :func:`_sample_prediction_anchors`). No positive-rate or count filtering
+    is applied beyond that and the selection strategy itself; a selected code
+    may still turn out rare or degenerate (all-positive or all-negative) on a
+    given split.
 
     Args:
         meds_data_dir: Root of a MEDS dataset (``data/train/*.parquet``).
@@ -86,6 +92,23 @@ def _select_task_codes(
         ...     _select_task_codes(tmpdir, num_tasks=1, seed=0, code_selection="most_frequent")
         ['DIAG//B']
 
+        ``meds.birth_code`` is never eligible, even though every subject has
+        exactly one -- it's always the first event, so it can never fall
+        inside a prediction window:
+
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     shard_dir = Path(tmpdir) / "data" / "train"
+        ...     shard_dir.mkdir(parents=True)
+        ...     pl.DataFrame(
+        ...         {
+        ...             "subject_id": [1, 2],
+        ...             "code": [meds.birth_code, "DIAG//A"],
+        ...             "time": [datetime(2020, 1, 1), datetime(2020, 1, 2)],
+        ...         }
+        ...     ).write_parquet(shard_dir / "0.parquet")
+        ...     _select_task_codes(tmpdir, num_tasks=1, seed=0)
+        ['DIAG//A']
+
         Raises when there aren't enough eligible codes:
 
         >>> with tempfile.TemporaryDirectory() as tmpdir:
@@ -108,8 +131,17 @@ def _select_task_codes(
             f"Unrecognized code_selection={code_selection!r}; expected 'random' or 'most_frequent'."
         )
 
+    # meds.birth_code ("MEDS_BIRTH") is excluded because it's structurally
+    # degenerate for every task: it's the first event on a subject's timeline,
+    # and prediction_time is always sampled after first_event + min_history_days
+    # (see _sample_prediction_anchors), so it can never fall inside a prediction
+    # window -- pos_rate is guaranteed 0 regardless of code_selection.
+    # meds.death_code is NOT excluded: a death near the end of a timeline can
+    # legitimately fall inside a window, so it's a valid (if rare) task.
     data = pl.scan_parquet(Path(meds_data_dir) / "data" / "train" / "*.parquet").filter(
-        pl.col("time").is_not_null(), ~pl.col("code").str.starts_with("TIMELINE//")
+        pl.col("time").is_not_null(),
+        ~pl.col("code").str.starts_with("TIMELINE//"),
+        pl.col("code") != meds.birth_code,
     )
 
     if code_selection == "most_frequent":
@@ -332,11 +364,11 @@ def generate_tasks(
     """Create multi-task binary labels from a MEDS cohort.
 
     Task codes are selected from codes present in the train split (excluding
-    synthetic ``TIMELINE//`` tokens) per ``code_selection``; see
-    :func:`_select_task_codes`. No positive-rate or count filtering is applied
-    beyond that. Prediction time is sampled independently per split, per
-    subject, regardless of ``code_selection``; see
-    :func:`_sample_prediction_anchors`.
+    synthetic ``TIMELINE//`` tokens and ``meds.birth_code``) per
+    ``code_selection``; see :func:`_select_task_codes`. No positive-rate or
+    count filtering is applied beyond that. Prediction time is sampled
+    independently per split, per subject, regardless of ``code_selection``;
+    see :func:`_sample_prediction_anchors`.
 
     Args:
         meds_data_dir: Root of a MEDS dataset (``data/{split}/*.parquet``).

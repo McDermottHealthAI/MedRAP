@@ -72,8 +72,9 @@ training time. Output goes to `output_dir/tensorized/`.
 ### Stage 3 — generate_tasks (always runs)
 
 Selects `num_tasks` codes from the train split (excluding `TIMELINE//`
-tokens, which are synthetic) per `code_selection`, and creates binary
-prediction labels for each subject in every split:
+tokens, which are synthetic, and `meds.birth_code`, which is structurally
+always before the prediction window -- see below) per `code_selection`, and
+creates binary prediction labels for each subject in every split:
 
 - A single random **prediction time** is drawn per subject, uniformly from
     `[first_event + min_history_days, last_event - horizon_days]`. Subjects
@@ -82,16 +83,26 @@ prediction labels for each subject in every split:
 - For each task code, the label is `1.0` if the code appears within
     `horizon_days` after the prediction time, otherwise `0.0`.
 
-`code_selection` controls which codes are chosen:
+`meds.birth_code` ("MEDS_BIRTH") is always excluded from eligible codes: it's
+the first event on a subject's timeline, and prediction time is always
+sampled after `first_event + min_history_days`, so it can never fall inside a
+prediction window — it would be guaranteed `pos_rate=0` on every split, for
+any `code_selection`. `meds.death_code` is not excluded, since a death near
+the end of a timeline can legitimately fall inside a window.
+
+`code_selection` controls which of the remaining codes are chosen:
 
 - `random` (default) — uniform, without replacement, from every eligible code
     in the train split. There is no positive-rate or count filtering, so a
     sampled code can turn out rare or degenerate (all-positive or
     all-negative) on a given split; that's a property of the sampled task,
     not something `generate_tasks` tries to correct for.
-- `most_frequent` — the `num_tasks` codes with the highest event count in the
-    train split (ties broken arbitrarily). Deterministic; `seed` is ignored
-    for code selection (it still seeds prediction-time sampling).
+- `most_frequent` — the `num_tasks` codes with the highest **distinct-subject**
+    count in the train split (ties broken by code string), not event-row
+    count — a code measured repeatedly on a small subject subset (e.g. hourly
+    ICU labs) can dominate row count while still being near-zero prevalence
+    in the per-subject labels this module produces. Deterministic; `seed` is
+    ignored for code selection (it still seeds prediction-time sampling).
 
 Raises a `ValueError` only if the train split has fewer than `num_tasks`
 eligible codes to select from.
