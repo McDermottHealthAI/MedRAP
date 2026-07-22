@@ -485,4 +485,5 @@ class PreprocessDatasetAppConfig:
     horizon_days: float = 7.0
     min_history_days: float = 1.0
     seed: int = 42
+    code_selection: str = "random"  # "random" | "most_frequent"
     do_overwrite: bool = False
