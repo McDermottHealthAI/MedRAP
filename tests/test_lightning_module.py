@@ -226,8 +226,49 @@ def test_validation_loop_logs_binary_auroc() -> None:
     trainer.validate(module, dataloaders=DataLoader([low_risk, high_risk], batch_size=None))
 
     assert trainer.callback_metrics["val/auroc"].item() == pytest.approx(1.0)
-    assert module._validation_auroc_logits == []
-    assert module._validation_auroc_targets == []
+    assert module._auroc_logits["val"] == []
+    assert module._auroc_targets["val"] == []
+
+
+def test_test_loop_logs_binary_auroc() -> None:
+    """``trainer.test()`` (e.g. ``medrap-eval eval_mode=test`` against ``held_out``) logs AUROC too."""
+
+    class CodeLogitModel(nn.Module):
+        def forward(self, batch: MEDSTorchBatch) -> ModelOutput:
+            return ModelOutput(logits=batch.code[:, :1].float())
+
+    low_risk = MEDSTorchBatch(
+        code=torch.LongTensor([[-2, 0, 0]]),
+        numeric_value=torch.zeros((1, 3), dtype=torch.float32),
+        numeric_value_mask=torch.zeros((1, 3), dtype=torch.bool),
+        time_delta_days=torch.zeros((1, 3), dtype=torch.float32),
+    )
+    low_risk.boolean_value = torch.BoolTensor([False])
+    high_risk = MEDSTorchBatch(
+        code=torch.LongTensor([[2, 0, 0]]),
+        numeric_value=torch.zeros((1, 3), dtype=torch.float32),
+        numeric_value_mask=torch.zeros((1, 3), dtype=torch.bool),
+        time_delta_days=torch.zeros((1, 3), dtype=torch.float32),
+    )
+    high_risk.boolean_value = torch.BoolTensor([True])
+    module = MedRAPSupervisedLightningModule(
+        model=CodeLogitModel(),
+        task=BinaryClassificationTask(),
+        validation_auroc=True,
+    )
+    trainer = lightning.Trainer(
+        logger=False,
+        enable_checkpointing=False,
+        enable_model_summary=False,
+        enable_progress_bar=False,
+    )
+
+    trainer.test(module, dataloaders=DataLoader([low_risk, high_risk], batch_size=None))
+
+    assert trainer.callback_metrics["test/auroc"].item() == pytest.approx(1.0)
+    assert "val/auroc" not in trainer.callback_metrics
+    assert module._auroc_logits["test"] == []
+    assert module._auroc_targets["test"] == []
 
 
 def test_validation_loop_logs_multitask_mean_auroc() -> None:
