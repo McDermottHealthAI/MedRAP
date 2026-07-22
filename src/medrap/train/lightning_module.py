@@ -1,5 +1,6 @@
 """Supervised PyTorch Lightning wrapper for MedRAP."""
 
+from collections import defaultdict
 from collections.abc import Callable
 
 import lightning
@@ -35,8 +36,12 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
             Validation/test diagnostics are logged as epoch aggregates when
             this is non-zero.
         validation_auroc: Whether to accumulate detached logits and tensor
-            targets during each validation pass and log AUROC when that
-            validation loop finishes.
+            targets during each validation *and test* pass and log AUROC
+            (``val/auroc/...`` / ``test/auroc/...``) when that loop finishes.
+            Despite the name, this also governs ``trainer.test()`` (e.g.
+            ``medrap-eval eval_mode=test``, which runs over the MEDS
+            ``held_out`` split) so held-out AUROC can be read the same way as
+            validation AUROC.
         validation_auroc_log_per_task: Whether to also log per-task AUROC for
             multitask logits shaped ``(B, T)``. The mean over tasks with both
             classes present is always logged for multitask outputs.
@@ -67,8 +72,8 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
         self.diagnostics_every_n_steps = max(0, int(diagnostics_every_n_steps))
         self.validation_auroc = validation_auroc
         self.validation_auroc_log_per_task = validation_auroc_log_per_task
-        self._validation_auroc_logits: list[Tensor] = []
-        self._validation_auroc_targets: list[Tensor] = []
+        self._auroc_logits: dict[str, list[Tensor]] = defaultdict(list)
+        self._auroc_targets: dict[str, list[Tensor]] = defaultdict(list)
 
     def forward(self, batch: MEDSTorchBatch) -> ModelOutput:
         """Run the wrapped plain model on a MEDS batch.
@@ -195,68 +200,85 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
                 prog_bar=False,
                 batch_size=batch_size,
             )
-        if stage == "val" and isinstance(targets, Tensor):
-            self._collect_validation_auroc_batch(predictions.logits, targets)
+        if stage in ("val", "test") and isinstance(targets, Tensor):
+            self._collect_auroc_batch(stage, predictions.logits, targets)
         return loss
 
     def on_validation_epoch_start(self) -> None:
         """Clear validation-loop AUROC buffers before each validation pass."""
-        self._validation_auroc_logits.clear()
-        self._validation_auroc_targets.clear()
+        self._auroc_logits["val"].clear()
+        self._auroc_targets["val"].clear()
 
     def on_validation_epoch_end(self) -> None:
         """Log AUROC from logits already produced by the validation loop."""
+        self._epoch_end_auroc("val")
+
+    def on_test_epoch_start(self) -> None:
+        """Clear test-loop AUROC buffers before each test pass."""
+        self._auroc_logits["test"].clear()
+        self._auroc_targets["test"].clear()
+
+    def on_test_epoch_end(self) -> None:
+        """Log AUROC from logits already produced by the test loop.
+
+        Test-time counterpart of :meth:`on_validation_epoch_end`; runs when
+        ``trainer.test()`` finishes (e.g. ``medrap-eval eval_mode=test``,
+        which evaluates against the MEDS ``held_out`` split).
+        """
+        self._epoch_end_auroc("test")
+
+    def _epoch_end_auroc(self, stage: str) -> None:
         if not self.validation_auroc or self.trainer.sanity_checking:
-            self._validation_auroc_logits.clear()
-            self._validation_auroc_targets.clear()
+            self._auroc_logits[stage].clear()
+            self._auroc_targets[stage].clear()
             return
-        if not self._validation_auroc_logits:
+        if not self._auroc_logits[stage]:
             return
 
-        logits = torch.cat(self._validation_auroc_logits, dim=0)
-        targets = torch.cat(self._validation_auroc_targets, dim=0)
-        self._validation_auroc_logits.clear()
-        self._validation_auroc_targets.clear()
+        logits = torch.cat(self._auroc_logits[stage], dim=0)
+        targets = torch.cat(self._auroc_targets[stage], dim=0)
+        self._auroc_logits[stage].clear()
+        self._auroc_targets[stage].clear()
 
-        metrics = self._validation_auroc_metrics(targets, logits)
+        metrics = self._auroc_metrics(stage, targets, logits)
         if metrics:
             self.log_dict(metrics, prog_bar=False, logger=True, sync_dist=False)
 
-    def _collect_validation_auroc_batch(self, logits: Tensor, targets: Tensor) -> None:
+    def _collect_auroc_batch(self, stage: str, logits: Tensor, targets: Tensor) -> None:
         if not self.validation_auroc or self.trainer.sanity_checking:
             return
-        self._validation_auroc_logits.append(logits.detach().float())
-        self._validation_auroc_targets.append(targets.detach().to(device=logits.device).float())
+        self._auroc_logits[stage].append(logits.detach().float())
+        self._auroc_targets[stage].append(targets.detach().to(device=logits.device).float())
 
-    def _validation_auroc_metrics(self, targets: Tensor, logits: Tensor) -> dict[str, float]:
-        """Compute validation-loop AUROC metrics from accumulated tensors.
+    def _auroc_metrics(self, stage: str, targets: Tensor, logits: Tensor) -> dict[str, float]:
+        """Compute epoch-end AUROC metrics from accumulated tensors.
 
-        Always logs ``val/auroc/n_tasks`` and ``val/auroc/n_valid_tasks`` when AUROC
-        is computable at all, so a fully-degenerate validation split (e.g. sampled
+        Always logs ``{stage}/auroc/n_tasks`` and ``{stage}/auroc/n_valid_tasks``
+        when AUROC is computable at all, so a fully-degenerate split (e.g. sampled
         task codes with no in-window positive occurrences, leaving every task with a
         single observed class) is visible as ``n_valid_tasks=0`` in the logs instead
         of the metric silently never appearing.
 
         Examples:
             >>> module = MedRAPSupervisedLightningModule(model=ModelOutputBinaryModel())
-            >>> module._validation_auroc_metrics(torch.ones(2, 1), torch.zeros(2, 1))
+            >>> module._auroc_metrics("val", torch.ones(2, 1), torch.zeros(2, 1))
             {'val/auroc/n_tasks': 1.0, 'val/auroc/n_valid_tasks': 0.0}
-            >>> module._validation_auroc_metrics(torch.FloatTensor([0, 1]), torch.zeros(2, 3))
+            >>> module._auroc_metrics("test", torch.FloatTensor([0, 1]), torch.zeros(2, 3))
             {}
-            >>> module._validation_auroc_metrics(torch.FloatTensor([1, 1]), torch.zeros(2, 1))
-            {'val/auroc/n_tasks': 1.0, 'val/auroc/n_valid_tasks': 0.0}
+            >>> module._auroc_metrics("test", torch.FloatTensor([1, 1]), torch.zeros(2, 1))
+            {'test/auroc/n_tasks': 1.0, 'test/auroc/n_valid_tasks': 0.0}
         """
         if targets.ndim == 2 and logits.ndim == 2 and targets.shape == logits.shape:
             per_task = multitask_auroc_torch(targets, logits)
             metrics: dict[str, float] = {
-                "val/auroc/n_tasks": float(targets.shape[1]),
-                "val/auroc/n_valid_tasks": float(len(per_task)),
+                f"{stage}/auroc/n_tasks": float(targets.shape[1]),
+                f"{stage}/auroc/n_valid_tasks": float(len(per_task)),
             }
             if per_task:
-                metrics["val/auroc/mean"] = sum(per_task.values()) / len(per_task)
+                metrics[f"{stage}/auroc/mean"] = sum(per_task.values()) / len(per_task)
                 if self.validation_auroc_log_per_task:
                     metrics.update(
-                        {f"val/auroc/task_{task_idx}": value for task_idx, value in per_task.items()}
+                        {f"{stage}/auroc/task_{task_idx}": value for task_idx, value in per_task.items()}
                     )
             return metrics
 
@@ -266,8 +288,8 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
             return {}
         score = binary_auroc_torch(targets, probs)
         if score is None or not torch.isfinite(score):
-            return {"val/auroc/n_tasks": 1.0, "val/auroc/n_valid_tasks": 0.0}
-        return {"val/auroc": float(score.detach().cpu().item())}
+            return {f"{stage}/auroc/n_tasks": 1.0, f"{stage}/auroc/n_valid_tasks": 0.0}
+        return {f"{stage}/auroc": float(score.detach().cpu().item())}
 
     def training_step(self, batch: MEDSTorchBatch, _batch_idx: int) -> Tensor:
         """Compute the supervised training loss for one batch.
