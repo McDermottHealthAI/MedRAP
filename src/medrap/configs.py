@@ -345,6 +345,7 @@ class PipelineConfig:
     head: ComponentConfig = field(default_factory=LinearHeadConfig)
     marginalized_retrieval: bool = False
     marginalized_score_similarity: str = "dot"
+    marginalized_output_mode: str = "categorical"  # "categorical" | "binary"
 
 
 @dataclass

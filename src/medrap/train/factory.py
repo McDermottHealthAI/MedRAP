@@ -47,6 +47,18 @@ def instantiate_training_module(config: Any) -> MedRAPSupervisedLightningModule:
         >>> targets = module.task.extract_targets(batch)
         >>> module.loss_fn(out, targets).ndim
         0
+
+        ``marginalized_output_mode`` is threaded through to the plain model
+        (defaults to ``"categorical"``; see ``RetrievalAugmentedModel`` for
+        why independent multi-task targets need ``"binary"`` instead):
+
+        >>> module.model.marginalized_output_mode
+        'categorical'
+        >>> binary_module = instantiate_training_module(
+        ...     RAPTrainConfig(output_dir="outputs/demo", marginalized_output_mode="binary")
+        ... )
+        >>> binary_module.model.marginalized_output_mode
+        'binary'
     """
     plain_model = RetrievalAugmentedModel(
         encoder=instantiate_any(config.encoder),
@@ -58,6 +70,7 @@ def instantiate_training_module(config: Any) -> MedRAPSupervisedLightningModule:
         head=instantiate_any(config.head),
         marginalized_retrieval=bool(getattr(config, "marginalized_retrieval", False)),
         marginalized_score_similarity=str(getattr(config, "marginalized_score_similarity", "dot")),
+        marginalized_output_mode=str(getattr(config, "marginalized_output_mode", "categorical")),
     )
     task = instantiate_any(config.training.task)
     loss_fn = instantiate_any(config.training.loss)

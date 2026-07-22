@@ -1,5 +1,6 @@
 """RAP API model orchestration."""
 
+import torch
 from meds_torchdata import MEDSTorchBatch
 from torch import Tensor, nn
 from torch.nn import functional as nn_functional
@@ -10,9 +11,75 @@ from .retrieval_scoring import differentiable_retrieval_scores
 
 
 def _marginal_class_probabilities(per_doc_logits: Tensor, doc_scores: Tensor) -> Tensor:
+    """Marginalize a single ``C``-way mutually-exclusive class distribution over documents.
+
+    Softmaxes ``per_doc_logits`` over its last (class) dimension, so the ``C``
+    output probabilities compete and sum to 1 -- correct for a single
+    ``MarginalizedBinaryClassificationTask`` (``C=2``: positive vs. negative),
+    but wrong for ``C`` *independent* binary tasks, where one task being likely
+    says nothing about another. Use :func:`_marginal_binary_logits` for that case
+    (see ``RetrievalAugmentedModel``'s ``marginalized_output_mode``).
+    """
     p_ret = nn_functional.softmax(doc_scores, dim=-1)
     p_pred = nn_functional.softmax(per_doc_logits, dim=-1)
     return (p_ret.unsqueeze(-1) * p_pred).sum(dim=1)
+
+
+def _marginal_binary_logits(per_doc_logits: Tensor, doc_scores: Tensor) -> Tensor:
+    """Marginalize ``C`` independent per-task binary probabilities over documents.
+
+    For each of the ``C`` tasks independently, marginalizes
+    ``sigmoid(per_doc_logits)`` over the ``K`` retrieved documents, weighted by
+    ``softmax(doc_scores)`` over the *document* dimension only -- unlike
+    :func:`_marginal_class_probabilities`, tasks never compete for probability
+    mass. Returns the corresponding logit (``torch.logit`` of the marginal
+    probability) so the result stays compatible with BCE-based losses/metrics
+    that expect independent per-task logits.
+
+    Examples:
+        >>> logits = torch.zeros(2, 3, 4)
+        >>> scores = torch.zeros(2, 3)
+        >>> _marginal_binary_logits(logits, scores).shape
+        torch.Size([2, 4])
+        >>> torch.allclose(_marginal_binary_logits(logits, scores), torch.zeros(2, 4))
+        True
+
+        Unlike the categorical marginalization, per-task probabilities don't
+        need to sum to 1:
+
+        >>> logits = torch.FloatTensor([[[3.0, 3.0, 3.0]]])
+        >>> scores = torch.zeros(1, 1)
+        >>> probs = torch.sigmoid(_marginal_binary_logits(logits, scores))
+        >>> bool((probs.sum(dim=-1) > 1.5).all())
+        True
+
+        With ``K=1`` (a single retrieved document), marginalization is a
+        no-op and the output logit equals the input logit:
+
+        >>> logits = torch.FloatTensor([[[1.5, -2.0]]])
+        >>> scores = torch.zeros(1, 1)
+        >>> torch.allclose(_marginal_binary_logits(logits, scores), logits.squeeze(1), atol=1e-5)
+        True
+
+        ``sigmoid`` of the result matches ``MultiTaskBCEMarginalizedLoss``'s
+        own (log-space) marginal-probability computation exactly -- this is
+        the same quantity the loss already trains against, just now also
+        exposed as ``predictions.logits`` for AUROC/accuracy/inference:
+
+        >>> import torch.nn.functional as F
+        >>> _ = torch.manual_seed(0)
+        >>> per_doc = torch.randn(4, 5, 3)
+        >>> scores = torch.randn(4, 5)
+        >>> our_probs = torch.sigmoid(_marginal_binary_logits(per_doc, scores))
+        >>> log_p_ret = F.log_softmax(scores, dim=-1).unsqueeze(-1)
+        >>> loss_probs = torch.logsumexp(log_p_ret + F.logsigmoid(per_doc), dim=1).exp()
+        >>> torch.allclose(our_probs, loss_probs, atol=1e-5)
+        True
+    """
+    p_ret = nn_functional.softmax(doc_scores, dim=-1)
+    p_pos = (p_ret.unsqueeze(-1) * per_doc_logits.sigmoid()).sum(dim=1)
+    eps = torch.finfo(p_pos.dtype).eps
+    return torch.logit(p_pos.clamp(eps, 1.0 - eps))
 
 
 class RetrievalAugmentedModel(nn.Module):
@@ -36,6 +103,16 @@ class RetrievalAugmentedModel(nn.Module):
         marginalized_score_similarity: ``\"dot\"`` or ``\"cosine\"`` for recomputed
             query--key scores (should match the retriever's notion of similarity
             when possible).
+        marginalized_output_mode: ``\"categorical\"`` (default) marginalizes a
+            single ``C``-way mutually-exclusive class distribution with
+            ``softmax`` over the class dimension -- correct for
+            :class:`MarginalizedBinaryClassificationTask` (``C=2``: positive vs.
+            negative), wrong for ``C`` independent binary tasks.
+            ``\"binary\"`` marginalizes each of the ``C`` tasks' ``sigmoid``
+            probabilities independently (softmax only over the retrieved
+            *documents*) and returns BCE-compatible logits -- use this for
+            :class:`MultiTaskBinaryClassificationTask`
+            (``training/loss=multitask_binary_bce_marginalized``).
     """
 
     def __init__(
@@ -50,8 +127,14 @@ class RetrievalAugmentedModel(nn.Module):
         head: nn.Module,
         marginalized_retrieval: bool = False,
         marginalized_score_similarity: str = "dot",
+        marginalized_output_mode: str = "categorical",
     ) -> None:
         super().__init__()
+        if marginalized_output_mode not in ("categorical", "binary"):
+            raise ValueError(
+                "marginalized_output_mode must be 'categorical' or 'binary', "
+                f"got {marginalized_output_mode!r}"
+            )
         self.encoder = encoder
         self.query_projector = query_projector
         self.retriever = retriever
@@ -61,6 +144,7 @@ class RetrievalAugmentedModel(nn.Module):
         self.head = head
         self.marginalized_retrieval = bool(marginalized_retrieval)
         self.marginalized_score_similarity = str(marginalized_score_similarity)
+        self.marginalized_output_mode = str(marginalized_output_mode)
 
     def forward(self, batch: MEDSTorchBatch) -> ModelOutput:
         """Run the end-to-end RAP pipeline.
@@ -193,6 +277,60 @@ class RetrievalAugmentedModel(nn.Module):
             (2, 2)
             >>> tuple(out_perdoc.metadata["per_doc_logits"].shape)
             (2, 2, 2)
+
+        ``marginalized_output_mode="binary"`` for independent multi-task
+        targets (e.g. :class:`MultiTaskBinaryClassificationTask`): same
+        per-document fusion setup, but ``logits`` no longer sums to a
+        probability distribution across tasks -- each task's probability is
+        independent:
+
+            >>> m_binary = RetrievalAugmentedModel(
+            ...     encoder=MEDSCodeEncoder(),
+            ...     query_projector=SequenceMeanQueryProjector(in_dim=1, out_dim=4),
+            ...     retriever=InMemoryRetriever(
+            ...         doc_key_embeddings=torch.FloatTensor(
+            ...             [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]]
+            ...         ),
+            ...         doc_tokens=torch.LongTensor([[1, 2], [3, 4], [5, 6]]),
+            ...         doc_attention_mask=torch.BoolTensor([[True, True], [True, True], [True, True]]),
+            ...         k=2,
+            ...     ),
+            ...     retrieval_encoder=TokenFeatureRetrievalEncoder(vocab_size=8, embedding_dim=6),
+            ...     fusion=PerDocCrossAttentionFusion(
+            ...         d_model=4, num_heads=2, ff_dim=8, num_layers=1, d_in_patient=1, d_in_doc=6
+            ...     ),
+            ...     pooling=IdentityPooling(),
+            ...     head=LinearHead(in_dim=4, out_dim=3),
+            ...     marginalized_retrieval=True,
+            ...     marginalized_output_mode="binary",
+            ... )
+            >>> out_binary = m_binary(mb)
+            >>> tuple(out_binary.logits.shape)
+            (2, 3)
+            >>> probs = torch.sigmoid(out_binary.logits)
+            >>> bool((probs.sum(dim=-1) - 1.0).abs().gt(1e-4).any())
+            True
+
+        Invalid ``marginalized_output_mode`` is rejected eagerly, at
+        construction time:
+
+            >>> RetrievalAugmentedModel(
+            ...     encoder=MEDSCodeEncoder(),
+            ...     query_projector=SequenceMeanQueryProjector(in_dim=1, out_dim=4),
+            ...     retriever=InMemoryRetriever(
+            ...         doc_key_embeddings=torch.FloatTensor([[1.0, 0.0, 0.0, 0.0]]),
+            ...         doc_tokens=torch.LongTensor([[1, 2]]),
+            ...         doc_attention_mask=torch.BoolTensor([[True, True]]),
+            ...     ),
+            ...     retrieval_encoder=MeanPooledRetrievalEncoder(vocab_size=8, embedding_dim=2),
+            ...     fusion=ReplaceFusion(),
+            ...     pooling=IdentityPooling(),
+            ...     head=LinearHead(in_dim=2, out_dim=2),
+            ...     marginalized_output_mode="invalid",
+            ... )  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: marginalized_output_mode must be 'categorical' or 'binary'...
 
         Marginalized retrieval validation errors:
 
@@ -364,8 +502,11 @@ class RetrievalAugmentedModel(nn.Module):
                     "differentiable scores must be (B, K) matching fused documents; "
                     f"got scores={tuple(doc_scores.shape)}, K={k_docs}"
                 )
-            marginal_probs = _marginal_class_probabilities(per_doc_logits, doc_scores)
-            logits = marginal_probs.clamp_min(1e-8).log()
+            if self.marginalized_output_mode == "binary":
+                logits = _marginal_binary_logits(per_doc_logits, doc_scores)
+            else:
+                marginal_probs = _marginal_class_probabilities(per_doc_logits, doc_scores)
+                logits = marginal_probs.clamp_min(1e-8).log()
             meta["per_doc_logits"] = per_doc_logits
             meta["differentiable_doc_scores"] = doc_scores
         else:

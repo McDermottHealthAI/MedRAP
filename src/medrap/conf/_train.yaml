@@ -24,6 +24,7 @@ seed: 42
 
 marginalized_retrieval: false
 marginalized_score_similarity: dot
+marginalized_output_mode: categorical # categorical | binary
 
 # Used when training/trainer=lightning_wandb (ignored otherwise).
 wandb_project: medrap
