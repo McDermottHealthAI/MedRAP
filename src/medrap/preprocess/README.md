@@ -24,6 +24,9 @@ Key options (all have defaults):
 | `min_history_days`       | 1.0     | Minimum history required before a prediction time     |
 | `seed`                   | 42      | Random seed for task sampling and prediction times    |
 | `code_selection`         | random  | Task code strategy: `random` or `most_frequent`       |
+| `duration_distribution`  | fixed   | Occurrence-window strategy: `fixed`, `uniform`, or `log-uniform` |
+| `min_duration_days`      | null    | Lower duration bound; required (and only used) when `duration_distribution != fixed` |
+| `max_duration_days`      | null    | Upper duration bound; required (and only used) when `duration_distribution != fixed` |
 
 ### Skipping stage 1 (use existing tensorized data)
 
@@ -77,11 +80,14 @@ always before the prediction window -- see below) per `code_selection`, and
 creates binary prediction labels for each subject in every split:
 
 - A single random **prediction time** is drawn per subject, uniformly from
-    `[first_event + min_history_days, last_event - horizon_days]`. Subjects
-    whose timeline is too short for this window are excluded. This is
-    independent of `code_selection` — prediction times are always random.
-- For each task code, the label is `1.0` if the code appears within
-    `horizon_days` after the prediction time, otherwise `0.0`.
+    `[first_event + min_history_days, last_event - anchor_horizon_days]`
+    (`anchor_horizon_days` is the longest occurrence-window duration across
+    all sampled tasks — see `duration_distribution` below). Subjects whose
+    timeline is too short for this window are excluded. This is independent
+    of `code_selection` — prediction times are always random.
+- For each task code, the label is `1.0` if the code appears within that
+    task's own occurrence-window duration after the prediction time,
+    otherwise `0.0`.
 
 `meds.birth_code` ("MEDS_BIRTH") is always excluded from eligible codes: it's
 the first event on a subject's timeline, and prediction time is always
@@ -106,6 +112,36 @@ the end of a timeline can legitimately fall inside a window.
 
 Raises a `ValueError` only if the train split has fewer than `num_tasks`
 eligible codes to select from.
+
+`duration_distribution` controls each task's occurrence-window length (how
+many days after the prediction time to look for that task's code):
+
+- `fixed` (default) — every task shares the single `horizon_days` window,
+    exactly as before this option existed.
+- `uniform` / `log-uniform` — each task's duration is sampled independently
+    from `[min_duration_days, max_duration_days]` (both required in this
+    mode; `horizon_days` is ignored). `log-uniform` draws
+    `exp(uniform(log(min), log(max)))`, biasing toward shorter durations
+    while still covering the full range; `uniform` draws linearly. This is a
+    port of the duration-sampling formula from
+    [EveryQuery](https://github.com/payalchandak/EveryQuery)'s
+    `generate_tasks/sample_tasks.py` (`QueryDistribution.sample`) — only
+    that formula, not the package: EveryQuery's task-label schema is a long
+    table (one row per `(subject, query, duration)` with a three-valued
+    censored label — `True`/`False`/`null` for "window extends past the
+    subject's last recorded time"), fundamentally different from this
+    module's wide per-subject `task_0..task_{N-1}` columns with a single
+    shared `prediction_time` and hard exclusion (not censoring) of subjects
+    whose window doesn't fit, so nothing else from its pipeline carries over
+    directly.
+
+When durations vary per task, the single shared prediction-time window uses
+the *longest* sampled duration (`anchor_horizon_days = max(durations)`), so
+every subject who gets a prediction time has enough trailing data for every
+task's window — no task is ever dropped for a subject due to insufficient
+history. `metadata.json` records `duration_distribution`,
+`min_duration_days`, `max_duration_days`, and the resolved per-task
+`durations` list (parallel to `codes`).
 
 Output goes to `output_dir/tasks/` and contains one parquet per split plus
 `code_index.json` (mapping task index → code string) and `metadata.json`.

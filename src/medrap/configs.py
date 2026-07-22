@@ -486,4 +486,7 @@ class PreprocessDatasetAppConfig:
     min_history_days: float = 1.0
     seed: int = 42
     code_selection: str = "random"  # "random" | "most_frequent"
+    duration_distribution: str = "fixed"  # "fixed" | "uniform" | "log-uniform"
+    min_duration_days: float | None = None
+    max_duration_days: float | None = None
     do_overwrite: bool = False
