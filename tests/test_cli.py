@@ -759,6 +759,9 @@ def test_preprocess_entrypoint_runs_with_hydra_overrides(monkeypatch, tmp_path) 
         min_history_days,
         seed,
         code_selection,
+        duration_distribution,
+        min_duration_days,
+        max_duration_days,
     ):
         captured["meds_data_dir"] = str(meds_data_dir)
         captured["num_tasks"] = num_tasks
@@ -808,6 +811,9 @@ def test_preprocess_entrypoint_runs_without_tensorized_dir(monkeypatch, tmp_path
         min_history_days,
         seed,
         code_selection,
+        duration_distribution,
+        min_duration_days,
+        max_duration_days,
     ):
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         return Path(output_dir)
