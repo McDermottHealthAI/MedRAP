@@ -20,6 +20,14 @@ output_dir: ???
 checkpoint_path: ???
 eval_mode: validate
 
+marginalized_retrieval: false
+marginalized_score_similarity: dot
+marginalized_output_mode: categorical # categorical | binary
+
+# Used when training/trainer=lightning_wandb (ignored otherwise).
+wandb_project: medrap
+wandb_run_name: medrap-eval
+
 hydra:
   run:
     dir: .
