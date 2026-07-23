@@ -401,6 +401,7 @@ class RAPEvalConfig(PipelineConfig):
     output_dir: str = MISSING
     checkpoint_path: str = MISSING
     eval_mode: str = "validate"
+    do_overwrite: bool = False
 
 
 @dataclass
