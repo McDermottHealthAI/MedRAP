@@ -19,6 +19,7 @@ head:
 output_dir: ???
 checkpoint_path: ???
 eval_mode: validate
+do_overwrite: false
 
 hydra:
   run:
