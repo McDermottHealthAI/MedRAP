@@ -10,10 +10,18 @@ Task codes are selected from codes present in the train split, excluding synthet
 time tokens (``TIMELINE//`` prefix) added by the MEDS-transforms pipeline and
 ``meds.birth_code`` (structurally always before the prediction window, see
 :func:`_select_task_codes`); see that function for the two selection strategies
-(``"random"``, ``"most_frequent"``). There is no positive-rate or count filtering
-beyond that -- a selected code can still turn out rare or degenerate (all-positive
-or all-negative) on a given split; that is a property of the selected task, not
-something this module tries to correct for.
+(``"random"``, ``"most_frequent"``).
+
+When ``duration_distribution="fixed"`` (the default), a selected code is also
+required to have both classes present (at least one positive, at least one
+negative) in every generated split: see :func:`_select_valid_task_codes_and_labels`.
+A code that comes up degenerate is discarded and replaced with a fresh draw,
+repeating until ``num_tasks`` valid codes are found or the eligible pool is
+exhausted. This is only safe when every draw shares the same ``horizon_days``
+(so prediction anchors -- and thus the subject population checked for
+validity -- never shift between rounds); ``duration_distribution="uniform"``/
+``"log-uniform"`` samples an independent duration per task and does not get
+this guarantee -- a selected code can still turn out rare or degenerate there.
 
 Each task's occurrence window ("how many days after prediction_time to look for
 the code") defaults to a single shared ``horizon_days`` for every task
@@ -42,7 +50,11 @@ log = logging.getLogger(__name__)
 
 
 def _select_task_codes(
-    meds_data_dir: str | Path, num_tasks: int, seed: int, code_selection: str = "random"
+    meds_data_dir: str | Path,
+    num_tasks: int,
+    seed: int,
+    code_selection: str = "random",
+    exclude: set[str] | None = None,
 ) -> list[str]:
     """Select ``num_tasks`` codes from the train split, per ``code_selection``.
 
@@ -66,6 +78,8 @@ def _select_task_codes(
             since a code measured repeatedly on a small subject subset can have
             a huge row count while still being near-zero prevalence in the
             per-subject labels this module produces; ties broken by code string).
+        exclude: Codes to drop from the eligible pool before selecting, e.g. codes
+            already tried and rejected by :func:`_select_valid_task_codes_and_labels`.
 
     Returns:
         List of ``num_tasks`` code strings.
@@ -125,6 +139,21 @@ def _select_task_codes(
         ...     _select_task_codes(tmpdir, num_tasks=1, seed=0)
         ['DIAG//A']
 
+        ``exclude`` drops codes from the eligible pool before selecting:
+
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     shard_dir = Path(tmpdir) / "data" / "train"
+        ...     shard_dir.mkdir(parents=True)
+        ...     pl.DataFrame(
+        ...         {
+        ...             "subject_id": [1, 2],
+        ...             "code": ["DIAG//A", "DIAG//B"],
+        ...             "time": [datetime(2020, 1, 1), datetime(2020, 1, 2)],
+        ...         }
+        ...     ).write_parquet(shard_dir / "0.parquet")
+        ...     _select_task_codes(tmpdir, num_tasks=1, seed=0, exclude={"DIAG//A"})
+        ['DIAG//B']
+
         Raises when there aren't enough eligible codes:
 
         >>> with tempfile.TemporaryDirectory() as tmpdir:
@@ -175,6 +204,9 @@ def _select_task_codes(
         eligible = counts["code"].to_list()
     else:
         eligible = data.select("code").unique().collect()["code"].to_list()
+
+    if exclude:
+        eligible = [c for c in eligible if c not in exclude]
 
     if not eligible:
         raise ValueError(f"No eligible task codes found in {meds_data_dir}/data/train/.")
@@ -505,6 +537,125 @@ def generate_labels(
     return pl.concat(shards)
 
 
+def _select_valid_task_codes_and_labels(
+    meds_data_dir: str | Path,
+    num_tasks: int,
+    horizon_days: float,
+    min_history_days: float,
+    seed: int,
+    splits: tuple[str, ...],
+    code_selection: str,
+) -> tuple[list[str], dict[str, pl.DataFrame]]:
+    """Select ``num_tasks`` codes whose labels have both classes in every split.
+
+    Draws candidate codes via :func:`_select_task_codes`, generates their labels
+    for every split in ``splits``, and keeps only codes where each split has at
+    least one positive and one negative label. Rejected codes are excluded and
+    replaced with fresh draws (same ``code_selection`` strategy), repeating
+    until ``num_tasks`` valid codes are found or the eligible pool is exhausted
+    (in which case :func:`_select_task_codes` raises ``ValueError``).
+
+    Only safe for a single shared ``horizon_days`` (i.e. ``duration_distribution
+    ="fixed"`` in :func:`generate_tasks`): every round -- and the final label
+    generation -- uses the same ``horizon_days`` and ``seed``, so prediction
+    anchors (and thus the subject population checked for validity) are
+    identical across rounds; a code accepted in an earlier round stays valid
+    when the final combined label set is generated.
+
+    Args:
+        meds_data_dir: Root of a MEDS dataset.
+        num_tasks: Number of valid codes to find.
+        horizon_days: Shared occurrence-window length in days for every task.
+        min_history_days: Minimum days of history before the prediction anchor.
+        seed: Random seed, forwarded to code selection and label generation.
+        splits: Splits a code's labels must be valid in.
+        code_selection: ``"random"`` or ``"most_frequent"``.
+
+    Returns:
+        ``(codes, split_frames)`` where ``codes`` has ``num_tasks`` entries and
+        ``split_frames`` maps each split in ``splits`` to its label
+        ``DataFrame`` (columns ``subject_id``, ``prediction_time``,
+        ``task_0``, ...), built from exactly those codes.
+
+    Examples:
+        ``"BAD"`` occurs for every subject (degenerate, all-positive) while
+        ``"GOOD"`` splits 2-2 -- regardless of which code the RNG draws
+        first, only ``"GOOD"`` survives:
+
+        >>> import tempfile
+        >>> from datetime import datetime, timedelta
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     base = datetime(2020, 1, 1)
+        ...     records = []
+        ...     for subject_id in range(1, 5):
+        ...         records.append({"subject_id": subject_id, "code": "TIMELINE//DELTA//years", "time": base})
+        ...         records.append(
+        ...             {"subject_id": subject_id, "code": "BAD", "time": base + timedelta(days=3)}
+        ...         )
+        ...         if subject_id <= 2:
+        ...             records.append(
+        ...                 {"subject_id": subject_id, "code": "GOOD", "time": base + timedelta(days=3)}
+        ...             )
+        ...         records.append(
+        ...             {
+        ...                 "subject_id": subject_id,
+        ...                 "code": "TIMELINE//DELTA//years",
+        ...                 "time": base + timedelta(days=8),
+        ...             }
+        ...         )
+        ...     for split in ("train", "tuning", "held_out"):
+        ...         shard_dir = Path(tmpdir) / "data" / split
+        ...         shard_dir.mkdir(parents=True)
+        ...         pl.DataFrame(records).write_parquet(shard_dir / "0.parquet")
+        ...     codes, frames = _select_valid_task_codes_and_labels(
+        ...         tmpdir,
+        ...         num_tasks=1,
+        ...         horizon_days=7.0,
+        ...         min_history_days=1.0,
+        ...         seed=0,
+        ...         splits=("train", "tuning", "held_out"),
+        ...         code_selection="random",
+        ...     )
+        ...     codes
+        ['GOOD']
+        >>> sorted(frames)
+        ['held_out', 'train', 'tuning']
+        >>> sorted(frames["train"]["task_0"].to_list())
+        [0.0, 0.0, 1.0, 1.0]
+    """
+    exclude: set[str] = set()
+    valid_codes: list[str] = []
+    while len(valid_codes) < num_tasks:
+        candidates = _select_task_codes(
+            meds_data_dir,
+            num_tasks=num_tasks - len(valid_codes),
+            seed=seed,
+            code_selection=code_selection,
+            exclude=exclude,
+        )
+        durations = [float(horizon_days)] * len(candidates)
+        frames = {
+            split: generate_labels(meds_data_dir, split, candidates, durations, min_history_days, seed)
+            for split in splits
+        }
+        for i, code in enumerate(candidates):
+            col = f"task_{i}"
+            is_valid = all(
+                not frames[split].is_empty() and 0 < frames[split][col].sum() < frames[split].height
+                for split in splits
+            )
+            if is_valid:
+                valid_codes.append(code)
+            exclude.add(code)
+
+    durations = [float(horizon_days)] * len(valid_codes)
+    final_frames = {
+        split: generate_labels(meds_data_dir, split, valid_codes, durations, min_history_days, seed)
+        for split in splits
+    }
+    return valid_codes, final_frames
+
+
 def generate_tasks(
     meds_data_dir: str | Path,
     output_dir: str | Path,
@@ -523,10 +674,18 @@ def generate_tasks(
 
     Task codes are selected from codes present in the train split (excluding
     synthetic ``TIMELINE//`` tokens and ``meds.birth_code``) per
-    ``code_selection``; see :func:`_select_task_codes`. No positive-rate or
-    count filtering is applied beyond that. Prediction time is sampled
-    independently per split, per subject, regardless of ``code_selection``;
-    see :func:`_sample_prediction_anchors`.
+    ``code_selection``; see :func:`_select_task_codes`. Prediction time is
+    sampled independently per split, per subject, regardless of
+    ``code_selection``; see :func:`_sample_prediction_anchors`.
+
+    When ``duration_distribution="fixed"`` (the default), a selected code is
+    also required to have both classes present in every generated split --
+    degenerate draws are discarded and replaced until ``num_tasks`` valid
+    codes are found; see :func:`_select_valid_task_codes_and_labels`. This
+    guarantee does not extend to ``duration_distribution="uniform"``/
+    ``"log-uniform"`` (independent per-task durations mean anchors shift
+    between candidate draws, so validity can't be checked consistently) --
+    a selected code can still turn out rare or degenerate there.
 
     Each task's occurrence-window duration is either a single shared
     ``horizon_days`` (``duration_distribution="fixed"``, the default -- matches
@@ -568,16 +727,31 @@ def generate_tasks(
         >>> import tempfile
         >>> from datetime import datetime, timedelta
         >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     base = datetime(2020, 1, 1)
         ...     for split in ("train", "tuning"):
         ...         shard_dir = Path(tmpdir) / "data" / split
         ...         shard_dir.mkdir(parents=True)
-        ...         rows = {"subject_id": [], "code": [], "time": []}
+        ...         records = []
         ...         for subject_id in range(5):
-        ...             start = datetime(2020, 1, 1) + timedelta(days=subject_id)
-        ...             rows["subject_id"] += [subject_id, subject_id]
-        ...             rows["code"] += ["DIAG//A", "TIMELINE//DELTA//years"]
-        ...             rows["time"] += [start, start + timedelta(days=20)]
-        ...         pl.DataFrame(rows).write_parquet(shard_dir / "0.parquet")
+        ...             records.append(
+        ...                 {"subject_id": subject_id, "code": "TIMELINE//DELTA//years", "time": base}
+        ...             )
+        ...             if subject_id < 2:  # "DIAG//A" occurs for 2/5 subjects: mixed, not degenerate
+        ...                 records.append(
+        ...                     {
+        ...                         "subject_id": subject_id,
+        ...                         "code": "DIAG//A",
+        ...                         "time": base + timedelta(days=3),
+        ...                     }
+        ...                 )
+        ...             records.append(
+        ...                 {
+        ...                     "subject_id": subject_id,
+        ...                     "code": "TIMELINE//DELTA//years",
+        ...                     "time": base + timedelta(days=8),
+        ...                 }
+        ...             )
+        ...         pl.DataFrame(records).write_parquet(shard_dir / "0.parquet")
         ...     out_dir = Path(tmpdir) / "tasks"
         ...     returned = generate_tasks(tmpdir, out_dir, num_tasks=1, seed=0, splits=("train", "tuning"))
         ...     codes = json.loads((out_dir / "code_index.json").read_text())
@@ -642,18 +816,26 @@ def generate_tasks(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    codes = _select_task_codes(meds_data_dir, num_tasks=num_tasks, seed=seed, code_selection=code_selection)
-
     if duration_distribution == "fixed":
+        codes, split_frames = _select_valid_task_codes_and_labels(
+            meds_data_dir, num_tasks, horizon_days, min_history_days, seed, splits, code_selection
+        )
         durations = [float(horizon_days)] * len(codes)
     else:
+        codes = _select_task_codes(
+            meds_data_dir, num_tasks=num_tasks, seed=seed, code_selection=code_selection
+        )
         assert min_duration_days is not None and max_duration_days is not None  # checked above
         durations = _sample_task_durations(
             len(codes), min_duration_days, max_duration_days, duration_distribution, seed
         )
+        split_frames = {
+            split: generate_labels(meds_data_dir, split, codes, durations, min_history_days, seed)
+            for split in splits
+        }
 
     for split in splits:
-        df = generate_labels(meds_data_dir, split, codes, durations, min_history_days, seed)
+        df = split_frames[split]
         if df.is_empty():
             continue
         df.write_parquet(output_dir / f"{split}.parquet")
