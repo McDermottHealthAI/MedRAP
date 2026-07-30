@@ -343,6 +343,12 @@ def _sample_prediction_anchors(
             (pl.col("last_us") - horizon_us).alias("latest_us"),
         )
         .filter(pl.col("earliest_us") <= pl.col("latest_us"))
+        # group_by's output row order is not guaranteed stable across calls (polars can use a
+        # multi-threaded hash aggregation), so without this sort the same rng.random(len(bounds))
+        # draw below can land on a *different* subject each call even with an identical seed --
+        # silently reshuffling everyone's prediction_time. Explicit sort makes row i always mean
+        # the same subject_id, so the same seed always produces the same anchors.
+        .sort("subject_id")
     )
 
     if bounds.is_empty():
@@ -483,6 +489,32 @@ def generate_labels(
         ...         tmpdir, "train", ["A", "B"], durations=[7.0, 7.0], min_history_days=1.0, seed=0
         ...     )
         ...     set(df.columns) == {"subject_id", "prediction_time", "task_0", "task_1"}
+        True
+
+        Same seed gives identical anchors across repeated calls, even with many
+        subjects -- ``_sample_prediction_anchors``'s internal ``group_by`` sorts by
+        ``subject_id`` before consuming the RNG draw, so row order can't reshuffle
+        which subject gets which offset (this matters for
+        :func:`_select_valid_task_codes_and_labels`, which calls :func:`generate_labels`
+        multiple times with the same seed and requires consistent anchors each time):
+
+        >>> import numpy as np
+        >>> from datetime import timedelta
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     shard_dir = Path(tmpdir) / "data" / "train"
+        ...     shard_dir.mkdir(parents=True)
+        ...     rng = np.random.default_rng(0)
+        ...     subject_ids = list(range(200))
+        ...     rows = {"subject_id": [], "code": [], "time": []}
+        ...     for sid in subject_ids:
+        ...         start = datetime(2020, 1, 1) + timedelta(days=int(rng.integers(0, 50)))
+        ...         rows["subject_id"] += [sid, sid]
+        ...         rows["code"] += ["A", "TIMELINE//DELTA//years"]
+        ...         rows["time"] += [start, start + timedelta(days=20)]
+        ...     pl.DataFrame(rows).write_parquet(shard_dir / "0.parquet")
+        ...     a = generate_labels(tmpdir, "train", ["A"], [7.0], min_history_days=1.0, seed=42)
+        ...     b = generate_labels(tmpdir, "train", ["A"], [7.0], min_history_days=1.0, seed=42)
+        ...     a.sort("subject_id")["prediction_time"].equals(b.sort("subject_id")["prediction_time"])
         True
 
         Independent per-task durations -- events chosen so the anchor window
