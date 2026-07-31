@@ -24,6 +24,7 @@ Key options (all have defaults):
 | `min_history_days`       | 1.0     | Minimum history required before a prediction time     |
 | `seed`                   | 42      | Random seed for task sampling and prediction times    |
 | `code_selection`         | random  | Task code strategy: `random` or `most_frequent`       |
+| `anchor_strategy`        | uniform_lifetime | Prediction-time strategy: `uniform_lifetime` or `uniform_event` |
 | `duration_distribution`  | fixed   | Occurrence-window strategy: `fixed`, `uniform`, or `log-uniform` |
 | `min_duration_days`      | null    | Lower duration bound; required (and only used) when `duration_distribution != fixed` |
 | `max_duration_days`      | null    | Upper duration bound; required (and only used) when `duration_distribution != fixed` |
@@ -79,12 +80,13 @@ tokens, which are synthetic, and `meds.birth_code`, which is structurally
 always before the prediction window -- see below) per `code_selection`, and
 creates binary prediction labels for each subject in every split:
 
-- A single random **prediction time** is drawn per subject, uniformly from
+- A single random **prediction time** is drawn per subject from
     `[first_event + min_history_days, last_event - anchor_horizon_days]`
     (`anchor_horizon_days` is the longest occurrence-window duration across
-    all sampled tasks — see `duration_distribution` below). Subjects whose
-    timeline is too short for this window are excluded. This is independent
-    of `code_selection` — prediction times are always random.
+    all sampled tasks — see `duration_distribution` below), per
+    `anchor_strategy`. Subjects whose timeline is too short for this window
+    are excluded. This is independent of `code_selection` — prediction times
+    are always random.
 - For each task code, the label is `1.0` if the code appears within that
     task's own occurrence-window duration after the prediction time,
     otherwise `0.0`.
@@ -112,6 +114,56 @@ the end of a timeline can legitimately fall inside a window.
 
 Raises a `ValueError` only if the train split has fewer than `num_tasks`
 eligible codes to select from.
+
+`anchor_strategy` controls **how** the prediction time is drawn from the
+per-subject window. Both strategies use the same window; they differ only in
+the measure they sample against.
+
+- `uniform_lifetime` (default) — uniform over *calendar time* in the window.
+    This is the historical behaviour, kept as the default and unchanged
+    byte-for-byte so that every previously generated label set stays
+    reproducible.
+- `uniform_event` — uniform over the subject's real **clinical events** inside
+    the window (see `_clinical_events`, which drops both `meds.birth_code` and
+    every `TIMELINE//` token). Subjects with no clinical event in the window
+    are dropped, exactly as subjects with an empty window already were.
+
+#### Why `uniform_lifetime` produces ~0.1% positive labels
+
+`first_event` is effectively the subject's **birth**. MIMIC-IV subjects are
+born decades before they ever touch the hospital, so the anchor window spans a
+whole lifetime (~59 years on the measured shard) while the subject's actual
+clinical activity is confined to roughly a year. A uniformly drawn calendar
+timestamp therefore lands, almost always, in an empty stretch of that lifetime
+where nothing is going to occur within `horizon_days` — so the label is `0.0`.
+
+The obvious-looking fix — excluding `meds.birth_code` from the anchor bounds —
+is a **no-op**. The MEDS-transforms pipeline (stage 1) inserts a
+`TIMELINE//START` token at the *identical* timestamp as `MEDS_BIRTH` for 100%
+of subjects, so dropping birth alone leaves the window's left edge exactly
+where it was. This is only visible on the `intermediate/` dataset that task
+generation actually reads, not on the raw `MEDS_cohort` input:
+
+| cohort dir                                       | `TIMELINE//` rows | median(first non-birth event - birth) |
+| ------------------------------------------------ | ----------------- | ------------------------------------- |
+| `MEDS_cohort` (raw)                              | 0                 | 17,287 days                           |
+| `intermediate/` (what `medrap-preprocess` reads) | 211,488           | **0.000 days**                        |
+
+Both exclusions together are what make `uniform_event` work. Measured on a
+999-subject shard, median in-window positive rate over the 8 most frequent
+codes at a 7-day horizon:
+
+| `anchor_strategy`                     | positive rate |
+| ------------------------------------- | ------------- |
+| `uniform_lifetime` (uniform over life) | 0.0010        |
+| `uniform_event` (uniform over events)  | **0.3493**    |
+
+— a **349x** increase. Note that this also affects which codes survive the
+degenerate-code rejection in `fixed` mode: candidate codes are validated with
+the same `anchor_strategy` used for the final labels, so a code accepted as
+non-degenerate is non-degenerate under the anchors that actually ship.
+
+`anchor_strategy` is recorded in `metadata.json`.
 
 `duration_distribution` controls each task's occurrence-window length (how
 many days after the prediction time to look for that task's code):

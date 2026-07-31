@@ -487,6 +487,7 @@ class PreprocessDatasetAppConfig:
     min_history_days: float = 1.0
     seed: int = 42
     code_selection: str = "random"  # "random" | "most_frequent"
+    anchor_strategy: str = "uniform_lifetime"  # "uniform_lifetime" | "uniform_event"
     duration_distribution: str = "fixed"  # "fixed" | "uniform" | "log-uniform"
     min_duration_days: float | None = None
     max_duration_days: float | None = None
