@@ -1,10 +1,14 @@
 """Multi-task binary label creation from MEDS cohort data.
 
-Prediction time is sampled uniformly at random from the per-subject window
+Prediction time is sampled from the per-subject window
 ``[first_event + min_history_days, last_event - anchor_horizon_days]``, where
 ``anchor_horizon_days`` is the longest of the (possibly per-task) durations below.
 Subjects whose timeline is shorter than ``min_history_days + anchor_horizon_days``
-are excluded.
+are excluded. ``anchor_strategy`` (default ``"uniform_event"``) controls how a
+point inside that window is drawn -- uniformly over the subject's real
+clinical events (avoiding anchors that land in silent gaps between
+encounters) or, via ``"uniform_lifetime"``, uniformly over continuous
+calendar time; see :func:`_sample_prediction_anchors`.
 
 Task codes are selected from codes present in the train split, excluding synthetic
 time tokens (``TIMELINE//`` prefix) added by the MEDS-transforms pipeline and
@@ -47,6 +51,40 @@ import numpy as np
 import polars as pl
 
 log = logging.getLogger(__name__)
+
+
+def _clinical_events(df: pl.DataFrame) -> pl.DataFrame:
+    """Restrict ``df`` to real clinical events.
+
+    Drops synthetic ``TIMELINE//`` tokens added by the MEDS-transforms pipeline and
+    ``meds.birth_code``. Birth is structurally degenerate as an anchor: it's the first
+    event on a subject's timeline and anchors are always sampled after it (given
+    ``min_history_days > 0``), so it could never qualify anyway -- excluded here for
+    defense in depth. ``TIMELINE//`` tokens are synthetic boundary markers, not real
+    observations, so an anchor landing on one wouldn't actually fix the "anchor on
+    empty time" problem :func:`_sample_prediction_anchors`'s ``"uniform_event"``
+    strategy exists to solve.
+
+    Ported from `Zach's <https://github.com/McDermottHealthAI/MedRAP/pull/100>`_
+    ``anchor_strategy="uniform_event"`` design.
+
+    Args:
+        df: Frame with a ``code`` column.
+
+    Returns:
+        ``df`` restricted to rows whose ``code`` is neither ``meds.birth_code`` nor a
+        ``TIMELINE//`` token.
+
+    Examples:
+        >>> _clinical_events(pl.DataFrame({"code": [meds.birth_code, "TIMELINE//START", "DIAG//A"]}))[
+        ...     "code"
+        ... ].to_list()
+        ['DIAG//A']
+    """
+    return df.filter(
+        ~pl.col("code").str.starts_with("TIMELINE//"),
+        pl.col("code") != meds.birth_code,
+    )
 
 
 def _select_task_codes(
@@ -303,24 +341,39 @@ def _sample_task_durations(
 
 
 def _sample_prediction_anchors(
-    df: pl.DataFrame, anchor_horizon_days: float, min_history_days: float, rng: np.random.Generator
+    df: pl.DataFrame,
+    anchor_horizon_days: float,
+    min_history_days: float,
+    rng: np.random.Generator,
+    anchor_strategy: str = "uniform_event",
 ) -> pl.DataFrame | None:
     """Sample one random prediction anchor per subject within their valid window.
 
-    The anchor is drawn uniformly at random from the subject's own distinct
-    *real event timestamps* falling in
-    ``[first_event + min_history_days, last_event - anchor_horizon_days]`` --
-    not from any continuous point in that range. Clinical data is bursty
-    (dense during an encounter, long silent gaps between them), so a
-    continuous draw frequently lands in a gap where nothing was recorded;
-    restricting to real event times guarantees the anchor always coincides
-    with an actual observation (port of `EveryQuery
-    <https://github.com/payalchandak/EveryQuery>`_'s ``build_prediction_times``
-    index-sampling idea -- see ``generate_tasks/sample_tasks.py``). Subjects
-    with no qualifying event time are dropped.
+    The valid window is always
+    ``[first_event + min_history_days, last_event - anchor_horizon_days]``;
+    ``anchor_strategy`` decides how a point inside it is drawn:
+
+    - ``"uniform_event"`` (default): uniformly at random from the subject's own
+      distinct *real clinical event* timestamps (:func:`_clinical_events` --
+      excludes synthetic ``TIMELINE//`` tokens and ``meds.birth_code``) falling
+      in the window. Clinical data is bursty (dense during an encounter, long
+      silent gaps between them); restricting to real clinical events guarantees
+      the anchor always coincides with an actual observation, not a synthetic
+      timeline marker or a moment with nothing recorded (port of `EveryQuery
+      <https://github.com/payalchandak/EveryQuery>`_'s ``build_prediction_times``
+      index-sampling idea, refined per `Zach's PR
+      <https://github.com/McDermottHealthAI/MedRAP/pull/100>`_ to also exclude
+      ``TIMELINE//`` tokens from the candidate set, not just birth).
+    - ``"uniform_lifetime"``: uniformly at random from any continuous timestamp
+      in the window, independent of whether anything was actually recorded
+      there. Kept for comparison against ``"uniform_event"`` -- this was this
+      function's only behavior before that guarantee existed.
+
+    Subjects with no qualifying anchor are dropped either way.
 
     Args:
-        df: Shard events with ``subject_id`` and ``time`` columns.
+        df: Shard events with ``subject_id``, ``time``, and (for
+            ``"uniform_event"``) ``code`` columns.
         anchor_horizon_days: Days of trailing room required after the prediction
             anchor. When task durations vary per task (see
             :func:`_sample_task_durations`), pass the *longest* sampled duration
@@ -328,18 +381,24 @@ def _sample_prediction_anchors(
             every task's window -- no task is ever dropped for a given subject
             due to insufficient trailing data.
         min_history_days: Minimum days of history before the prediction anchor.
-        rng: Random generator; consumes one ``rng.random(n_subjects)`` draw.
+        rng: Random generator; consumes one ``rng.random(n_subjects)`` draw
+            either way.
+        anchor_strategy: ``"uniform_event"`` (default) or ``"uniform_lifetime"``.
 
     Returns:
         DataFrame with columns ``subject_id``, ``prediction_time``, or ``None``
-        if no subject has a qualifying event time.
+        if no subject has a qualifying anchor.
+
+    Raises:
+        ValueError: If ``anchor_strategy`` is not one of the two known values.
 
     Examples:
-        Only real event timestamps are eligible anchors -- day 0 (before the
-        window) and day 20 (after it) are never selected; day 5 and day 8
-        (both inside ``[first + min_history, last - horizon]``) are the only
-        two candidates, so the result always lands exactly on one of them,
-        never a continuous point like day 6.5:
+        Only real clinical event timestamps are eligible anchors under
+        ``"uniform_event"`` -- day 0 (before the window) and day 20 (after it)
+        are never selected; day 5 and day 8 (both inside
+        ``[first + min_history, last - horizon]``) are the only two
+        candidates, so the result always lands exactly on one of them, never
+        a continuous point like day 6.5:
 
         >>> import numpy as np
         >>> from datetime import datetime, timedelta
@@ -347,6 +406,7 @@ def _sample_prediction_anchors(
         >>> df = pl.DataFrame(
         ...     {
         ...         "subject_id": [1, 1, 1, 1],
+        ...         "code": ["DIAG//A"] * 4,
         ...         "time": [
         ...             base,
         ...             base + timedelta(days=5),
@@ -360,7 +420,51 @@ def _sample_prediction_anchors(
         ... )
         >>> result["prediction_time"][0] in (base + timedelta(days=5), base + timedelta(days=8))
         True
+
+        A synthetic ``TIMELINE//`` token inside the window is not a valid
+        ``"uniform_event"`` anchor, even though it's a real row in ``df``:
+
+        >>> only_timeline = pl.DataFrame(
+        ...     {
+        ...         "subject_id": [1, 1],
+        ...         "code": ["TIMELINE//DELTA//years", "TIMELINE//DELTA//years"],
+        ...         "time": [base, base + timedelta(days=20)],
+        ...     }
+        ... )
+        >>> _sample_prediction_anchors(
+        ...     only_timeline, anchor_horizon_days=7.0, min_history_days=1.0, rng=np.random.default_rng(0)
+        ... ) is None
+        True
+
+        ``"uniform_lifetime"`` draws from continuous time instead, so it can
+        land anywhere in the window, including day 6.5:
+
+        >>> result = _sample_prediction_anchors(
+        ...     df,
+        ...     anchor_horizon_days=7.0,
+        ...     min_history_days=1.0,
+        ...     rng=np.random.default_rng(0),
+        ...     anchor_strategy="uniform_lifetime",
+        ... )
+        >>> base + timedelta(days=1) <= result["prediction_time"][0] <= base + timedelta(days=13)
+        True
+
+        >>> _sample_prediction_anchors(
+        ...     df,
+        ...     anchor_horizon_days=7.0,
+        ...     min_history_days=1.0,
+        ...     rng=np.random.default_rng(0),
+        ...     anchor_strategy="bogus",
+        ... )
+        Traceback (most recent call last):
+            ...
+        ValueError: anchor_strategy must be 'uniform_event' or 'uniform_lifetime', got 'bogus'
     """
+    if anchor_strategy not in ("uniform_event", "uniform_lifetime"):
+        raise ValueError(
+            f"anchor_strategy must be 'uniform_event' or 'uniform_lifetime', got {anchor_strategy!r}"
+        )
+
     if df.is_empty():
         return None
 
@@ -372,12 +476,38 @@ def _sample_prediction_anchors(
         pl.col("time").max().dt.epoch(time_unit="us").alias("last_us"),
     )
 
-    # Candidate anchors: each subject's own distinct event timestamps that fall
-    # inside the valid window -- sorted by subject_id then time so per-subject
-    # index assignment (and the rng draw below) is deterministic regardless of
-    # groupby/join execution order.
+    if anchor_strategy == "uniform_lifetime":
+        bounds = (
+            bounds.with_columns(
+                (pl.col("first_us") + min_history_us).alias("earliest_us"),
+                (pl.col("last_us") - horizon_us).alias("latest_us"),
+            )
+            .filter(pl.col("earliest_us") <= pl.col("latest_us"))
+            # group_by's output row order is not guaranteed stable across calls, so
+            # without this sort the same rng.random(len(bounds)) draw below can land
+            # on a different subject each call even with an identical seed.
+            .sort("subject_id")
+        )
+        if bounds.is_empty():
+            return None
+
+        earliest = bounds["earliest_us"].to_numpy()
+        window = (bounds["latest_us"] - bounds["earliest_us"]).to_numpy()
+        offsets = (rng.random(len(bounds)) * window).astype(np.int64)
+
+        return (
+            pl.DataFrame({"subject_id": bounds["subject_id"], "prediction_us": earliest + offsets})
+            .with_columns(pl.from_epoch("prediction_us", time_unit="us").alias("prediction_time"))
+            .select(["subject_id", "prediction_time"])
+        )
+
+    # "uniform_event": candidate anchors are each subject's own distinct *clinical*
+    # event timestamps that fall inside the valid window -- sorted by subject_id
+    # then time so per-subject index assignment (and the rng draw below) is
+    # deterministic regardless of groupby/join execution order.
     candidates = (
-        df.select("subject_id", pl.col("time").dt.epoch(time_unit="us").alias("time_us"))
+        _clinical_events(df)
+        .select("subject_id", pl.col("time").dt.epoch(time_unit="us").alias("time_us"))
         .unique()
         .join(bounds, on="subject_id")
         .filter(
@@ -407,12 +537,13 @@ def _generate_labels_shard(
     durations: list[float],
     min_history_days: float,
     rng: np.random.Generator,
+    anchor_strategy: str = "uniform_event",
 ) -> pl.DataFrame | None:
     """Build multi-task label rows for one shard with a random prediction time per subject.
 
-    Prediction time is sampled uniformly from
-    ``[first_event + min_history_days, last_event - max(durations)]``.
-    Subjects whose window is empty are dropped.
+    Prediction time is sampled from ``[first_event + min_history_days,
+    last_event - max(durations)]`` per ``anchor_strategy`` -- see
+    :func:`_sample_prediction_anchors`. Subjects whose window is empty are dropped.
 
     Args:
         shard_path: Path to one MEDS event shard.
@@ -423,6 +554,8 @@ def _generate_labels_shard(
             see :func:`_sample_task_durations`.
         min_history_days: Minimum days of history before the prediction anchor.
         rng: Random generator, forwarded to :func:`_sample_prediction_anchors`.
+        anchor_strategy: ``"uniform_event"`` (default) or ``"uniform_lifetime"``;
+            forwarded to :func:`_sample_prediction_anchors`.
 
     Raises:
         ValueError: If ``len(codes) != len(durations)``.
@@ -436,7 +569,9 @@ def _generate_labels_shard(
         pl.col("time").is_not_null()
     )
     anchor_horizon_days = max(durations)
-    anchors = _sample_prediction_anchors(df, anchor_horizon_days, min_history_days, rng)
+    anchors = _sample_prediction_anchors(
+        df, anchor_horizon_days, min_history_days, rng, anchor_strategy=anchor_strategy
+    )
     if anchors is None:
         return None
 
@@ -486,6 +621,7 @@ def generate_labels(
     durations: list[float],
     min_history_days: float,
     seed: int,
+    anchor_strategy: str = "uniform_event",
 ) -> pl.DataFrame:
     """Generate multi-task binary labels for all shards of one split.
 
@@ -499,6 +635,8 @@ def generate_labels(
             :func:`_sample_task_durations` for independent per-task windows.
         min_history_days: Minimum days of history before the prediction anchor.
         seed: Random seed for reproducible anchor sampling.
+        anchor_strategy: ``"uniform_event"`` (default) or ``"uniform_lifetime"``;
+            forwarded to :func:`_sample_prediction_anchors`.
 
     Returns:
         DataFrame with columns ``subject_id``, ``prediction_time``, ``task_0``, …
@@ -599,7 +737,12 @@ def generate_labels(
     shards = [
         s
         for f in sorted(shard_dir.glob("*.parquet"))
-        if (s := _generate_labels_shard(f, codes, durations, min_history_days, rng)) is not None
+        if (
+            s := _generate_labels_shard(
+                f, codes, durations, min_history_days, rng, anchor_strategy=anchor_strategy
+            )
+        )
+        is not None
     ]
     if not shards:
         return pl.DataFrame()
@@ -614,6 +757,7 @@ def _select_valid_task_codes_and_labels(
     seed: int,
     splits: tuple[str, ...],
     code_selection: str,
+    anchor_strategy: str = "uniform_event",
 ) -> tuple[list[str], dict[str, pl.DataFrame]]:
     """Select ``num_tasks`` codes whose labels have both classes in every split.
 
@@ -639,6 +783,8 @@ def _select_valid_task_codes_and_labels(
         seed: Random seed, forwarded to code selection and label generation.
         splits: Splits a code's labels must be valid in.
         code_selection: ``"random"`` or ``"most_frequent"``.
+        anchor_strategy: ``"uniform_event"`` (default) or ``"uniform_lifetime"``;
+            forwarded to :func:`generate_labels`.
 
     Returns:
         ``(codes, split_frames)`` where ``codes`` has ``num_tasks`` entries and
@@ -661,7 +807,7 @@ def _select_valid_task_codes_and_labels(
         ...         records.append(
         ...             {
         ...                 "subject_id": subject_id,
-        ...                 "code": "TIMELINE//DELTA//years",
+        ...                 "code": "DIAG//MARKER",  # real event, anchors the collapsed window
         ...                 "time": base + timedelta(days=1),
         ...             }
         ...         )
@@ -711,7 +857,15 @@ def _select_valid_task_codes_and_labels(
         )
         durations = [float(horizon_days)] * len(candidates)
         frames = {
-            split: generate_labels(meds_data_dir, split, candidates, durations, min_history_days, seed)
+            split: generate_labels(
+                meds_data_dir,
+                split,
+                candidates,
+                durations,
+                min_history_days,
+                seed,
+                anchor_strategy=anchor_strategy,
+            )
             for split in splits
         }
         for i, code in enumerate(candidates):
@@ -726,7 +880,15 @@ def _select_valid_task_codes_and_labels(
 
     durations = [float(horizon_days)] * len(valid_codes)
     final_frames = {
-        split: generate_labels(meds_data_dir, split, valid_codes, durations, min_history_days, seed)
+        split: generate_labels(
+            meds_data_dir,
+            split,
+            valid_codes,
+            durations,
+            min_history_days,
+            seed,
+            anchor_strategy=anchor_strategy,
+        )
         for split in splits
     }
     return valid_codes, final_frames
@@ -745,6 +907,7 @@ def generate_tasks(
     duration_distribution: str = "fixed",
     min_duration_days: float | None = None,
     max_duration_days: float | None = None,
+    anchor_strategy: str = "uniform_event",
 ) -> Path:
     """Create multi-task binary labels from a MEDS cohort.
 
@@ -790,6 +953,8 @@ def generate_tasks(
             used) when ``duration_distribution != "fixed"``.
         max_duration_days: Upper duration bound in days. Required (and only
             used) when ``duration_distribution != "fixed"``.
+        anchor_strategy: ``"uniform_event"`` (default) or ``"uniform_lifetime"``;
+            forwarded to :func:`_sample_prediction_anchors`.
 
     Returns:
         ``output_dir`` as a ``Path``.
@@ -815,8 +980,9 @@ def generate_tasks(
         ...             records.append(
         ...                 {
         ...                     "subject_id": subject_id,
-        ...                     "code": "TIMELINE//DELTA//years",
-        ...                     "time": base + timedelta(days=1),
+        ...                     "code": "DIAG//MARKER",  # real clinical event, anchors the collapsed window;
+        ...                     "time": base
+        ...                     + timedelta(days=1),  # degenerate itself (delta=0, never "occurred")
         ...                 }
         ...             )
         ...             if subject_id < 2:  # "DIAG//A" occurs for 2/5 subjects: mixed, not degenerate
@@ -901,7 +1067,14 @@ def generate_tasks(
 
     if duration_distribution == "fixed":
         codes, split_frames = _select_valid_task_codes_and_labels(
-            meds_data_dir, num_tasks, horizon_days, min_history_days, seed, splits, code_selection
+            meds_data_dir,
+            num_tasks,
+            horizon_days,
+            min_history_days,
+            seed,
+            splits,
+            code_selection,
+            anchor_strategy=anchor_strategy,
         )
         durations = [float(horizon_days)] * len(codes)
     else:
@@ -913,7 +1086,15 @@ def generate_tasks(
             len(codes), min_duration_days, max_duration_days, duration_distribution, seed
         )
         split_frames = {
-            split: generate_labels(meds_data_dir, split, codes, durations, min_history_days, seed)
+            split: generate_labels(
+                meds_data_dir,
+                split,
+                codes,
+                durations,
+                min_history_days,
+                seed,
+                anchor_strategy=anchor_strategy,
+            )
             for split in splits
         }
 
@@ -934,6 +1115,7 @@ def generate_tasks(
                 "min_history_days": min_history_days,
                 "seed": seed,
                 "code_selection": code_selection,
+                "anchor_strategy": anchor_strategy,
                 "duration_distribution": duration_distribution,
                 "min_duration_days": min_duration_days,
                 "max_duration_days": max_duration_days,
