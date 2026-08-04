@@ -307,9 +307,17 @@ def _sample_prediction_anchors(
 ) -> pl.DataFrame | None:
     """Sample one random prediction anchor per subject within their valid window.
 
-    Prediction time is sampled uniformly from
-    ``[first_event + min_history_days, last_event - anchor_horizon_days]``. Subjects
-    whose window is empty are dropped.
+    The anchor is drawn uniformly at random from the subject's own distinct
+    *real event timestamps* falling in
+    ``[first_event + min_history_days, last_event - anchor_horizon_days]`` --
+    not from any continuous point in that range. Clinical data is bursty
+    (dense during an encounter, long silent gaps between them), so a
+    continuous draw frequently lands in a gap where nothing was recorded;
+    restricting to real event times guarantees the anchor always coincides
+    with an actual observation (port of `EveryQuery
+    <https://github.com/payalchandak/EveryQuery>`_'s ``build_prediction_times``
+    index-sampling idea -- see ``generate_tasks/sample_tasks.py``). Subjects
+    with no qualifying event time are dropped.
 
     Args:
         df: Shard events with ``subject_id`` and ``time`` columns.
@@ -324,7 +332,34 @@ def _sample_prediction_anchors(
 
     Returns:
         DataFrame with columns ``subject_id``, ``prediction_time``, or ``None``
-        if no subject has a nonempty window.
+        if no subject has a qualifying event time.
+
+    Examples:
+        Only real event timestamps are eligible anchors -- day 0 (before the
+        window) and day 20 (after it) are never selected; day 5 and day 8
+        (both inside ``[first + min_history, last - horizon]``) are the only
+        two candidates, so the result always lands exactly on one of them,
+        never a continuous point like day 6.5:
+
+        >>> import numpy as np
+        >>> from datetime import datetime, timedelta
+        >>> base = datetime(2020, 1, 1)
+        >>> df = pl.DataFrame(
+        ...     {
+        ...         "subject_id": [1, 1, 1, 1],
+        ...         "time": [
+        ...             base,
+        ...             base + timedelta(days=5),
+        ...             base + timedelta(days=8),
+        ...             base + timedelta(days=20),
+        ...         ],
+        ...     }
+        ... )
+        >>> result = _sample_prediction_anchors(
+        ...     df, anchor_horizon_days=7.0, min_history_days=1.0, rng=np.random.default_rng(0)
+        ... )
+        >>> result["prediction_time"][0] in (base + timedelta(days=5), base + timedelta(days=8))
+        True
     """
     if df.is_empty():
         return None
@@ -332,35 +367,36 @@ def _sample_prediction_anchors(
     min_history_us = int(min_history_days * 86_400 * 1_000_000)
     horizon_us = int(anchor_horizon_days * 86_400 * 1_000_000)
 
-    bounds = (
-        df.group_by("subject_id")
-        .agg(
-            pl.col("time").min().dt.epoch(time_unit="us").alias("first_us"),
-            pl.col("time").max().dt.epoch(time_unit="us").alias("last_us"),
-        )
-        .with_columns(
-            (pl.col("first_us") + min_history_us).alias("earliest_us"),
-            (pl.col("last_us") - horizon_us).alias("latest_us"),
-        )
-        .filter(pl.col("earliest_us") <= pl.col("latest_us"))
-        # group_by's output row order is not guaranteed stable across calls (polars can use a
-        # multi-threaded hash aggregation), so without this sort the same rng.random(len(bounds))
-        # draw below can land on a *different* subject each call even with an identical seed --
-        # silently reshuffling everyone's prediction_time. Explicit sort makes row i always mean
-        # the same subject_id, so the same seed always produces the same anchors.
-        .sort("subject_id")
+    bounds = df.group_by("subject_id").agg(
+        pl.col("time").min().dt.epoch(time_unit="us").alias("first_us"),
+        pl.col("time").max().dt.epoch(time_unit="us").alias("last_us"),
     )
 
-    if bounds.is_empty():
+    # Candidate anchors: each subject's own distinct event timestamps that fall
+    # inside the valid window -- sorted by subject_id then time so per-subject
+    # index assignment (and the rng draw below) is deterministic regardless of
+    # groupby/join execution order.
+    candidates = (
+        df.select("subject_id", pl.col("time").dt.epoch(time_unit="us").alias("time_us"))
+        .unique()
+        .join(bounds, on="subject_id")
+        .filter(
+            (pl.col("time_us") >= pl.col("first_us") + min_history_us)
+            & (pl.col("time_us") <= pl.col("last_us") - horizon_us)
+        )
+        .sort(["subject_id", "time_us"])
+        .with_columns(pl.int_range(pl.len()).over("subject_id").alias("candidate_idx"))
+    )
+    if candidates.is_empty():
         return None
 
-    earliest = bounds["earliest_us"].to_numpy()
-    window = (bounds["latest_us"] - bounds["earliest_us"]).to_numpy()
-    offsets = (rng.random(len(bounds)) * window).astype(np.int64)
+    counts = candidates.group_by("subject_id").agg(pl.len().alias("n")).sort("subject_id")
+    chosen_idx = (rng.random(len(counts)) * counts["n"].to_numpy()).astype(np.int64)
+    chosen = pl.DataFrame({"subject_id": counts["subject_id"], "candidate_idx": chosen_idx})
 
     return (
-        pl.DataFrame({"subject_id": bounds["subject_id"], "prediction_us": earliest + offsets})
-        .with_columns(pl.from_epoch("prediction_us", time_unit="us").alias("prediction_time"))
+        candidates.join(chosen, on=["subject_id", "candidate_idx"], how="inner")
+        .with_columns(pl.from_epoch("time_us", time_unit="us").alias("prediction_time"))
         .select(["subject_id", "prediction_time"])
     )
 
@@ -508,9 +544,9 @@ def generate_labels(
         ...     rows = {"subject_id": [], "code": [], "time": []}
         ...     for sid in subject_ids:
         ...         start = datetime(2020, 1, 1) + timedelta(days=int(rng.integers(0, 50)))
-        ...         rows["subject_id"] += [sid, sid]
-        ...         rows["code"] += ["A", "TIMELINE//DELTA//years"]
-        ...         rows["time"] += [start, start + timedelta(days=20)]
+        ...         rows["subject_id"] += [sid, sid, sid]
+        ...         rows["code"] += ["TIMELINE//DELTA//years", "A", "TIMELINE//DELTA//years"]
+        ...         rows["time"] += [start, start + timedelta(days=5), start + timedelta(days=20)]
         ...     pl.DataFrame(rows).write_parquet(shard_dir / "0.parquet")
         ...     a = generate_labels(tmpdir, "train", ["A"], [7.0], min_history_days=1.0, seed=42)
         ...     b = generate_labels(tmpdir, "train", ["A"], [7.0], min_history_days=1.0, seed=42)
@@ -530,10 +566,11 @@ def generate_labels(
         ...     base = datetime(2020, 1, 1)
         ...     pl.DataFrame(
         ...         {
-        ...             "subject_id": [1, 1, 1, 1],
-        ...             "code": ["A", "B", "A", "TIMELINE//DELTA//years"],
+        ...             "subject_id": [1, 1, 1, 1, 1],
+        ...             "code": ["A", "A", "B", "A", "TIMELINE//DELTA//years"],
         ...             "time": [
         ...                 base,
+        ...                 base + timedelta(days=1),
         ...                 base + timedelta(days=5),
         ...                 base + timedelta(days=10),
         ...                 base + timedelta(days=21),
@@ -621,6 +658,13 @@ def _select_valid_task_codes_and_labels(
         ...     records = []
         ...     for subject_id in range(1, 5):
         ...         records.append({"subject_id": subject_id, "code": "TIMELINE//DELTA//years", "time": base})
+        ...         records.append(
+        ...             {
+        ...                 "subject_id": subject_id,
+        ...                 "code": "TIMELINE//DELTA//years",
+        ...                 "time": base + timedelta(days=1),
+        ...             }
+        ...         )
         ...         records.append(
         ...             {"subject_id": subject_id, "code": "BAD", "time": base + timedelta(days=3)}
         ...         )
@@ -768,6 +812,13 @@ def generate_tasks(
         ...             records.append(
         ...                 {"subject_id": subject_id, "code": "TIMELINE//DELTA//years", "time": base}
         ...             )
+        ...             records.append(
+        ...                 {
+        ...                     "subject_id": subject_id,
+        ...                     "code": "TIMELINE//DELTA//years",
+        ...                     "time": base + timedelta(days=1),
+        ...                 }
+        ...             )
         ...             if subject_id < 2:  # "DIAG//A" occurs for 2/5 subjects: mixed, not degenerate
         ...                 records.append(
         ...                     {
@@ -801,9 +852,9 @@ def generate_tasks(
         ...         rows = {"subject_id": [], "code": [], "time": []}
         ...         for subject_id in range(5):
         ...             start = datetime(2020, 1, 1) + timedelta(days=subject_id)
-        ...             rows["subject_id"] += [subject_id, subject_id]
-        ...             rows["code"] += ["DIAG//A", "TIMELINE//DELTA//years"]
-        ...             rows["time"] += [start, start + timedelta(days=100)]
+        ...             rows["subject_id"] += [subject_id, subject_id, subject_id]
+        ...             rows["code"] += ["TIMELINE//DELTA//years", "DIAG//A", "TIMELINE//DELTA//years"]
+        ...             rows["time"] += [start, start + timedelta(days=5), start + timedelta(days=100)]
         ...         pl.DataFrame(rows).write_parquet(shard_dir / "0.parquet")
         ...     out_dir = Path(tmpdir) / "tasks"
         ...     _ = generate_tasks(
