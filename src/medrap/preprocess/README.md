@@ -15,14 +15,15 @@ medrap-preprocess \
 
 Key options (all have defaults):
 
-| Option                   | Default | Description                                           |
-| ------------------------ | ------- | ----------------------------------------------------- |
-| `min_subjects_per_code`  | 100     | Drop codes appearing in fewer than this many subjects |
-| `min_events_per_subject` | 10      | Drop subjects with fewer distinct events than this    |
-| `num_tasks`              | 25      | Number of prediction tasks to generate                |
-| `horizon_days`           | 7.0     | How far ahead to look for a code occurrence           |
-| `min_history_days`       | 1.0     | Minimum history required before a prediction time     |
-| `seed`                   | 42      | Random seed for task sampling and prediction times    |
+| Option                   | Default            | Description                                                                                                                     |
+| ------------------------ | ------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| `min_subjects_per_code`  | 100                | Drop codes appearing in fewer than this many subjects                                                                           |
+| `min_events_per_subject` | 10                 | Drop subjects with fewer distinct events than this                                                                              |
+| `num_tasks`              | 25                 | Number of prediction tasks to generate                                                                                          |
+| `horizon_days`           | 7.0                | How far ahead to look for a code occurrence                                                                                     |
+| `min_history_days`       | 1.0                | Minimum history required before a prediction time                                                                               |
+| `seed`                   | 42                 | Random seed for task sampling and prediction times                                                                              |
+| `anchor_strategy`        | `uniform_lifetime` | How the prediction time is drawn: `uniform_lifetime` (uniform timestamp) or `uniform_event` (uniform over real clinical events) |
 
 ### Skipping stage 1 (use existing tensorized data)
 
@@ -71,12 +72,18 @@ training time. Output goes to `output_dir/tensorized/`.
 ### Stage 3 — generate_tasks (always runs)
 
 Randomly samples `num_tasks` codes from the train split (excluding
-`TIMELINE//` tokens, which are synthetic) and creates binary prediction labels
+`TIMELINE//` tokens, which are synthetic, and the MEDS birth code, which can
+never fall inside a prediction window) and creates binary prediction labels
 for each subject in every split:
 
-- A single random **prediction time** is drawn per subject, uniformly from
+- A single **prediction time** is drawn per subject from
     `[first_event + min_history_days, last_event - horizon_days]`. Subjects
-    whose timeline is too short for this window are excluded.
+    whose timeline is too short for this window are excluded. `anchor_strategy`
+    selects how: `uniform_lifetime` draws a uniformly random timestamp in that
+    window, while `uniform_event` draws uniformly over the subject's real
+    clinical events inside it. On records spanning decades most uniform-timestamp
+    draws land in stretches with no clinical activity nearby, so labels come out
+    overwhelmingly negative; `uniform_event` puts every anchor on real activity.
 - For each task code, the label is `1.0` if the code appears within
     `horizon_days` after the prediction time, otherwise `0.0`.
 

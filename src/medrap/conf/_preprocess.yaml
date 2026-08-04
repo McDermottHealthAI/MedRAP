@@ -7,6 +7,7 @@ num_tasks: 25
 horizon_days: 7.0
 min_history_days: 1.0
 seed: 42
+anchor_strategy: uniform_lifetime # or uniform_event: anchor on real clinical events
 do_overwrite: false
 
 hydra:
