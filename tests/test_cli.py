@@ -710,9 +710,11 @@ def test_preprocess_entrypoint_runs_with_hydra_overrides(monkeypatch, tmp_path) 
         horizon_days,
         min_history_days,
         seed,
+        anchor_strategy,
     ):
         captured["meds_data_dir"] = str(meds_data_dir)
         captured["num_tasks"] = num_tasks
+        captured["anchor_strategy"] = anchor_strategy
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         return Path(output_dir)
 
@@ -729,12 +731,14 @@ def test_preprocess_entrypoint_runs_with_hydra_overrides(monkeypatch, tmp_path) 
                 f"output_dir={output_dir}",
                 f"tensorized_dir={tensorized_dir}",
                 "num_tasks=5",
+                "anchor_strategy=uniform_event",
             ]
         )
         == 0
     )
     assert captured["meds_data_dir"] == str(meds_data_dir)
     assert captured["num_tasks"] == 5
+    assert captured["anchor_strategy"] == "uniform_event"
     assert (output_dir / "config.yaml").exists()
     assert (output_dir / "resolved_config.yaml").exists()
 
@@ -758,6 +762,7 @@ def test_preprocess_entrypoint_runs_without_tensorized_dir(monkeypatch, tmp_path
         horizon_days,
         min_history_days,
         seed,
+        anchor_strategy,
     ):
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         return Path(output_dir)
