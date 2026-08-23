@@ -45,6 +45,14 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
         validation_auroc_log_per_task: Whether to also log per-task AUROC for
             multitask logits shaped ``(B, T)``. The mean over tasks with both
             classes present is always logged for multitask outputs.
+        lr_overrides: Optional mapping from a parameter-name substring to an
+            absolute learning rate for any trainable parameter whose full
+            name (as seen from ``self.named_parameters()``) contains that
+            substring, overriding the default ``lr`` for just those
+            parameters (e.g. ``{"query_projector": 1e-2}`` to train a small
+            newly-added query-projector submodule faster than the rest of
+            the model). Parameters matching more than one key use whichever
+            key is checked first (insertion order).
     """
 
     def __init__(
@@ -60,6 +68,7 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
         diagnostics_every_n_steps: int = 50,
         validation_auroc: bool = True,
         validation_auroc_log_per_task: bool = False,
+        lr_overrides: dict[str, float] | None = None,
     ) -> None:
         super().__init__()
         self.model = model
@@ -68,6 +77,7 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
         self.optimizer_factory = optimizer or (
             lambda params: torch.optim.AdamW(params, lr=lr, weight_decay=weight_decay)
         )
+        self._lr_overrides = lr_overrides or {}
         self.warmup_steps = warmup_steps
         self.diagnostics_every_n_steps = max(0, int(diagnostics_every_n_steps))
         self.validation_auroc = validation_auroc
@@ -115,24 +125,42 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
                     no_decay_names.add(full_name)
         return no_decay_names
 
+    def _lr_override_for(self, name: str) -> float | None:
+        """Return the overridden learning rate for a parameter name, if any.
+
+        Examples:
+            >>> module = MedRAPSupervisedLightningModule(
+            ...     model=ModelOutputBinaryModel(),
+            ...     lr_overrides={"query_projector": 1e-2},
+            ... )
+            >>> module._lr_override_for("model.query_projector.up.weight")
+            0.01
+            >>> module._lr_override_for("model.encoder.embedding.weight") is None
+            True
+        """
+        for substring, override_lr in self._lr_overrides.items():
+            if substring in name:
+                return override_lr
+        return None
+
     def _grouped_parameters(self) -> list[dict[str, object]]:
         no_decay_names = self._no_decay_names()
-        decay_params: list[nn.Parameter] = []
-        no_decay_params: list[nn.Parameter] = []
+        buckets: dict[tuple[float | None, bool], list[nn.Parameter]] = defaultdict(list)
 
         for name, parameter in self.named_parameters():
             if not parameter.requires_grad:
                 continue
-            if name in no_decay_names or parameter.ndim <= 1:
-                no_decay_params.append(parameter)
-            else:
-                decay_params.append(parameter)
+            no_decay = name in no_decay_names or parameter.ndim <= 1
+            buckets[(self._lr_override_for(name), no_decay)].append(parameter)
 
         groups: list[dict[str, object]] = []
-        if decay_params:
-            groups.append({"params": decay_params})
-        if no_decay_params:
-            groups.append({"params": no_decay_params, "weight_decay": 0.0})
+        for (override_lr, no_decay), params in buckets.items():
+            group: dict[str, object] = {"params": params}
+            if no_decay:
+                group["weight_decay"] = 0.0
+            if override_lr is not None:
+                group["lr"] = override_lr
+            groups.append(group)
         return groups
 
     def _run_supervised_step(self, raw_batch: MEDSTorchBatch, *, stage: str) -> Tensor:
