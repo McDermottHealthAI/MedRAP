@@ -7,6 +7,11 @@ num_tasks: 25
 horizon_days: 7.0
 min_history_days: 1.0
 seed: 42
+code_selection: random # random | most_frequent
+anchor_strategy: uniform_event # uniform_event | uniform_lifetime
+duration_distribution: fixed # fixed | uniform | log-uniform
+min_duration_days: null # required (and only used) when duration_distribution != fixed
+max_duration_days: null # required (and only used) when duration_distribution != fixed
 do_overwrite: false
 
 hydra:
