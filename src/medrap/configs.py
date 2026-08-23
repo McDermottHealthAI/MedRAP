@@ -417,6 +417,23 @@ class RAPRetrieveConfig(PipelineConfig):
     index_dataframe_dir: str = MISSING
     splits: tuple[str, ...] = ("train", "tuning", "held_out")
     batch_size: int = 32
+    do_overwrite: bool = False
+
+
+@dataclass
+class RAPPredictProbabilitiesConfig(PipelineConfig):
+    """Top-level predict-probabilities config mirroring retrieve execution fields."""
+
+    head: ComponentConfig = field(default_factory=lambda: LinearHeadConfig(out_dim=1))
+    training: TrainingConfig = field(
+        default_factory=lambda: TrainingConfig(trainer=LightningEvalTrainerConfig())
+    )
+    output_dir: str = MISSING
+    checkpoint_path: str = MISSING
+    index_dataframe_dir: str = MISSING
+    splits: tuple[str, ...] = ("train", "tuning", "held_out")
+    batch_size: int = 32
+    do_overwrite: bool = False
 
 
 @dataclass

@@ -14,6 +14,7 @@ from omegaconf.errors import MissingMandatoryValue
 import medrap.cli as cli
 from medrap.cli import (
     eval_main,
+    predict_probabilities_main,
     prepare_retrieval_dataset_main,
     preprocess_main,
     retrieve_main,
@@ -53,6 +54,10 @@ def _run_eval_cli(overrides: list[str]) -> int:
 
 def _run_retrieve_cli(overrides: list[str]) -> int:
     return _run_hydra_entrypoint(retrieve_main, "medrap-retrieve", overrides)
+
+
+def _run_predict_probabilities_cli(overrides: list[str]) -> int:
+    return _run_hydra_entrypoint(predict_probabilities_main, "medrap-predict-probabilities", overrides)
 
 
 def _run_prepare_retrieval_dataset_cli(overrides: list[str]) -> int:
@@ -105,6 +110,7 @@ def test_flat_entrypoint_scripts_are_registered() -> None:
     assert medrap_scripts["medrap-prepare-retrieval-dataset"] == "medrap.cli:prepare_retrieval_dataset_main"
     assert medrap_scripts["medrap-preprocess"] == "medrap.cli:preprocess_main"
     assert medrap_scripts["medrap-retrieve"] == "medrap.cli:retrieve_main"
+    assert medrap_scripts["medrap-predict-probabilities"] == "medrap.cli:predict_probabilities_main"
 
 
 def test_prepare_retrieval_dataset_entrypoint_runs_with_hydra_overrides(monkeypatch, tmp_path) -> None:
@@ -341,6 +347,140 @@ def test_retrieve_entrypoint_skips_split_with_no_schema(
     result = pl.read_parquet(retrieve_dir / "retrieved_documents.parquet")
     assert result["doc_ids"].null_count() == 0
     assert result["doc_scores"].null_count() == 0
+
+
+def test_predict_probabilities_entrypoint_requires_checkpoint_path(tmp_path) -> None:
+    _assert_cli_failure(
+        lambda: _run_predict_probabilities_cli(
+            [
+                f"output_dir={tmp_path / 'predict_probabilities'}",
+                "training/datamodule=synthetic",
+                f"index_dataframe_dir={tmp_path / 'index'}",
+            ]
+        ),
+        allowed_exceptions=(SystemExit, MissingMandatoryValue, ValueError),
+        expected_message="checkpoint_path",
+    )
+
+
+def test_predict_probabilities_entrypoint_runs_end_to_end(
+    tmp_path,
+    tensorized_MEDS_dataset_with_task,
+    tensorized_MEDS_dataset_with_index,
+) -> None:
+    cohort_dir, task_root_dir, task_name = tensorized_MEDS_dataset_with_task
+    _, index_root_dir, index_name = tensorized_MEDS_dataset_with_index
+    task_labels_dir = task_root_dir / task_name
+    index_dataframe_dir = index_root_dir / index_name
+
+    train_dir = tmp_path / "train"
+    assert (
+        _run_train_cli(
+            [
+                f"output_dir={train_dir}",
+                "training/datamodule=meds",
+                f"training.datamodule.config.tensorized_cohort_dir={cohort_dir}",
+                "training.datamodule.config.max_seq_len=10",
+                f"training.datamodule.config.task_labels_dir={task_labels_dir}",
+            ]
+        )
+        == 0
+    )
+    checkpoint_path = train_dir / "checkpoints" / "last.ckpt"
+    assert checkpoint_path.exists()
+
+    original_index_df = pl.concat(
+        [
+            pl.read_parquet(fp, columns=["subject_id", "prediction_time"])
+            for fp in sorted(index_dataframe_dir.rglob("*.parquet"))
+        ],
+        how="vertical",
+    )
+
+    # Add a subject outside every split in the tensorized cohort, so its prediction
+    # row must come back null instead of being silently dropped.
+    extra_index_dir = tmp_path / "index_with_extra"
+    extra_index_dir.mkdir()
+    for fp in index_dataframe_dir.rglob("*.parquet"):
+        pl.read_parquet(fp).write_parquet(extra_index_dir / fp.name)
+    pl.DataFrame({"subject_id": [999999], "prediction_time": [datetime(2020, 1, 1)]}).write_parquet(
+        extra_index_dir / "extra.parquet"
+    )
+
+    predict_dir = tmp_path / "predict_probabilities"
+    assert (
+        _run_predict_probabilities_cli(
+            [
+                f"output_dir={predict_dir}",
+                f"checkpoint_path={checkpoint_path}",
+                "training/datamodule=meds",
+                f"training.datamodule.config.tensorized_cohort_dir={cohort_dir}",
+                "training.datamodule.config.max_seq_len=10",
+                f"index_dataframe_dir={extra_index_dir}",
+            ]
+        )
+        == 0
+    )
+
+    output_path = predict_dir / "probabilities.parquet"
+    assert output_path.exists()
+    result = pl.read_parquet(output_path)
+
+    assert set(result.columns) == {"subject_id", "prediction_time", "probabilities"}
+    assert result.height == original_index_df.height + 1
+
+    extra_row = result.filter(pl.col("subject_id") == 999999)
+    assert extra_row["probabilities"].to_list() == [None]
+
+    known_rows = result.filter(pl.col("subject_id") != 999999)
+    assert known_rows["probabilities"].null_count() == 0
+    for row in known_rows["probabilities"].to_list():
+        assert len(row) == 1
+        assert 0.0 <= row[0] <= 1.0
+
+
+def test_predict_probabilities_entrypoint_supports_do_overwrite(
+    tmp_path,
+    tensorized_MEDS_dataset_with_task,
+    tensorized_MEDS_dataset_with_index,
+) -> None:
+    cohort_dir, task_root_dir, task_name = tensorized_MEDS_dataset_with_task
+    _, index_root_dir, index_name = tensorized_MEDS_dataset_with_index
+    task_labels_dir = task_root_dir / task_name
+    index_dataframe_dir = index_root_dir / index_name
+
+    train_dir = tmp_path / "train"
+    assert (
+        _run_train_cli(
+            [
+                f"output_dir={train_dir}",
+                "training/datamodule=meds",
+                f"training.datamodule.config.tensorized_cohort_dir={cohort_dir}",
+                "training.datamodule.config.max_seq_len=10",
+                f"training.datamodule.config.task_labels_dir={task_labels_dir}",
+            ]
+        )
+        == 0
+    )
+    checkpoint_path = train_dir / "checkpoints" / "last.ckpt"
+
+    predict_overrides = [
+        f"output_dir={tmp_path / 'predict_probabilities'}",
+        f"checkpoint_path={checkpoint_path}",
+        "training/datamodule=meds",
+        f"training.datamodule.config.tensorized_cohort_dir={cohort_dir}",
+        "training.datamodule.config.max_seq_len=10",
+        f"index_dataframe_dir={index_dataframe_dir}",
+    ]
+    assert _run_predict_probabilities_cli(predict_overrides) == 0
+
+    _assert_cli_failure(
+        lambda: _run_predict_probabilities_cli(predict_overrides),
+        allowed_exceptions=(SystemExit, FileExistsError),
+        expected_message="already contains a saved MedRAP predict-probabilities run",
+    )
+
+    assert _run_predict_probabilities_cli([*predict_overrides, "do_overwrite=true"]) == 0
 
 
 def test_prepare_train_run_overwrite_removes_stale_files(tmp_path: Path) -> None:

@@ -1,0 +1,31 @@
+defaults:
+  - encoder: meds_code
+  - query_projector: sequence_mean
+  - retriever: in_memory
+  - retrieval_encoder: mean_pooled
+  - fusion: replace
+  - pooling: identity
+  - head: linear
+  - training/module: supervised_lightning
+  - training/task: binary_classification
+  - training/loss: binary_bce
+  - training/datamodule: meds
+  - training/trainer: lightning_eval
+  - _self_
+
+head:
+  out_dim: ${training.task.output_dim}
+
+output_dir: ???
+checkpoint_path: ???
+index_dataframe_dir: ???
+splits: [train, tuning, held_out]
+batch_size: 32
+do_overwrite: false
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: false
