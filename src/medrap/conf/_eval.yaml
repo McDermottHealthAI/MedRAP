@@ -19,6 +19,7 @@ head:
 output_dir: ???
 checkpoint_path: ???
 eval_mode: validate
+do_overwrite: false
 
 marginalized_retrieval: false
 marginalized_score_similarity: dot

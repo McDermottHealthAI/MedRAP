@@ -417,17 +417,21 @@ def test_eval_entrypoint_refuses_existing_output_dir(tmp_path) -> None:
         == 0
     )
 
+    eval_overrides = [
+        f"output_dir={eval_dir}",
+        f"checkpoint_path={checkpoint_path}",
+        "training/datamodule=synthetic",
+    ]
     _assert_cli_failure(
-        lambda: _run_eval_cli(
-            [
-                f"output_dir={eval_dir}",
-                f"checkpoint_path={checkpoint_path}",
-                "training/datamodule=synthetic",
-            ]
-        ),
+        lambda: _run_eval_cli(eval_overrides),
         allowed_exceptions=(SystemExit, FileExistsError),
         expected_message="already contains a saved MedRAP eval run",
     )
+
+    # do_overwrite=true clears the existing run instead of raising -- needed to
+    # re-run an eval against the same output_dir (e.g. after fixing a config
+    # mistake in an earlier attempt) without deleting it by hand first.
+    assert _run_eval_cli([*eval_overrides, "do_overwrite=true"]) == 0
 
 
 def test_ensure_lightning_csv_log_dirs_creates_version_directory(tmp_path) -> None:
