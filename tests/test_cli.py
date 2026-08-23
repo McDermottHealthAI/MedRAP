@@ -699,6 +699,54 @@ def test_run_eval_rejects_unknown_eval_mode(tmp_path, monkeypatch: pytest.Monkey
     )
 
 
+def test_run_eval_accepts_marginalized_and_wandb_overrides(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_eval.yaml`` must declare marginalized_*/wandb_* so these overrides compose.
+
+    Regression test: these keys previously existed only in ``_train.yaml``, so
+    overriding them for ``medrap-eval`` raised
+    ``ConfigCompositionException: Could not override 'marginalized_retrieval'``
+    before it was added here too (needed so a checkpoint trained with
+    ``marginalized_output_mode=binary`` can be reloaded for eval, and so
+    ``training/trainer=lightning_wandb`` can resolve ``${wandb_run_name}``).
+    """
+
+    class StubTrainer:
+        loggers: list = []  # noqa: RUF012
+
+        def validate(self, module, datamodule=None) -> None:
+            pass
+
+        def test(self, module, datamodule=None) -> None:
+            pass
+
+    captured_cfg = {}
+
+    def _fake_load(cfg, checkpoint_path):
+        captured_cfg["marginalized_output_mode"] = cfg.marginalized_output_mode
+        return object()
+
+    monkeypatch.setattr(cli, "_load_training_module_checkpoint", _fake_load)
+    monkeypatch.setattr(cli, "instantiate", lambda trainer_cfg: StubTrainer())
+    monkeypatch.setattr(cli, "_instantiate_datamodule", lambda cfg: object())
+    monkeypatch.setattr(cli, "_ensure_lightning_csv_log_dirs", lambda trainer: None)
+
+    result = _run_eval_cli(
+        [
+            f"output_dir={tmp_path / 'eval'}",
+            f"checkpoint_path={tmp_path / 'model.ckpt'}",
+            "eval_mode=validate",
+            "training/datamodule=synthetic",
+            "marginalized_retrieval=true",
+            "marginalized_output_mode=binary",
+            "training/trainer=lightning_wandb",
+            "wandb_run_name=test-eval-run",
+        ]
+    )
+
+    assert result == 0
+    assert captured_cfg["marginalized_output_mode"] == "binary"
+
+
 def test_preprocess_entrypoint_runs_with_hydra_overrides(monkeypatch, tmp_path) -> None:
     captured = {}
 
