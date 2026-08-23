@@ -396,6 +396,11 @@ def preprocess_main(cfg: DictConfig) -> None:
         horizon_days=cfg.horizon_days,
         min_history_days=cfg.min_history_days,
         seed=cfg.seed,
+        code_selection=cfg.code_selection,
+        anchor_strategy=cfg.anchor_strategy,
+        duration_distribution=cfg.duration_distribution,
+        min_duration_days=cfg.min_duration_days,
+        max_duration_days=cfg.max_duration_days,
     )
     print(f"Task labels saved to {tasks_out}")
 
