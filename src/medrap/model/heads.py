@@ -54,6 +54,9 @@ class LinearHead(PredictionHead):
         Returns:
             Tensor with shape ``(B, C)``.
 
+        Raises:
+            ValueError: If ``pooled_state`` is not 2-D.
+
         Examples:
             >>> head = LinearHead(in_dim=2, out_dim=3)
             >>> pooled_state = torch.FloatTensor([[1.0, 2.0], [3.0, 4.0]])
@@ -64,5 +67,17 @@ class LinearHead(PredictionHead):
             torch.float32
             >>> tuple(head(pooled_state).shape)
             (2, 3)
+
+            A 3-D input (for example an un-pooled sequence) is rejected rather than
+            silently broadcasting the linear layer over the extra dimension:
+
+            >>> head.predict(torch.randn(2, 5, 2))  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+            ...
+            ValueError: LinearHead expects pooled_state shaped (B, D_pool), got (2, 5, 2)
         """
+        if pooled_state.ndim != 2:
+            raise ValueError(
+                f"LinearHead expects pooled_state shaped (B, D_pool), got {tuple(pooled_state.shape)}"
+            )
         return self.linear(pooled_state.float())
