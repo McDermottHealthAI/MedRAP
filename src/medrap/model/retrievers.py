@@ -9,6 +9,7 @@ from pathlib import Path
 
 import torch
 from datasets import Dataset, load_from_disk
+from datasets.search import MissingIndex
 from torch import Tensor, nn
 
 from ..types import RetrieverOutput
@@ -131,6 +132,66 @@ class InMemoryRetriever(Retriever):
         similarity: Similarity function used for retrieval. Supported values are
             ``"dot"`` and ``"cosine"``.
         doc_ids: Optional integer document ids with shape ``(N_docs,)``.
+
+    Examples:
+        Invalid ``k`` is rejected eagerly:
+
+        >>> InMemoryRetriever(
+        ...     doc_key_embeddings=torch.FloatTensor([[1.0, 0.0], [0.0, 1.0]]),
+        ...     doc_tokens=torch.LongTensor([[10, 11], [20, 21]]),
+        ...     doc_attention_mask=torch.BoolTensor([[True, True], [True, True]]),
+        ...     k=3,
+        ... )  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        ValueError: k must be between 1 and the number of documents
+
+        Unsupported ``similarity`` is rejected:
+
+        >>> InMemoryRetriever(
+        ...     doc_key_embeddings=torch.FloatTensor([[1.0, 0.0], [0.0, 1.0]]),
+        ...     doc_tokens=torch.LongTensor([[10, 11], [20, 21]]),
+        ...     doc_attention_mask=torch.BoolTensor([[True, True], [True, True]]),
+        ...     similarity="euclidean",
+        ... )  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        ValueError: similarity must be either 'dot' or 'cosine'
+
+        Mismatched ``doc_attention_mask`` shape is rejected:
+
+        >>> InMemoryRetriever(
+        ...     doc_key_embeddings=torch.FloatTensor([[1.0, 0.0], [0.0, 1.0]]),
+        ...     doc_tokens=torch.LongTensor([[10, 11], [20, 21]]),
+        ...     doc_attention_mask=torch.BoolTensor([[True, True]]),
+        ... )  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        ValueError: doc_attention_mask must match doc_tokens shape
+
+        Mismatched document counts between ``doc_key_embeddings`` and ``doc_tokens``
+        are rejected:
+
+        >>> InMemoryRetriever(
+        ...     doc_key_embeddings=torch.FloatTensor([[1.0, 0.0]]),
+        ...     doc_tokens=torch.LongTensor([[10, 11], [20, 21]]),
+        ...     doc_attention_mask=torch.BoolTensor([[True, True], [True, True]]),
+        ... )  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        ValueError: doc_key_embeddings and doc_tokens must have the same number of documents
+
+        Mismatched ``doc_ids`` shape is rejected:
+
+        >>> InMemoryRetriever(
+        ...     doc_key_embeddings=torch.FloatTensor([[1.0, 0.0], [0.0, 1.0]]),
+        ...     doc_tokens=torch.LongTensor([[10, 11], [20, 21]]),
+        ...     doc_attention_mask=torch.BoolTensor([[True, True], [True, True]]),
+        ...     doc_ids=torch.LongTensor([1, 2, 3]),
+        ... )  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        ValueError: doc_ids must have shape (N_docs,)
     """
 
     def __init__(
@@ -208,6 +269,42 @@ class InMemoryRetriever(Retriever):
             'meta'
             >>> meta_out.doc_key_embeddings.device.type
             'meta'
+
+            Retrieval is query-dependent -- different queries retrieve different
+            documents and ids, ranked by score:
+
+            >>> qd_retriever = InMemoryRetriever(
+            ...     doc_key_embeddings=torch.FloatTensor([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]),
+            ...     doc_tokens=torch.LongTensor([[10, 11], [20, 21], [30, 31]]),
+            ...     doc_attention_mask=torch.BoolTensor([[True, True], [True, True], [True, False]]),
+            ...     doc_ids=torch.LongTensor([100, 200, 300]),
+            ...     k=2,
+            ... )
+            >>> qd_out = qd_retriever.retrieve(torch.FloatTensor([[[-0.1, 1.2]], [[1.0, -0.1]]]))
+            >>> qd_out.doc_ids.tolist()
+            [[[200, 300]], [[100, 300]]]
+            >>> tuple(qd_out.doc_scores.shape)
+            (2, 1, 2)
+            >>> tuple(qd_out.doc_tokens.shape)
+            (2, 1, 2, 2)
+            >>> qd_out.doc_attention_mask.dtype == torch.bool
+            True
+
+            ``similarity="cosine"`` ranks documents by angle, not raw dot product --
+            an unnormalized query still ranks the parallel doc above the orthogonal one:
+
+            >>> cosine_retriever = InMemoryRetriever(
+            ...     doc_key_embeddings=torch.FloatTensor([[1.0, 0.0], [0.0, 100.0]]),
+            ...     doc_tokens=torch.LongTensor([[10, 11], [20, 21]]),
+            ...     doc_attention_mask=torch.BoolTensor([[True, True], [True, True]]),
+            ...     k=2,
+            ...     similarity="cosine",
+            ... )
+            >>> cosine_out = cosine_retriever.retrieve(torch.FloatTensor([[[5.0, 0.0]]]))
+            >>> cosine_out.doc_ids.tolist()
+            [[[0, 1]]]
+            >>> cosine_out.doc_scores.tolist()
+            [[[1.0, 0.0]]]
         """
         if query_embeddings.ndim != 3:
             raise ValueError("query_embeddings must have shape (B, R, D_ret)")
@@ -514,7 +611,7 @@ class HFDatasetRetriever(Retriever):
 
         try:
             dataset.get_index(self._index_name)
-        except Exception as exc:
+        except MissingIndex as exc:
             raise ValueError(f"dataset does not have a FAISS index named {self._index_name!r}") from exc
 
     def _search_index(self, query_embeddings: Tensor) -> tuple[Tensor, Tensor]:
@@ -724,7 +821,7 @@ class HFDatasetRetriever(Retriever):
 
         Args:
             query_embeddings: Query tensor with shape ``(B, R, D_ret)``. Queries
-            maybe on any PyTorch device.
+                may be on any PyTorch device.
 
         Returns:
             ``RetrieverOutput`` on the same device as
@@ -986,7 +1083,7 @@ def load_in_memory_retriever(
         >>> tuple(retriever.retrieve(torch.FloatTensor([[[1.0, 0.0]]])).doc_ids.shape)
         (1, 1, 1)
     """
-    bundle = torch.load(bundle_path, map_location="cpu", weights_only=False)
+    bundle = torch.load(bundle_path, map_location="cpu", weights_only=True)
     return InMemoryRetriever(
         doc_key_embeddings=torch.as_tensor(bundle["doc_key_embeddings"], dtype=torch.float32),
         doc_tokens=torch.as_tensor(bundle["doc_tokens"], dtype=torch.long),

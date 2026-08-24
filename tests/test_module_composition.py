@@ -189,25 +189,6 @@ def test_per_doc_mean_pooled_all_masked_gives_zero() -> None:
     assert enc(ro).retrieval_memory.sum().item() == 0.0
 
 
-def test_in_memory_retriever_returns_query_dependent_payloads() -> None:
-    retriever = InMemoryRetriever(
-        doc_key_embeddings=torch.FloatTensor([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]),
-        doc_tokens=torch.LongTensor([[10, 11], [20, 21], [30, 31]]),
-        doc_attention_mask=torch.BoolTensor([[True, True], [True, True], [True, False]]),
-        doc_ids=torch.LongTensor([100, 200, 300]),
-        k=2,
-    )
-
-    out = retriever.retrieve(torch.FloatTensor([[[-0.1, 1.2]], [[1.0, -0.1]]]))
-
-    assert out.doc_ids is not None
-    assert out.doc_ids.tolist() == [[[200, 300]], [[100, 300]]]
-    assert out.doc_scores is not None and out.doc_scores.shape == (2, 1, 2)
-    assert out.doc_key_embeddings is not None
-    assert out.doc_tokens.shape == (2, 1, 2, 2)
-    assert out.doc_attention_mask.dtype == torch.bool
-
-
 def test_load_hf_dataset_retriever_passes_device_cache_and_ablation_options(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
