@@ -370,6 +370,7 @@ class ResidualAdapterQueryProjector(QueryProjector):
         >>> class _ConstantBase(QueryProjector):
         ...     def project(self, encoder_out, batch=None):
         ...         return QueryOutput(query_embeddings=torch.ones(2, 1, 4))
+        >>> _ = torch.manual_seed(0)
         >>> adapter = ResidualAdapterQueryProjector(base=_ConstantBase(), dim=4, rank=2)
         >>> encoder_out = EncoderOutput(patient_state=torch.zeros(2, 1, 4))
         >>> out = adapter.project(encoder_out)

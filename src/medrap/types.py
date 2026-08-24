@@ -91,12 +91,16 @@ class FusionInput:
             ``(B, R, K, S_doc, D_mem)``).
         retrieval_step_ids: Optional retrieval step mapping ``(B, S_ehr)``.
         doc_attention_mask: Optional retrieval token mask.
+        patient_attention_mask: Optional bool mask with shape ``(B, S_ehr)``,
+            ``True`` at valid (non-padding) patient-state positions -- forwarded
+            from :attr:`~medrap.types.EncoderOutput.attention_mask`.
     """
 
     patient_state: Tensor
     retrieval_memory: Tensor
     retrieval_step_ids: Tensor | None = None
     doc_attention_mask: Tensor | None = None
+    patient_attention_mask: Tensor | None = None
 
 
 @dataclass(slots=True)
@@ -106,9 +110,15 @@ class FusionOutput:
     Attributes:
         fused_state: Fused representation with shape
             ``(B, S_ehr, D_fused)``.
+        attention_mask: Optional bool mask with shape ``(B, S_fused)``, ``True``
+            at valid (non-padding) positions. Set only when ``fused_state`` is
+            still indexed by (possibly padded) EHR sequence position -- ``None``
+            when it is indexed by retrieved document or has a trivial
+            singleton sequence dim, where padding is not meaningful.
     """
 
     fused_state: Tensor
+    attention_mask: Tensor | None = None
 
 
 @dataclass(slots=True)
