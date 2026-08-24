@@ -4,6 +4,8 @@ These components consume ``RetrieverOutput`` objects and produce
 ``RetrievalEncoderOutput`` tensors for fusion.
 """
 
+from abc import ABC, abstractmethod
+
 import torch
 from torch import nn
 from transformers import AutoModel
@@ -11,7 +13,33 @@ from transformers import AutoModel
 from ..types import RetrievalEncoderOutput, RetrieverOutput
 
 
-class TokenFeatureRetrievalEncoder(nn.Module):
+class RetrievalEncoder(nn.Module, ABC):
+    """Abstract base for all retrieval encoders.
+
+    Subclasses must implement :meth:`encode`, which maps a ``RetrieverOutput``
+    into a ``RetrievalEncoderOutput``. The ``forward`` method delegates to
+    ``encode`` so retrieval encoders can be used as standard ``nn.Module``
+    objects.
+    """
+
+    @abstractmethod
+    def encode(self, retrieval: RetrieverOutput) -> RetrievalEncoderOutput:
+        """Encode retrieved documents into fusion-ready memory.
+
+        Args:
+            retrieval: A ``RetrieverOutput`` payload.
+
+        Returns:
+            A ``RetrievalEncoderOutput`` whose ``retrieval_memory`` has shape
+            ``(B, R, K, S_doc, D_mem)``.
+        """
+
+    def forward(self, retrieval: RetrieverOutput) -> RetrievalEncoderOutput:
+        """Call ``encode``."""
+        return self.encode(retrieval)
+
+
+class TokenFeatureRetrievalEncoder(RetrievalEncoder):
     """Minimal sequence-style retrieval encoder that embeds retrieved token ids.
 
     Args:
@@ -23,7 +51,7 @@ class TokenFeatureRetrievalEncoder(nn.Module):
         super().__init__()
         self.vocab_size = int(vocab_size)
         self.embedding_dim = int(embedding_dim)
-        self.embedding = nn.Embedding(self.vocab_size, self.embedding_dim)
+        self.embedding = nn.Embedding(self.vocab_size, self.embedding_dim, padding_idx=0)
 
     def encode(self, retrieval: RetrieverOutput) -> RetrievalEncoderOutput:
         """Embed ``retrieval.doc_tokens`` into a dense token-memory tensor.
@@ -47,15 +75,13 @@ class TokenFeatureRetrievalEncoder(nn.Module):
             (2, 1, 1, 3, 2)
             >>> out.retrieval_memory.dtype
             torch.float32
+            >>> torch.equal(out.retrieval_memory, encoder(retrieval).retrieval_memory)
+            True
         """
         return RetrievalEncoderOutput(retrieval_memory=self.embedding(retrieval.doc_tokens.long()))
 
-    def forward(self, retrieval: RetrieverOutput) -> RetrievalEncoderOutput:
-        """Call ``encode``."""
-        return self.encode(retrieval)
 
-
-class MeanPooledRetrievalEncoder(nn.Module):
+class MeanPooledRetrievalEncoder(RetrievalEncoder):
     """Tabular-style retrieval encoder that mean-pools retrieved token embeddings.
 
     Args:
@@ -67,10 +93,7 @@ class MeanPooledRetrievalEncoder(nn.Module):
         super().__init__()
         self.vocab_size = int(vocab_size)
         self.embedding_dim = int(embedding_dim)
-        self.token_encoder = TokenFeatureRetrievalEncoder(
-            vocab_size=self.vocab_size,
-            embedding_dim=self.embedding_dim,
-        )
+        self.embedding = nn.Embedding(self.vocab_size, self.embedding_dim, padding_idx=0)
 
     def encode(self, retrieval: RetrieverOutput) -> RetrievalEncoderOutput:
         """Mask-average token embeddings into a single vector per sample.
@@ -93,8 +116,24 @@ class MeanPooledRetrievalEncoder(nn.Module):
             (2, 1, 1, 1, 2)
             >>> out.retrieval_memory.dtype
             torch.float32
+            >>> torch.equal(out.retrieval_memory, encoder(retrieval).retrieval_memory)
+            True
+
+            Masked tokens are excluded from the pool -- a doc with an extra masked
+            token yields the same vector as one without it:
+
+            >>> unmasked = RetrieverOutput(
+            ...     doc_tokens=torch.LongTensor([[[[1, 2, 0]]]]),
+            ...     doc_attention_mask=torch.BoolTensor([[[[True, True, False]]]]),
+            ... )
+            >>> shorter = RetrieverOutput(
+            ...     doc_tokens=torch.LongTensor([[[[1, 2]]]]),
+            ...     doc_attention_mask=torch.BoolTensor([[[[True, True]]]]),
+            ... )
+            >>> torch.equal(encoder(unmasked).retrieval_memory, encoder(shorter).retrieval_memory)
+            True
         """
-        token_features = self.token_encoder(retrieval).retrieval_memory
+        token_features = self.embedding(retrieval.doc_tokens.long())
         mask = retrieval.doc_attention_mask.bool().unsqueeze(-1)
         masked_features = token_features * mask
         reduce_dims = tuple(range(1, token_features.ndim - 1))
@@ -102,12 +141,8 @@ class MeanPooledRetrievalEncoder(nn.Module):
         pooled = masked_features.sum(dim=reduce_dims) / counts
         return RetrievalEncoderOutput(retrieval_memory=pooled[:, None, None, None, :])
 
-    def forward(self, retrieval: RetrieverOutput) -> RetrievalEncoderOutput:
-        """Call ``encode``."""
-        return self.encode(retrieval)
 
-
-class LinearProjectionRetrievalEncoder(nn.Module):
+class LinearProjectionRetrievalEncoder(RetrievalEncoder):
     """Project document key embeddings through a learned linear layer.
 
     Keys (used for FAISS retrieval) and values (fed to fusion) are the same
@@ -127,20 +162,7 @@ class LinearProjectionRetrievalEncoder(nn.Module):
             Qwen3-Embedding-0.6B).
         out_dim: Output dimension ``D_mem`` passed to fusion and the head.
 
-    Examples:
-        >>> import torch
-        >>> from medrap.types import RetrieverOutput
-        >>> enc = LinearProjectionRetrievalEncoder(in_dim=4, out_dim=2)
-        >>> ro = RetrieverOutput(
-        ...     doc_tokens=torch.zeros(2, 1, 3, 1, dtype=torch.long),
-        ...     doc_attention_mask=torch.ones(2, 1, 3, 1, dtype=torch.bool),
-        ...     doc_key_embeddings=torch.randn(2, 1, 3, 4),
-        ... )
-        >>> out = enc(ro)
-        >>> tuple(out.retrieval_memory.shape)
-        (2, 1, 3, 1, 2)
-        >>> out.retrieval_memory.dtype
-        torch.float32
+    See :meth:`encode` for usage examples.
     """
 
     def __init__(self, *, in_dim: int, out_dim: int) -> None:
@@ -164,6 +186,33 @@ class LinearProjectionRetrievalEncoder(nn.Module):
             >>> import torch
             >>> from medrap.types import RetrieverOutput
             >>> enc = LinearProjectionRetrievalEncoder(in_dim=4, out_dim=2)
+            >>> ro = RetrieverOutput(
+            ...     doc_tokens=torch.zeros(2, 1, 3, 1, dtype=torch.long),
+            ...     doc_attention_mask=torch.ones(2, 1, 3, 1, dtype=torch.bool),
+            ...     doc_key_embeddings=torch.randn(2, 1, 3, 4),
+            ... )
+            >>> out = enc.encode(ro)
+            >>> tuple(out.retrieval_memory.shape)
+            (2, 1, 3, 1, 2)
+            >>> out.retrieval_memory.dtype
+            torch.float32
+            >>> torch.equal(out.retrieval_memory, enc(ro).retrieval_memory)
+            True
+
+            Preserves the input dtype (for example after moving the module to
+            float64):
+
+            >>> enc64 = LinearProjectionRetrievalEncoder(in_dim=4, out_dim=2).to(torch.float64)
+            >>> ro64 = RetrieverOutput(
+            ...     doc_tokens=torch.zeros(1, 1, 1, 1, dtype=torch.long),
+            ...     doc_attention_mask=torch.ones(1, 1, 1, 1, dtype=torch.bool),
+            ...     doc_key_embeddings=torch.randn(1, 1, 1, 4, dtype=torch.float64),
+            ... )
+            >>> enc64(ro64).retrieval_memory.dtype
+            torch.float64
+
+            Missing ``doc_key_embeddings`` raises:
+
             >>> enc(
             ...     RetrieverOutput(
             ...         doc_tokens=torch.zeros(1, 1, 1, 1, dtype=torch.long),
@@ -182,16 +231,12 @@ class LinearProjectionRetrievalEncoder(nn.Module):
         projected = self.linear(keys)  # (B, R, K, D_out) — preserves input dtype
         return RetrievalEncoderOutput(retrieval_memory=projected.unsqueeze(3))  # (B, R, K, 1, D_out)
 
-    def forward(self, retrieval: RetrieverOutput) -> RetrievalEncoderOutput:
-        """Call ``encode``."""
-        return self.encode(retrieval)
 
-
-class KeyEmbeddingRetrievalEncoder(nn.Module):
+class KeyEmbeddingRetrievalEncoder(RetrievalEncoder):
     """Use stored document key embeddings as per-document memory.
 
     Packs ``RetrieverOutput.doc_key_embeddings`` into ``retrieval_memory`` with
-    shape ``(B, R, K, 1, D)`` so :class:`medrap.fusion.ReplaceFusion` can emit a
+    shape ``(B, R, K, 1, D)`` so :class:`medrap.model.fusion.ReplaceFusion` can emit a
     per-document fused state ``(B, K, D)`` when ``R = 1`` and ``K >= 1``.
 
     Requires ``doc_key_embeddings`` on the retriever output.
@@ -208,11 +253,26 @@ class KeyEmbeddingRetrievalEncoder(nn.Module):
             >>> from medrap.types import RetrieverOutput
             >>> enc = KeyEmbeddingRetrievalEncoder()
             >>> ro = RetrieverOutput(
+            ...     doc_tokens=torch.zeros(2, 1, 3, 1, dtype=torch.long),
+            ...     doc_attention_mask=torch.ones(2, 1, 3, 1, dtype=torch.bool),
+            ...     doc_key_embeddings=torch.randn(2, 1, 3, 4),
+            ... )
+            >>> out = enc.encode(ro)
+            >>> tuple(out.retrieval_memory.shape)
+            (2, 1, 3, 1, 4)
+            >>> out.retrieval_memory.dtype
+            torch.float32
+            >>> torch.equal(out.retrieval_memory, enc(ro).retrieval_memory)
+            True
+
+            Missing ``doc_key_embeddings`` raises:
+
+            >>> no_keys = RetrieverOutput(
             ...     doc_tokens=torch.zeros(1, 1, 1, 1, dtype=torch.long),
             ...     doc_attention_mask=torch.ones(1, 1, 1, 1, dtype=torch.bool),
             ...     doc_key_embeddings=None,
             ... )
-            >>> enc(ro)  # doctest: +ELLIPSIS
+            >>> enc(no_keys)  # doctest: +ELLIPSIS
             Traceback (most recent call last):
             ...
             ValueError: ...doc_key_embeddings...
@@ -222,19 +282,15 @@ class KeyEmbeddingRetrievalEncoder(nn.Module):
             raise ValueError("KeyEmbeddingRetrievalEncoder requires doc_key_embeddings on RetrieverOutput")
         return RetrievalEncoderOutput(retrieval_memory=keys.float().unsqueeze(3))
 
-    def forward(self, retrieval: RetrieverOutput) -> RetrievalEncoderOutput:
-        """Call ``encode``."""
-        return self.encode(retrieval)
 
-
-class PerDocMeanPooledRetrievalEncoder(nn.Module):
+class PerDocMeanPooledRetrievalEncoder(RetrievalEncoder):
     """Per-document mean-pooled retrieval encoder using learned token embeddings.
 
     Unlike :class:`MeanPooledRetrievalEncoder` (which collapses all K docs into
     one global vector), this encoder pools over the ``S_doc`` token dimension
     only, preserving the ``K`` document dimension.  The output shape
     ``(B, R, K, 1, D_mem)`` is compatible with
-    :class:`medrap.fusion.ReplaceFusion` and the marginalized retrieval path,
+    :class:`medrap.model.fusion.ReplaceFusion` and the marginalized retrieval path,
     where keys (Qwen3 embeddings used for FAISS retrieval) and values (the
     learned embeddings produced here) are different representations.
 
@@ -248,6 +304,10 @@ class PerDocMeanPooledRetrievalEncoder(nn.Module):
             in full precision, weights are copied, then the model is deleted to
             free memory.  ``vocab_size`` and ``embedding_dim`` must match the
             pretrained embedding shape exactly.
+        trust_remote_code: Passed to ``AutoModel.from_pretrained``. Executes
+            arbitrary code shipped with the model repository when ``True`` --
+            only set this for a model source you trust. Defaults to ``False``
+            and is ignored when ``pretrained_model_name_or_path`` is unset.
 
     Examples:
         >>> import torch
@@ -270,16 +330,17 @@ class PerDocMeanPooledRetrievalEncoder(nn.Module):
         vocab_size: int = 1024,
         embedding_dim: int = 4,
         pretrained_model_name_or_path: str | None = None,
+        trust_remote_code: bool = False,
     ) -> None:
         super().__init__()
         self.vocab_size = int(vocab_size)
         self.embedding_dim = int(embedding_dim)
-        self.embedding = nn.Embedding(self.vocab_size, self.embedding_dim)
+        self.embedding = nn.Embedding(self.vocab_size, self.embedding_dim, padding_idx=0)
 
         if pretrained_model_name_or_path is not None:
             pretrained = AutoModel.from_pretrained(
                 pretrained_model_name_or_path,
-                trust_remote_code=True,
+                trust_remote_code=trust_remote_code,
             )
             embed_tokens = getattr(pretrained, "embed_tokens", None) or getattr(
                 getattr(pretrained, "model", None), "embed_tokens", None
@@ -299,7 +360,10 @@ class PerDocMeanPooledRetrievalEncoder(nn.Module):
                 )
             with torch.no_grad():
                 self.embedding.weight.copy_(pretrained_weight)
+            pretrained_device = pretrained_weight.device
             del pretrained
+            if pretrained_device.type == "cuda":
+                torch.cuda.empty_cache()
 
     def encode(self, retrieval: RetrieverOutput) -> RetrievalEncoderOutput:
         """Embed tokens and mean-pool over S_doc, keeping the K doc dimension.
