@@ -50,6 +50,9 @@ class IdentityPooling(PoolingModule):
         Returns:
             Tensor with shape ``(B, D_pool)``.
 
+        Raises:
+            ValueError: If ``fused_state.shape[1] != 1``.
+
         Examples:
             >>> pooling = IdentityPooling()
             >>> fused_state = torch.randn(2, 1, 4)
@@ -58,7 +61,19 @@ class IdentityPooling(PoolingModule):
             (2, 4)
             >>> tuple(pooling(fused_state).shape)
             (2, 4)
+
+            ``S > 1`` raises rather than silently no-op-ing the squeeze:
+
+            >>> pooling.pool(torch.randn(2, 3, 4))  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+            ...
+            ValueError: IdentityPooling expects a singleton sequence dim (B, 1, D_fused), ...
         """
+        if fused_state.shape[1] != 1:
+            raise ValueError(
+                "IdentityPooling expects a singleton sequence dim (B, 1, D_fused), "
+                f"got fused_state shaped {tuple(fused_state.shape)}"
+            )
         return fused_state.squeeze(1)
 
 

@@ -220,8 +220,23 @@ class PassthroughFusion(FusionModule):
             (2, 5, 128)
             >>> (out.fused_state == ps).all().item()
             True
+
+            ``patient_attention_mask`` is forwarded unchanged, since the fused
+            sequence dim is still indexed by (possibly padded) EHR position:
+
+            >>> mask = torch.BoolTensor([[True, True, True, False, False]] * 2)
+            >>> fi_masked = FusionInput(
+            ...     patient_state=ps,
+            ...     retrieval_memory=torch.randn(2, 1, 8, 10, 64),
+            ...     patient_attention_mask=mask,
+            ... )
+            >>> (fusion.fuse(fi_masked).attention_mask == mask).all().item()
+            True
         """
-        return FusionOutput(fused_state=fusion_input.patient_state)
+        return FusionOutput(
+            fused_state=fusion_input.patient_state,
+            attention_mask=fusion_input.patient_attention_mask,
+        )
 
 
 class _CrossAttentionLayer(nn.Module):
@@ -364,6 +379,18 @@ class CrossAttentionFusion(FusionModule):
             >>> tuple(fusion.fuse(fi_masked).fused_state.shape)
             (2, 3, 8)
 
+            ``patient_attention_mask`` is forwarded unchanged, since the output
+            sequence dim is still indexed by (possibly padded) EHR position:
+
+            >>> patient_mask = torch.BoolTensor([[True, True, False]] * 2)
+            >>> fi_patient_masked = FusionInput(
+            ...     patient_state=torch.randn(2, 3, 4),
+            ...     retrieval_memory=torch.randn(2, 1, 4, 5, 6),
+            ...     patient_attention_mask=patient_mask,
+            ... )
+            >>> (fusion.fuse(fi_patient_masked).attention_mask == patient_mask).all().item()
+            True
+
             Wrong ``retrieval_memory`` rank raises ``ValueError``:
 
             >>> bad = FusionInput(
@@ -393,7 +420,7 @@ class CrossAttentionFusion(FusionModule):
         for layer in self.layers:
             x = layer(x, kv, key_padding_mask)
 
-        return FusionOutput(fused_state=self.out_norm(x))
+        return FusionOutput(fused_state=self.out_norm(x), attention_mask=fusion_input.patient_attention_mask)
 
 
 class PerDocCrossAttentionFusion(FusionModule):

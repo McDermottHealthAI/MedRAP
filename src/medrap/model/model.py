@@ -490,6 +490,7 @@ class RetrievalAugmentedModel(nn.Module):
                 retrieval_memory=retrieval_encoded.retrieval_memory,
                 retrieval_step_ids=query_out.retrieval_step_ids,
                 doc_attention_mask=retrieval_out.doc_attention_mask,
+                patient_attention_mask=encoder_out.attention_mask,
             )
         )
         meta: dict[str, object] = {
@@ -537,7 +538,7 @@ class RetrievalAugmentedModel(nn.Module):
             meta["per_doc_logits"] = per_doc_logits
             meta["differentiable_doc_scores"] = doc_scores
         else:
-            pooled = self.pooling(fusion_out.fused_state)
+            pooled = self.pooling(fusion_out.fused_state, attention_mask=fusion_out.attention_mask)
             logits = self.head(pooled)
 
         return ModelOutput(logits=logits, metadata=meta)
