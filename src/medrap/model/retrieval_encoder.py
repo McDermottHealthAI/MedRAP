@@ -283,6 +283,20 @@ class KeyEmbeddingRetrievalEncoder(RetrievalEncoder):
         return RetrievalEncoderOutput(retrieval_memory=keys.float().unsqueeze(3))
 
 
+def _maybe_empty_cuda_cache(device: torch.device) -> None:
+    """Flush the CUDA allocator cache when ``device`` is a CUDA device.
+
+    Used after freeing a pretrained model that was loaded on GPU, so its memory
+    is released immediately rather than waiting for the next GC cycle.
+
+    Examples:
+        >>> _maybe_empty_cuda_cache(torch.device("cpu"))
+        >>> _maybe_empty_cuda_cache(torch.device("cuda"))
+    """
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+
 class PerDocMeanPooledRetrievalEncoder(RetrievalEncoder):
     """Per-document mean-pooled retrieval encoder using learned token embeddings.
 
@@ -362,8 +376,7 @@ class PerDocMeanPooledRetrievalEncoder(RetrievalEncoder):
                 self.embedding.weight.copy_(pretrained_weight)
             pretrained_device = pretrained_weight.device
             del pretrained
-            if pretrained_device.type == "cuda":
-                torch.cuda.empty_cache()
+            _maybe_empty_cuda_cache(pretrained_device)
 
     def encode(self, retrieval: RetrieverOutput) -> RetrievalEncoderOutput:
         """Embed tokens and mean-pool over S_doc, keeping the K doc dimension.
