@@ -84,7 +84,9 @@ model = RetrievalAugmentedModel(
     encoder=MEDSCodeEncoder(),
     query_projector=SequenceMeanQueryProjector(in_dim=1, out_dim=4),
     retriever=InMemoryRetriever(
-        doc_key_embeddings=torch.FloatTensor([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]]),
+        doc_key_embeddings=torch.FloatTensor(
+            [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]]
+        ),
         doc_tokens=torch.LongTensor([[1, 2], [3, 4]]),
         doc_attention_mask=torch.BoolTensor([[True, True], [True, True]]),
     ),
