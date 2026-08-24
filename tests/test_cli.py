@@ -14,6 +14,7 @@ from omegaconf.errors import MissingMandatoryValue
 import medrap.cli as cli
 from medrap.cli import (
     eval_main,
+    get_embeddings_main,
     predict_probabilities_main,
     prepare_retrieval_dataset_main,
     preprocess_main,
@@ -58,6 +59,10 @@ def _run_retrieve_cli(overrides: list[str]) -> int:
 
 def _run_predict_probabilities_cli(overrides: list[str]) -> int:
     return _run_hydra_entrypoint(predict_probabilities_main, "medrap-predict-probabilities", overrides)
+
+
+def _run_get_embeddings_cli(overrides: list[str]) -> int:
+    return _run_hydra_entrypoint(get_embeddings_main, "medrap-get-embeddings", overrides)
 
 
 def _run_prepare_retrieval_dataset_cli(overrides: list[str]) -> int:
@@ -481,6 +486,139 @@ def test_predict_probabilities_entrypoint_supports_do_overwrite(
     )
 
     assert _run_predict_probabilities_cli([*predict_overrides, "do_overwrite=true"]) == 0
+
+
+def test_get_embeddings_entrypoint_requires_checkpoint_path(tmp_path) -> None:
+    _assert_cli_failure(
+        lambda: _run_get_embeddings_cli(
+            [
+                f"output_dir={tmp_path / 'get_embeddings'}",
+                "training/datamodule=synthetic",
+                f"index_dataframe_dir={tmp_path / 'index'}",
+            ]
+        ),
+        allowed_exceptions=(SystemExit, MissingMandatoryValue, ValueError),
+        expected_message="checkpoint_path",
+    )
+
+
+def test_get_embeddings_entrypoint_runs_end_to_end(
+    tmp_path,
+    tensorized_MEDS_dataset_with_task,
+    tensorized_MEDS_dataset_with_index,
+) -> None:
+    cohort_dir, task_root_dir, task_name = tensorized_MEDS_dataset_with_task
+    _, index_root_dir, index_name = tensorized_MEDS_dataset_with_index
+    task_labels_dir = task_root_dir / task_name
+    index_dataframe_dir = index_root_dir / index_name
+
+    train_dir = tmp_path / "train"
+    assert (
+        _run_train_cli(
+            [
+                f"output_dir={train_dir}",
+                "training/datamodule=meds",
+                f"training.datamodule.config.tensorized_cohort_dir={cohort_dir}",
+                "training.datamodule.config.max_seq_len=10",
+                f"training.datamodule.config.task_labels_dir={task_labels_dir}",
+            ]
+        )
+        == 0
+    )
+    checkpoint_path = train_dir / "checkpoints" / "last.ckpt"
+    assert checkpoint_path.exists()
+
+    original_index_df = pl.concat(
+        [
+            pl.read_parquet(fp, columns=["subject_id", "prediction_time"])
+            for fp in sorted(index_dataframe_dir.rglob("*.parquet"))
+        ],
+        how="vertical",
+    )
+
+    # Add a subject outside every split in the tensorized cohort, so its embedding
+    # row must come back null instead of being silently dropped.
+    extra_index_dir = tmp_path / "index_with_extra"
+    extra_index_dir.mkdir()
+    for fp in index_dataframe_dir.rglob("*.parquet"):
+        pl.read_parquet(fp).write_parquet(extra_index_dir / fp.name)
+    pl.DataFrame({"subject_id": [999999], "prediction_time": [datetime(2020, 1, 1)]}).write_parquet(
+        extra_index_dir / "extra.parquet"
+    )
+
+    embeddings_dir = tmp_path / "get_embeddings"
+    assert (
+        _run_get_embeddings_cli(
+            [
+                f"output_dir={embeddings_dir}",
+                f"checkpoint_path={checkpoint_path}",
+                "training/datamodule=meds",
+                f"training.datamodule.config.tensorized_cohort_dir={cohort_dir}",
+                "training.datamodule.config.max_seq_len=10",
+                f"index_dataframe_dir={extra_index_dir}",
+            ]
+        )
+        == 0
+    )
+
+    output_path = embeddings_dir / "embeddings.parquet"
+    assert output_path.exists()
+    result = pl.read_parquet(output_path)
+
+    assert set(result.columns) == {"subject_id", "prediction_time", "embedding"}
+    assert result.height == original_index_df.height + 1
+
+    extra_row = result.filter(pl.col("subject_id") == 999999)
+    assert extra_row["embedding"].to_list() == [None]
+
+    known_rows = result.filter(pl.col("subject_id") != 999999)
+    assert known_rows["embedding"].null_count() == 0
+    embedding_lengths = {len(row) for row in known_rows["embedding"].to_list()}
+    assert len(embedding_lengths) == 1
+
+
+def test_get_embeddings_entrypoint_supports_do_overwrite(
+    tmp_path,
+    tensorized_MEDS_dataset_with_task,
+    tensorized_MEDS_dataset_with_index,
+) -> None:
+    cohort_dir, task_root_dir, task_name = tensorized_MEDS_dataset_with_task
+    _, index_root_dir, index_name = tensorized_MEDS_dataset_with_index
+    task_labels_dir = task_root_dir / task_name
+    index_dataframe_dir = index_root_dir / index_name
+
+    train_dir = tmp_path / "train"
+    assert (
+        _run_train_cli(
+            [
+                f"output_dir={train_dir}",
+                "training/datamodule=meds",
+                f"training.datamodule.config.tensorized_cohort_dir={cohort_dir}",
+                "training.datamodule.config.max_seq_len=10",
+                f"training.datamodule.config.task_labels_dir={task_labels_dir}",
+            ]
+        )
+        == 0
+    )
+    checkpoint_path = train_dir / "checkpoints" / "last.ckpt"
+
+    embeddings_overrides = [
+        f"output_dir={tmp_path / 'get_embeddings'}",
+        f"checkpoint_path={checkpoint_path}",
+        "training/datamodule=meds",
+        f"training.datamodule.config.tensorized_cohort_dir={cohort_dir}",
+        "training.datamodule.config.max_seq_len=10",
+        f"index_dataframe_dir={index_dataframe_dir}",
+    ]
+    assert _run_get_embeddings_cli(embeddings_overrides) == 0
+
+    _assert_cli_failure(
+        lambda: _run_get_embeddings_cli(embeddings_overrides),
+        allowed_exceptions=(SystemExit, FileExistsError),
+        expected_message="already contains a saved MedRAP get-embeddings run",
+    )
+
+    assert _run_get_embeddings_cli([*embeddings_overrides, "do_overwrite=true"]) == 0
 
 
 def test_prepare_train_run_overwrite_removes_stale_files(tmp_path: Path) -> None:

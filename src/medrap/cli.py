@@ -11,6 +11,7 @@ from hydra_zen import instantiate
 from lightning.pytorch.loggers import CSVLogger
 from omegaconf import DictConfig, OmegaConf
 
+from .get_embeddings.embeddings import run_get_embeddings
 from .predict_probabilities.probabilities import run_predict_probabilities
 from .prepare_retrieval.preparation import prepare_retrieval_dataset_from_config
 from .preprocess.preprocessing import run_meds_pipeline
@@ -479,3 +480,18 @@ def predict_probabilities_main(cfg: DictConfig) -> None:
     trainer = instantiate(bound_cfg.training.trainer)
     output_path = run_predict_probabilities(cfg, module=module, trainer=trainer)
     print(f"Predicted probabilities saved to {output_path}")
+
+
+@hydra.main(version_base=None, config_path="conf", config_name="_get_embeddings")
+def get_embeddings_main(cfg: DictConfig) -> None:
+    """Run the Hydra-native embedding-extraction entrypoint."""
+    print(OmegaConf.to_yaml(cfg))
+    output_dir = _prepare_inference_run(cfg, run_kind="get-embeddings")
+    checkpoint_path = cfg.checkpoint_path
+    if not checkpoint_path:
+        raise ValueError("checkpoint_path must be set for medrap-get-embeddings.")
+    module = _load_training_module_checkpoint(cfg, checkpoint_path)
+    bound_cfg = _bind_trainer_paths(cfg, output_dir=output_dir)
+    trainer = instantiate(bound_cfg.training.trainer)
+    output_path = run_get_embeddings(cfg, module=module, trainer=trainer)
+    print(f"Embeddings saved to {output_path}")

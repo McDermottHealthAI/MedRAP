@@ -54,9 +54,9 @@ src/medrap/
 ├── train/              # Lightning training infrastructure (train, eval)
 ├── prepare_retrieval/  # Offline retrieval dataset preparation
 ├── preprocess/         # Raw-MEDS rare-code/sparse-subject filtering (pre-tensorization)
-├── retrieve/           # Batch retrieval from a trained model (planned)
-├── get_embeddings/     # Embedding extraction from a trained model (planned)
-└── predict_probabilities/  # Probability prediction from a trained model (planned)
+├── retrieve/           # Batch retrieval from a trained model
+├── get_embeddings/     # Embedding extraction from a trained model
+└── predict_probabilities/  # Probability prediction from a trained model
 ```
 
 Each subpackage has a `README.md` describing its contents. `types.py`,
