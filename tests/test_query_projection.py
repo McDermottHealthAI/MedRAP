@@ -11,8 +11,7 @@ from medrap.types import EncoderOutput
 class _FakeSentenceTransformer:
     """Stand-in for ``sentence_transformers.SentenceTransformer``.
 
-    Encodes each text deterministically by its length, avoiding a real model
-    download in tests.
+    Encodes each text deterministically by its length, avoiding a real model download in tests.
     """
 
     def __init__(self, model_name_or_path: str, device: str | None = None) -> None:
