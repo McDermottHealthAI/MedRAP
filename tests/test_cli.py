@@ -502,6 +502,23 @@ def test_get_embeddings_entrypoint_requires_checkpoint_path(tmp_path) -> None:
     )
 
 
+def test_get_embeddings_entrypoint_rejects_null_checkpoint_path(tmp_path) -> None:
+    """A ``checkpoint_path`` explicitly overridden to null skips Hydra's mandatory-value check and hits the
+    entrypoint's own guard clause."""
+    _assert_cli_failure(
+        lambda: _run_get_embeddings_cli(
+            [
+                f"output_dir={tmp_path / 'get_embeddings'}",
+                "training/datamodule=synthetic",
+                f"index_dataframe_dir={tmp_path / 'index'}",
+                "checkpoint_path=null",
+            ]
+        ),
+        allowed_exceptions=(SystemExit, ValueError),
+        expected_message="checkpoint_path must be set for medrap-get-embeddings.",
+    )
+
+
 def test_get_embeddings_entrypoint_runs_end_to_end(
     tmp_path,
     tensorized_MEDS_dataset_with_task,
