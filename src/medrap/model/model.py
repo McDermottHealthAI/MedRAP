@@ -19,10 +19,38 @@ def _marginal_class_probabilities(per_doc_logits: Tensor, doc_scores: Tensor) ->
     but wrong for ``C`` *independent* binary tasks, where one task being likely
     says nothing about another. Use :func:`_marginal_binary_logits` for that case
     (see ``RetrievalAugmentedModel``'s ``marginalized_output_mode``).
+
+    Computed in log-space via ``logsumexp`` (mirroring :func:`_marginal_binary_logits`)
+    rather than by multiplying softmax outputs directly, which underflows when ``K``
+    is large or the per-document/retrieval distributions are sharply peaked.
+
+    Examples:
+        With ``K=1``, marginalization is a no-op and the output matches a plain softmax:
+
+        >>> logits = torch.FloatTensor([[[1.5, -2.0, 0.5]]])
+        >>> scores = torch.zeros(1, 1)
+        >>> torch.allclose(
+        ...     _marginal_class_probabilities(logits, scores),
+        ...     torch.softmax(logits.squeeze(1), dim=-1),
+        ...     atol=1e-5,
+        ... )
+        True
+
+        Matches direct probability-space marginalization on well-scaled inputs:
+
+        >>> _ = torch.manual_seed(0)
+        >>> per_doc = torch.randn(4, 5, 3)
+        >>> scores = torch.randn(4, 5)
+        >>> stable = _marginal_class_probabilities(per_doc, scores)
+        >>> p_ret = torch.softmax(scores, dim=-1)
+        >>> p_pred = torch.softmax(per_doc, dim=-1)
+        >>> direct = (p_ret.unsqueeze(-1) * p_pred).sum(dim=1)
+        >>> torch.allclose(stable, direct, atol=1e-5)
+        True
     """
-    p_ret = nn_functional.softmax(doc_scores, dim=-1)
-    p_pred = nn_functional.softmax(per_doc_logits, dim=-1)
-    return (p_ret.unsqueeze(-1) * p_pred).sum(dim=1)
+    log_p_ret = nn_functional.log_softmax(doc_scores, dim=-1)
+    log_p_pred = nn_functional.log_softmax(per_doc_logits, dim=-1)
+    return torch.logsumexp(log_p_ret.unsqueeze(-1) + log_p_pred, dim=1).exp()
 
 
 def _marginal_binary_logits(per_doc_logits: Tensor, doc_scores: Tensor) -> Tensor:
@@ -135,6 +163,8 @@ class RetrievalAugmentedModel(nn.Module):
                 "marginalized_output_mode must be 'categorical' or 'binary', "
                 f"got {marginalized_output_mode!r}"
             )
+        if marginalized_retrieval and not isinstance(head, LinearHead):
+            raise ValueError("marginalized_retrieval requires a LinearHead for per-document logits")
         self.encoder = encoder
         self.query_projector = query_projector
         self.retriever = retriever
@@ -343,7 +373,7 @@ class RetrievalAugmentedModel(nn.Module):
             ...
             ...     def forward(self, x):
             ...         return self.linear(x)
-            >>> m_bad_head = RetrievalAugmentedModel(
+            >>> RetrievalAugmentedModel(  # doctest: +ELLIPSIS
             ...     encoder=MEDSCodeEncoder(),
             ...     query_projector=SequenceMeanQueryProjector(in_dim=1, out_dim=4),
             ...     retriever=InMemoryRetriever(
@@ -361,7 +391,6 @@ class RetrievalAugmentedModel(nn.Module):
             ...     head=_NH(),
             ...     marginalized_retrieval=True,
             ... )
-            >>> m_bad_head(mb)  # doctest: +ELLIPSIS
             Traceback (most recent call last):
             ...
             ValueError: marginalized_retrieval requires a LinearHead...
@@ -470,8 +499,6 @@ class RetrievalAugmentedModel(nn.Module):
             "fusion_output": fusion_out,
         }
         if self.marginalized_retrieval:
-            if not isinstance(self.head, LinearHead):
-                raise ValueError("marginalized_retrieval requires a LinearHead for per-document logits")
             if not getattr(self.fusion, "produces_per_document_state", False):
                 raise ValueError(
                     "marginalized_retrieval requires a fusion module that produces per-document "
