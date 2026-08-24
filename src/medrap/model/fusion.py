@@ -54,9 +54,9 @@ class ReplaceFusion(FusionModule):
     Supported ``retrieval_memory`` layouts:
 
     - Legacy pooled memory ``(B, 1, 1, 1, D_mem)`` -> ``fused_state`` ``(B, 1, D_mem)``.
-    - Per-document keys ``(B, 1, K, 1, D_mem)`` (or ``S_doc > 1``) -> ``fused_state``
-      ``(B, K, D_mem)`` when ``R = 1`` and the singleton doc-length dim is 1; otherwise
-      ``(B, R * K * S_doc, D_mem)``.
+    - Per-document keys ``(B, 1, K, 1, D_mem)`` -> ``fused_state`` ``(B, K, D_mem)``
+      when ``R = 1`` and the singleton doc-length dim is 1; otherwise (``R > 1``
+      and/or ``S_doc > 1``) ``(B, R * K * S_doc, D_mem)``.
     """
 
     produces_per_document_state = True
@@ -91,6 +91,12 @@ class ReplaceFusion(FusionModule):
             ... )
             >>> tuple(fusion.fuse(per_doc).fused_state.shape)
             (2, 3, 4)
+            >>> multi_round = FusionInput(
+            ...     patient_state=torch.randn(2, 1, 3),
+            ...     retrieval_memory=torch.randn(2, 2, 1, 1, 4),
+            ... )
+            >>> tuple(fusion.fuse(multi_round).fused_state.shape)
+            (2, 2, 4)
             >>> flat = FusionInput(
             ...     patient_state=torch.randn(2, 1, 3),
             ...     retrieval_memory=torch.randn(2, 1, 2, 2, 4),
@@ -113,7 +119,7 @@ class ReplaceFusion(FusionModule):
         b, r, k, s_doc, d_mem = rm.shape
         if r == 1 and k == 1 and s_doc == 1:
             fused_state = rm.view(b, 1, d_mem)
-        elif s_doc == 1:
+        elif r == 1 and s_doc == 1:
             fused_state = rm.squeeze(1).squeeze(2)
         else:
             fused_state = rm.reshape(b, r * k * s_doc, d_mem)
