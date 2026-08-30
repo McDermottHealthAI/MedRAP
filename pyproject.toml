@@ -94,6 +94,7 @@ medrap-prepare-retrieval-dataset = "medrap.cli:prepare_retrieval_dataset_main"
 medrap-preprocess = "medrap.cli:preprocess_main"
 medrap-retrieve = "medrap.cli:retrieve_main"
 medrap-predict-probabilities = "medrap.cli:predict_probabilities_main"
+medrap-get-embeddings = "medrap.cli:get_embeddings_main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "src/medrap"]
