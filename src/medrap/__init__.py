@@ -26,7 +26,14 @@ from .model.heads import LinearHead, PredictionHead
 from .model.model import RetrievalAugmentedModel
 from .model.pooling import IdentityPooling, MaskedMeanPooling, PoolingModule
 from .model.query_projection import LinearQueryProjector, QueryProjector, SequenceMeanQueryProjector
-from .model.retrieval_encoder import LinearProjectionRetrievalEncoder, PerDocMeanPooledRetrievalEncoder
+from .model.retrieval_encoder import (
+    KeyEmbeddingRetrievalEncoder,
+    LinearProjectionRetrievalEncoder,
+    MeanPooledRetrievalEncoder,
+    PerDocMeanPooledRetrievalEncoder,
+    RetrievalEncoder,
+    TokenFeatureRetrievalEncoder,
+)
 from .model.retrievers import (
     HFDatasetRetriever,
     InMemoryRetriever,
@@ -74,6 +81,7 @@ __all__ = [
     "IdentityPooling",
     "InMemoryRetriever",
     "InMemoryRetrieverConfig",
+    "KeyEmbeddingRetrievalEncoder",
     "LinearHead",
     "LinearProjectionRetrievalEncoder",
     "LinearQueryProjector",
@@ -81,6 +89,7 @@ __all__ = [
     "MarginalizedRetrievalLoss",
     "MarginalizedRetrievalSupervisedLoss",
     "MaskedMeanPooling",
+    "MeanPooledRetrievalEncoder",
     "MedRAPSupervisedLightningModule",
     "ModelOutput",
     "MultiTaskBCELoss",
@@ -103,12 +112,14 @@ __all__ = [
     "RAPAppConfig",
     "ReplaceFusion",
     "RetrievalAugmentedModel",
+    "RetrievalEncoder",
     "RetrievalEncoderOutput",
     "Retriever",
     "RetrieverOutput",
     "SequenceMeanQueryProjector",
     "TimeDeltaRoPEPatientEncoder",
     "TokenEmbeddingEncoder",
+    "TokenFeatureRetrievalEncoder",
     "float_tensor_config",
     "load_code_index",
     "load_hf_dataset_retriever",
