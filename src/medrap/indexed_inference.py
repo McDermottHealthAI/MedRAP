@@ -147,6 +147,16 @@ def _predict_split(
         Traceback (most recent call last):
             ...
         ValueError: medrap inference requires a single-device trainer...
+
+        A split with no rows returns ``None`` without touching ``trainer``/``module``,
+        so a split absent from the index dataframe is silently skipped by
+        :func:`run_indexed_inference` rather than running an empty predict loop:
+
+        >>> class _EmptyDataset:
+        ...     def __len__(self):
+        ...         return 0
+        >>> _predict_split(None, None, _EmptyDataset(), batch_size=1, extract=lambda c: {}) is None
+        True
     """
     if len(dataset) == 0:
         return None
@@ -206,8 +216,23 @@ def run_indexed_inference(
         trainer: Instantiated single-device ``lightning.Trainer``.
         extract: See :func:`_predict_split`.
 
+    Raises:
+        FileNotFoundError: If ``cfg.index_dataframe_dir`` contains no parquet files.
+
     Returns:
         Left-joined DataFrame, one row per input index-dataframe row.
+
+    Examples:
+        >>> import tempfile
+        >>> from omegaconf import OmegaConf
+        >>> with tempfile.TemporaryDirectory() as empty_dir:
+        ...     cfg = OmegaConf.create({"index_dataframe_dir": empty_dir})
+        ...     run_indexed_inference(
+        ...         cfg, module=None, trainer=None, extract=lambda c: {}
+        ...     )  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        FileNotFoundError: No parquet files found under index_dataframe_dir=...
     """
     index_dataframe_dir = Path(cfg.index_dataframe_dir)
     index_files = sorted(index_dataframe_dir.rglob("*.parquet"))
