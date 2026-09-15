@@ -84,4 +84,15 @@ marginalization depended on scale.
 
 - Fix: `src/medrap/model/retrieval_scoring.py`, PR [#113](https://github.com/McDermottHealthAI/MedRAP/pull/113)
 - Verified: the softmax-saturation numbers above, reproduced as a regression-test doctest
-- Not yet verified: an actual before/after loss curve from a `medrap-experiments` re-run
+- Verified (before/after loss curve): re-run in `medrap-experiments`
+  ([PR #44](https://github.com/McDermottHealthAI/medrap-experiments/pull/44)),
+  5 draws per setting, extreme-starved capacity, N=25 tasks, absolute
+  training-row counts 100/1,000/10,000/100,000. The marginalized/patient_only
+  test-loss ratio did **not** shrink with this fix — it widened: ~9.5x → ~18.4x
+  at N=100, ~5.1x → ~9.7x at N=1,000. At N=10,000/100,000 it was already
+  close to 1 and stayed there (~1.3x, ~1.06x). Consistent with the Jensen's-
+  inequality note above: the loss gap at small N is dominated by that
+  structural effect, not by the softmax-collapse bug this fix addresses —
+  the fix is still correct (it closes the softmax-collapse shortcut
+  demonstrated above), it just isn't the explanation for the loss magnitude
+  gap observed in `medrap-experiments`.
