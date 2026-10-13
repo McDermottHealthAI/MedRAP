@@ -177,6 +177,25 @@ def _select_task_codes(
         ...     _select_task_codes(tmpdir, num_tasks=1, seed=0)
         ['DIAG//A']
 
+        ``random`` selection is deterministic given the same seed and data --
+        repeated calls (each re-reading the shard from disk) select the same
+        codes, even with enough distinct codes that the eligible-pool order
+        would be unspecified without an explicit sort before sampling:
+
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     shard_dir = Path(tmpdir) / "data" / "train"
+        ...     shard_dir.mkdir(parents=True)
+        ...     pl.DataFrame(
+        ...         {
+        ...             "subject_id": [1] * 500,
+        ...             "code": [f"TEST//{i:04d}" for i in range(500)],
+        ...             "time": [datetime(2020, 1, 1)] * 500,
+        ...         }
+        ...     ).write_parquet(shard_dir / "0.parquet")
+        ...     draws = {tuple(_select_task_codes(tmpdir, num_tasks=25, seed=101)) for _ in range(10)}
+        ...     len(draws)
+        1
+
         ``exclude`` drops codes from the eligible pool before selecting:
 
         >>> with tempfile.TemporaryDirectory() as tmpdir:
@@ -241,7 +260,7 @@ def _select_task_codes(
         )
         eligible = counts["code"].to_list()
     else:
-        eligible = data.select("code").unique().collect()["code"].to_list()
+        eligible = data.select("code").unique().sort("code").collect()["code"].to_list()
 
     if exclude:
         eligible = [c for c in eligible if c not in exclude]
