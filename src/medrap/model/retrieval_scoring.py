@@ -12,11 +12,27 @@ def differentiable_retrieval_scores(
 ) -> Tensor:
     """Compute per-query, per-document scores with gradients to ``query_embeddings``.
 
+    ``similarity=\"dot\"`` scales the raw dot product by ``1 / sqrt(D)`` -- the
+    same scaling self-attention uses (Vaswani et al. 2017) -- because these
+    scores feed directly into a ``softmax`` for marginalizing predictions
+    over retrieved documents (see ``MultiTaskBCEMarginalizedLoss``,
+    ``MarginalizedRetrievalLoss``). For embeddings with roughly unit
+    per-dimension variance, an unscaled dot product has standard deviation
+    ``sqrt(D)``, which saturates ``softmax`` to a near one-hot distribution
+    over ``K`` documents regardless of how semantically close the query
+    actually is to each key -- collapsing the marginalization onto a single
+    (effectively arbitrary, pre-training) document and letting the retriever
+    cheaply minimize training loss by memorizing per-example document
+    preference rather than learning real relevance.
+
     Args:
         query_embeddings: Tensor shaped ``(B, R, D)``.
         doc_key_embeddings: Tensor shaped ``(B, R, K, D)``.
         similarity: ``\"dot\"`` or ``\"cosine\"`` (same convention as
-            :class:`medrap.retrievers.InMemoryRetriever`).
+            :class:`medrap.retrievers.InMemoryRetriever`). Unlike
+            ``InMemoryRetriever``, which uses these only to rank documents (a
+            transform invariant to scale), the scores computed here are also
+            used as softmax logits, where scale is not invariant.
 
     Returns:
         Tensor shaped ``(B, K)`` when ``R == 1``, else ``(B, R, K)``.
@@ -35,6 +51,20 @@ def differentiable_retrieval_scores(
         torch.Size([2, 3])
         >>> differentiable_retrieval_scores(torch.randn(2, 2, 4), torch.randn(2, 2, 3, 4)).shape
         torch.Size([2, 2, 3])
+
+        ``dot`` similarity divides by ``sqrt(D)`` so score variance does not grow
+        with embedding dimension -- unscaled, high-dimensional embeddings with
+        unit per-dimension variance would saturate the downstream softmax:
+
+        >>> _ = torch.manual_seed(0)
+        >>> D = 1024
+        >>> q_big = torch.randn(4000, 1, D)
+        >>> k_big = torch.randn(4000, 1, 8, D)
+        >>> scores = differentiable_retrieval_scores(q_big, k_big)
+        >>> round(scores.std().item())
+        1
+        >>> bool(torch.softmax(scores, dim=-1).max(dim=-1).values.mean() < 0.5)
+        True
         >>> differentiable_retrieval_scores(torch.zeros(2, 4), torch.zeros(2, 1, 3, 4))  # doctest: +ELLIPSIS
         Traceback (most recent call last):
         ...
@@ -78,7 +108,7 @@ def differentiable_retrieval_scores(
         kn = nn_functional.normalize(k, dim=-1)
         scores = (qn.unsqueeze(2) * kn).sum(dim=-1)
     elif similarity == "dot":
-        scores = (q.unsqueeze(2) * k).sum(dim=-1)
+        scores = (q.unsqueeze(2) * k).sum(dim=-1) / (q.shape[-1] ** 0.5)
     else:
         raise ValueError(f"similarity must be 'dot' or 'cosine', got {similarity!r}")
     if scores.shape[1] == 1:
