@@ -1,0 +1,9 @@
+# Time-delta RoPE encoder (16-D), smallest rung of the capacity sweep.
+# fusion.d_in_patient interpolates from ${encoder.embedding_dim}; pass query_projector.in_dim=16.
+_target_: medrap.model.encoders.TimeDeltaRoPEPatientEncoder
+vocab_size: 65536
+embedding_dim: 16
+num_heads: 2
+num_layers: 1
+ff_dim: 32
+dropout: 0.0

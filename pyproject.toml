@@ -30,6 +30,7 @@ dependencies = [
   "torchmetrics>=1.4.0",
   "wandb>=0.16.0",
   "scikit-learn>=1.5.0",
+  "simple-scaling-laws",
 ]
 
 [project.optional-dependencies]
@@ -73,6 +74,10 @@ viz = [
   "umap-learn>=0.5",
 ]
 
+[tool.uv.sources]
+# Not yet published to PyPI despite its README; pin to the repo until it is.
+simple-scaling-laws = { git = "https://github.com/mmcdermott/simple-scaling-laws" }
+
 [tool.uv]
 # Install the llm_judge and viz dependency-groups on every `uv sync` so the
 # extraction-plot pipeline (matplotlib, umap-learn) and LLM-judge pipeline
@@ -95,6 +100,8 @@ medrap-preprocess = "medrap.cli:preprocess_main"
 medrap-retrieve = "medrap.cli:retrieve_main"
 medrap-predict-probabilities = "medrap.cli:predict_probabilities_main"
 medrap-get-embeddings = "medrap.cli:get_embeddings_main"
+medrap-scaling-laws-grid = "medrap.scaling_laws.cli:grid_main"
+medrap-scaling-laws-fit = "medrap.scaling_laws.cli:fit_main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "src/medrap"]
