@@ -109,13 +109,18 @@ def _select_task_codes(
     Args:
         meds_data_dir: Root of a MEDS dataset (``data/train/*.parquet``).
         num_tasks: Number of codes to select.
-        seed: Random seed; only used when ``code_selection="random"``.
-        code_selection: ``"random"`` (uniform, without replacement) or
-            ``"most_frequent"`` (the ``num_tasks`` codes with the highest
-            *distinct-subject* count in the train split -- not event-row count,
-            since a code measured repeatedly on a small subject subset can have
-            a huge row count while still being near-zero prevalence in the
-            per-subject labels this module produces; ties broken by code string).
+        seed: Random seed; only used when ``code_selection`` is ``"random"`` or
+            ``"prevalence_weighted"``.
+        code_selection: ``"random"`` (uniform, without replacement),
+            ``"prevalence_weighted"`` (random without replacement, each code drawn
+            with probability proportional to its *distinct-subject* count in the
+            train split, so common codes are favored over the long tail of rare
+            ones without any rate threshold), or ``"most_frequent"`` (the
+            ``num_tasks`` codes with the highest distinct-subject count -- not
+            event-row count, since a code measured repeatedly on a small subject
+            subset can have a huge row count while still being near-zero
+            prevalence in the per-subject labels this module produces; ties
+            broken by code string).
         exclude: Codes to drop from the eligible pool before selecting, e.g. codes
             already tried and rejected by :func:`_select_valid_task_codes_and_labels`.
 
@@ -159,6 +164,27 @@ def _select_task_codes(
         ...     ).write_parquet(shard_dir / "0.parquet")
         ...     _select_task_codes(tmpdir, num_tasks=1, seed=0, code_selection="most_frequent")
         ['DIAG//B']
+
+        ``prevalence_weighted`` favors codes that more subjects have: ``DIAG//A``
+        (99 subjects) is drawn far more often than ``DIAG//B`` (1 subject) across
+        seeds, but ``B`` stays eligible:
+
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     shard_dir = Path(tmpdir) / "data" / "train"
+        ...     shard_dir.mkdir(parents=True)
+        ...     pl.DataFrame(
+        ...         {
+        ...             "subject_id": list(range(99)) + [99],
+        ...             "code": ["DIAG//A"] * 99 + ["DIAG//B"],
+        ...             "time": [datetime(2020, 1, 1)] * 100,
+        ...         }
+        ...     ).write_parquet(shard_dir / "0.parquet")
+        ...     picks = [
+        ...         _select_task_codes(tmpdir, num_tasks=1, seed=s, code_selection="prevalence_weighted")[0]
+        ...         for s in range(200)
+        ...     ]
+        ...     picks.count("DIAG//A") > 190, "DIAG//B" in picks
+        (True, True)
 
         ``meds.birth_code`` is never eligible, even though every subject has
         exactly one -- it's always the first event, so it can never fall
@@ -228,9 +254,10 @@ def _select_task_codes(
             ...
         ValueError: No eligible task codes found in .../data/train/.
     """
-    if code_selection not in ("random", "most_frequent"):
+    if code_selection not in ("random", "prevalence_weighted", "most_frequent"):
         raise ValueError(
-            f"Unrecognized code_selection={code_selection!r}; expected 'random' or 'most_frequent'."
+            f"Unrecognized code_selection={code_selection!r}; expected 'random', "
+            "'prevalence_weighted' or 'most_frequent'."
         )
 
     # meds.birth_code ("MEDS_BIRTH") is excluded because it's structurally
@@ -246,7 +273,7 @@ def _select_task_codes(
         pl.col("code") != meds.birth_code,
     )
 
-    if code_selection == "most_frequent":
+    if code_selection in ("most_frequent", "prevalence_weighted"):
         # Ranked by distinct-subject count, not event-row count: a code measured
         # repeatedly on a small subset of subjects (e.g. hourly ICU labs) can have
         # a huge row count while still being near-zero prevalence in the per-subject
@@ -259,6 +286,7 @@ def _select_task_codes(
             .collect()
         )
         eligible = counts["code"].to_list()
+        n_subjects = dict(zip(eligible, counts["n_subjects"].to_list(), strict=True))
     else:
         eligible = data.select("code").unique().sort("code").collect()["code"].to_list()
 
@@ -277,6 +305,9 @@ def _select_task_codes(
         return eligible[:num_tasks]
 
     rng = np.random.default_rng(seed)
+    if code_selection == "prevalence_weighted":
+        weights = np.array([n_subjects[c] for c in eligible], dtype=np.float64)
+        return rng.choice(eligible, size=num_tasks, replace=False, p=weights / weights.sum()).tolist()
     return rng.choice(eligible, size=num_tasks, replace=False).tolist()
 
 
@@ -801,7 +832,7 @@ def _select_valid_task_codes_and_labels(
         min_history_days: Minimum days of history before the prediction anchor.
         seed: Random seed, forwarded to code selection and label generation.
         splits: Splits a code's labels must be valid in.
-        code_selection: ``"random"`` or ``"most_frequent"``.
+        code_selection: ``"random"``, ``"prevalence_weighted"`` or ``"most_frequent"``.
         anchor_strategy: ``"uniform_event"`` (default) or ``"uniform_lifetime"``;
             forwarded to :func:`generate_labels`.
 
@@ -964,7 +995,7 @@ def generate_tasks(
             duration sampling (when ``duration_distribution != "fixed"``), and
             anchor sampling.
         splits: Splits to generate labels for.
-        code_selection: ``"random"`` or ``"most_frequent"``; see
+        code_selection: ``"random"``, ``"prevalence_weighted"`` or ``"most_frequent"``; see
             :func:`_select_task_codes`.
         duration_distribution: ``"fixed"`` (default), ``"uniform"``, or
             ``"log-uniform"``; see :func:`_sample_task_durations`.
