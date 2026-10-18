@@ -16,6 +16,12 @@ defaults:
 head:
   out_dim: ${training.task.output_dim}
 
+# Must match the checkpoint's training config, so the model is rebuilt with the same output path
+# (a marginalized checkpoint loads fine into a non-marginalized model and silently predicts wrong).
+marginalized_retrieval: false
+marginalized_score_similarity: dot
+marginalized_output_mode: categorical # categorical | binary
+
 output_dir: ???
 checkpoint_path: ???
 index_dataframe_dir: ???

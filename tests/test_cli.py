@@ -1156,3 +1156,18 @@ def test_run_meds_pipeline_creates_dirs_and_invokes_subprocesses(monkeypatch, tm
     assert tens == tmp_path / "out" / "tensorized"
     assert inter.exists() and tens.exists()
     assert calls == ["MEDS_transform-pipeline", "MTD_preprocess"]
+
+
+@pytest.mark.parametrize("config_name", ["_predict_probabilities", "_retrieve", "_get_embeddings"])
+def test_inference_configs_accept_marginalization_overrides(config_name) -> None:
+    """Inference commands rebuild the model from config; a marginalized checkpoint needs these keys."""
+    from hydra import compose, initialize_config_module
+
+    with initialize_config_module(config_module="medrap.conf", version_base=None):
+        cfg = compose(
+            config_name=config_name,
+            overrides=["marginalized_retrieval=true", "marginalized_output_mode=binary"],
+        )
+    assert cfg.marginalized_retrieval is True
+    assert cfg.marginalized_output_mode == "binary"
+    assert cfg.marginalized_score_similarity == "dot"
