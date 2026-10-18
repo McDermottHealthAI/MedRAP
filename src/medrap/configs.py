@@ -204,6 +204,7 @@ MedRAPSupervisedLightningModuleConfig = builds_any(
     diagnostics_every_n_steps=50,
     validation_auroc=True,
     validation_auroc_log_per_task=False,
+    init_bias_from_base_rate=False,
     zen_dataclass={"cls_name": "MedRAPSupervisedLightningModuleConfig"},
 )
 LoadHFSourceConfig = builds_any(
