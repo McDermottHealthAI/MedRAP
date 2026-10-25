@@ -136,6 +136,8 @@ TokenFeatureRetrievalEncoderConfig = builds_any(
     TokenFeatureRetrievalEncoder,
     vocab_size=1024,
     embedding_dim=4,
+    pretrained_model_name_or_path=None,
+    freeze=False,
     zen_dataclass={"cls_name": "TokenFeatureRetrievalEncoderConfig"},
 )
 MeanPooledRetrievalEncoderConfig = builds_any(

@@ -1,0 +1,8 @@
+# Frozen Qwen3 input token embeddings for retrieved documents: no trained parameters.
+# The corpus's doc_tokens must come from the same tokenizer (medrap-prepare-retrieval-dataset
+# with Qwen/Qwen3-Embedding-0.6B). Pair with a fusion whose d_in_doc is 1024.
+_target_: medrap.model.retrieval_encoder.TokenFeatureRetrievalEncoder
+vocab_size: 151669
+embedding_dim: 1024
+pretrained_model_name_or_path: Qwen/Qwen3-Embedding-0.6B
+freeze: true

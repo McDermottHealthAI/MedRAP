@@ -39,19 +39,124 @@ class RetrievalEncoder(nn.Module, ABC):
         return self.encode(retrieval)
 
 
+def _load_pretrained_embed_tokens(
+    pretrained_model_name_or_path: str,
+    *,
+    vocab_size: int,
+    embedding_dim: int,
+    trust_remote_code: bool = False,
+) -> torch.Tensor:
+    """Return a pretrained model's input token-embedding matrix as a float tensor.
+
+    The model is loaded in full precision, ``embed_tokens.weight`` (or
+    ``model.embed_tokens.weight``) is copied out, then the model is deleted to free memory.
+
+    Args:
+        pretrained_model_name_or_path: HuggingFace model name or local path.
+        vocab_size: Expected number of rows.
+        embedding_dim: Expected number of columns.
+        trust_remote_code: Passed to ``AutoModel.from_pretrained``.
+
+    Returns:
+        Tensor with shape ``(vocab_size, embedding_dim)``.
+
+    Raises:
+        ValueError: If the model has no ``embed_tokens`` or its shape doesn't match.
+    """
+    pretrained = AutoModel.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+    embed_tokens = getattr(pretrained, "embed_tokens", None) or getattr(
+        getattr(pretrained, "model", None), "embed_tokens", None
+    )
+    if embed_tokens is None:
+        raise ValueError(
+            f"Cannot find embed_tokens on {type(pretrained).__name__}. "
+            "Expected pretrained.embed_tokens or pretrained.model.embed_tokens."
+        )
+    weight = embed_tokens.weight.detach().float()
+    pre_v, pre_d = weight.shape
+    if pre_v != vocab_size or pre_d != embedding_dim:
+        raise ValueError(
+            f"Pretrained embedding shape ({pre_v}, {pre_d}) does not match "
+            f"(vocab_size={vocab_size}, embedding_dim={embedding_dim}). "
+            f"Use vocab_size={pre_v} embedding_dim={pre_d} to match this model."
+        )
+    weight = weight.clone()
+    del pretrained, embed_tokens
+    _maybe_empty_cuda_cache(weight.device)
+    return weight
+
+
 class TokenFeatureRetrievalEncoder(RetrievalEncoder):
     """Minimal sequence-style retrieval encoder that embeds retrieved token ids.
 
     Args:
         vocab_size: Size of the retrieved document token vocabulary.
         embedding_dim: Size of the per-token feature vector ``D_mem``.
+        pretrained_model_name_or_path: Optional HuggingFace model name or local path. When
+            provided, the embedding table is copied from that model's ``embed_tokens`` (see
+            :func:`_load_pretrained_embed_tokens`); ``vocab_size`` and ``embedding_dim`` must
+            match its shape. The document token ids must come from the same tokenizer.
+        freeze: If ``True``, the embedding table is not trained (``requires_grad=False``), so
+            the optimizer skips it.
+        trust_remote_code: Passed to ``AutoModel.from_pretrained``. Executes arbitrary code
+            shipped with the model repository when ``True`` -- only set this for a model source
+            you trust. Ignored when ``pretrained_model_name_or_path`` is unset.
+
+    Examples:
+        Frozen pretrained token embeddings, from a tiny randomly initialized Qwen3 model saved
+        locally:
+
+        >>> import tempfile
+        >>> from transformers import Qwen3Config, Qwen3Model
+        >>> config = Qwen3Config(
+        ...     vocab_size=8,
+        ...     hidden_size=4,
+        ...     intermediate_size=8,
+        ...     num_hidden_layers=1,
+        ...     num_attention_heads=1,
+        ...     num_key_value_heads=1,
+        ...     head_dim=4,
+        ... )
+        >>> with tempfile.TemporaryDirectory() as model_dir:
+        ...     Qwen3Model(config).save_pretrained(model_dir)
+        ...     reference = Qwen3Model.from_pretrained(model_dir).embed_tokens.weight
+        ...     encoder = TokenFeatureRetrievalEncoder(
+        ...         vocab_size=8, embedding_dim=4, pretrained_model_name_or_path=model_dir, freeze=True
+        ...     )
+        >>> torch.equal(encoder.embedding.weight, reference)
+        True
+        >>> sum(p.numel() for p in encoder.parameters() if p.requires_grad)
+        0
+
+        Without ``freeze`` the table is trained, as before:
+
+        >>> TokenFeatureRetrievalEncoder(vocab_size=8, embedding_dim=4).embedding.weight.requires_grad
+        True
     """
 
-    def __init__(self, *, vocab_size: int = 1024, embedding_dim: int = 4) -> None:
+    def __init__(
+        self,
+        *,
+        vocab_size: int = 1024,
+        embedding_dim: int = 4,
+        pretrained_model_name_or_path: str | None = None,
+        freeze: bool = False,
+        trust_remote_code: bool = False,
+    ) -> None:
         super().__init__()
         self.vocab_size = int(vocab_size)
         self.embedding_dim = int(embedding_dim)
         self.embedding = nn.Embedding(self.vocab_size, self.embedding_dim, padding_idx=0)
+        if pretrained_model_name_or_path is not None:
+            weight = _load_pretrained_embed_tokens(
+                pretrained_model_name_or_path,
+                vocab_size=self.vocab_size,
+                embedding_dim=self.embedding_dim,
+                trust_remote_code=trust_remote_code,
+            )
+            with torch.no_grad():
+                self.embedding.weight.copy_(weight)
+        self.embedding.weight.requires_grad_(not freeze)
 
     def encode(self, retrieval: RetrieverOutput) -> RetrievalEncoderOutput:
         """Embed ``retrieval.doc_tokens`` into a dense token-memory tensor.
@@ -352,31 +457,14 @@ class PerDocMeanPooledRetrievalEncoder(RetrievalEncoder):
         self.embedding = nn.Embedding(self.vocab_size, self.embedding_dim, padding_idx=0)
 
         if pretrained_model_name_or_path is not None:
-            pretrained = AutoModel.from_pretrained(
+            weight = _load_pretrained_embed_tokens(
                 pretrained_model_name_or_path,
+                vocab_size=self.vocab_size,
+                embedding_dim=self.embedding_dim,
                 trust_remote_code=trust_remote_code,
             )
-            embed_tokens = getattr(pretrained, "embed_tokens", None) or getattr(
-                getattr(pretrained, "model", None), "embed_tokens", None
-            )
-            if embed_tokens is None:
-                raise ValueError(
-                    f"Cannot find embed_tokens on {type(pretrained).__name__}. "
-                    "Expected pretrained.embed_tokens or pretrained.model.embed_tokens."
-                )
-            pretrained_weight = embed_tokens.weight.detach().float()
-            pre_v, pre_d = pretrained_weight.shape
-            if pre_v != self.vocab_size or pre_d != self.embedding_dim:
-                raise ValueError(
-                    f"Pretrained embedding shape ({pre_v}, {pre_d}) does not match "
-                    f"(vocab_size={self.vocab_size}, embedding_dim={self.embedding_dim}). "
-                    f"Use vocab_size={pre_v} embedding_dim={pre_d} to match this model."
-                )
             with torch.no_grad():
-                self.embedding.weight.copy_(pretrained_weight)
-            pretrained_device = pretrained_weight.device
-            del pretrained
-            _maybe_empty_cuda_cache(pretrained_device)
+                self.embedding.weight.copy_(weight)
 
     def encode(self, retrieval: RetrieverOutput) -> RetrievalEncoderOutput:
         """Embed tokens and mean-pool over S_doc, keeping the K doc dimension.
