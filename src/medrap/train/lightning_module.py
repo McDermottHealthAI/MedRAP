@@ -21,6 +21,25 @@ from .task import (
 )
 
 
+def base_rate_logits(labels: Tensor, eps: float = 1e-4) -> Tensor:
+    """Per-task log-odds of the positive rate in a ``(rows, tasks)`` label matrix.
+
+    ``NaN`` labels are ignored. Rates are clamped to ``[eps, 1 - eps]`` so a task with no
+    positives (or no negatives) still gets a finite logit.
+
+    Examples:
+        >>> labels = torch.tensor([[1.0, 0.0], [0.0, 0.0], [0.0, float("nan")], [0.0, 1.0]])
+        >>> base_rate_logits(labels)  # rates 1/4 and 1/3
+        tensor([-1.0986, -0.6931])
+        >>> base_rate_logits(torch.zeros(3, 1))  # no positives -> clamped, finite
+        tensor([-9.2102])
+    """
+    valid = ~torch.isnan(labels)
+    rates = torch.where(valid, labels, torch.zeros_like(labels)).sum(0) / valid.sum(0).clamp(min=1)
+    rates = rates.clamp(eps, 1 - eps)
+    return torch.log(rates / (1 - rates))
+
+
 class MedRAPSupervisedLightningModule(lightning.LightningModule):
     """Supervised Lightning wrapper around a plain RAP model.
 
@@ -53,6 +72,14 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
             newly-added query-projector submodule faster than the rest of
             the model). Parameters matching more than one key use whichever
             key is checked first (insertion order).
+        init_bias_from_base_rate: Whether to set the prediction head's bias to each task's
+            training-split log-odds (:func:`base_rate_logits`) when fitting starts, instead
+            of leaving it at its ~0 default (a predicted probability of ~0.5 for every
+            task). For rare multitask labels a narrow head otherwise spends its early
+            optimizer steps just learning the base rate. Requires a multitask datamodule
+            (labels from ``train_dataset._mt_matrix``) and a head with a ``linear`` layer
+            whose outputs are the per-task logits (``LinearHead``, which marginalized
+            retrieval also uses per document).
     """
 
     def __init__(
@@ -69,6 +96,7 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
         validation_auroc: bool = True,
         validation_auroc_log_per_task: bool = False,
         lr_overrides: dict[str, float] | None = None,
+        init_bias_from_base_rate: bool = False,
     ) -> None:
         super().__init__()
         self.model = model
@@ -82,6 +110,7 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
         self.diagnostics_every_n_steps = max(0, int(diagnostics_every_n_steps))
         self.validation_auroc = validation_auroc
         self.validation_auroc_log_per_task = validation_auroc_log_per_task
+        self.init_bias_from_base_rate = init_bias_from_base_rate
         self._auroc_logits: dict[str, list[Tensor]] = defaultdict(list)
         self._auroc_targets: dict[str, list[Tensor]] = defaultdict(list)
 
@@ -231,6 +260,80 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
         if stage in ("val", "test") and isinstance(targets, Tensor):
             self._collect_auroc_batch(stage, predictions.logits, targets)
         return loss
+
+    def init_head_bias_from_labels(self, labels: Tensor) -> None:
+        """Set the head's per-task bias to the log-odds of each task's positive rate in ``labels``.
+
+        Examples:
+            >>> from medrap.model.heads import LinearHead
+            >>> class _HeadModel(nn.Module):
+            ...     def __init__(self) -> None:
+            ...         super().__init__()
+            ...         self.head = LinearHead(in_dim=3, out_dim=2)
+            >>> module = MedRAPSupervisedLightningModule(model=_HeadModel())
+            >>> module.init_head_bias_from_labels(
+            ...     torch.tensor([[1.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 1.0]])
+            ... )
+            >>> module.model.head.linear.bias.data
+            tensor([-1.0986, -1.0986])
+            >>> module.init_head_bias_from_labels(torch.zeros(4, 3))  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: Label matrix has 3 task columns but the head has 2 outputs...
+            >>> MedRAPSupervisedLightningModule(model=nn.Identity()).init_head_bias_from_labels(
+            ...     torch.zeros(4, 2)
+            ... )
+            Traceback (most recent call last):
+                ...
+            ValueError: init_bias_from_base_rate needs model.head.linear (an nn.Linear with a bias).
+        """
+        linear = getattr(getattr(self.model, "head", None), "linear", None)
+        if not isinstance(linear, nn.Linear) or linear.bias is None:
+            raise ValueError("init_bias_from_base_rate needs model.head.linear (an nn.Linear with a bias).")
+        if labels.shape[1] != linear.out_features:
+            raise ValueError(
+                f"Label matrix has {labels.shape[1]} task columns but the head has "
+                f"{linear.out_features} outputs; init_bias_from_base_rate needs one per task."
+            )
+        with torch.no_grad():
+            linear.bias.copy_(base_rate_logits(labels).to(linear.bias))
+
+    def on_fit_start(self) -> None:
+        """Optionally initialize the head bias from the training labels' base rates.
+
+        Examples:
+            >>> from types import SimpleNamespace
+            >>> from medrap.model.heads import LinearHead
+            >>> class _HeadModel(nn.Module):
+            ...     def __init__(self) -> None:
+            ...         super().__init__()
+            ...         self.head = LinearHead(in_dim=3, out_dim=2)
+            >>> def _fit_start(module, train_dataset):
+            ...     module.trainer = SimpleNamespace(datamodule=SimpleNamespace(train_dataset=train_dataset))
+            ...     module.on_fit_start()
+            ...     return module.model.head.linear.bias.data
+            >>> labels = SimpleNamespace(_mt_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]))
+            >>> module = MedRAPSupervisedLightningModule(model=_HeadModel(), init_bias_from_base_rate=True)
+            >>> _fit_start(module, labels)
+            tensor([0., 0.])
+            >>> _fit_start(module, SimpleNamespace())  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: init_bias_from_base_rate needs a multitask datamodule...
+            >>> off = MedRAPSupervisedLightningModule(model=_HeadModel())
+            >>> bias = off.model.head.linear.bias.data.clone()
+            >>> torch.equal(_fit_start(off, labels), bias)  # disabled: bias untouched
+            True
+        """
+        if not self.init_bias_from_base_rate:
+            return
+        labels = getattr(self.trainer.datamodule.train_dataset, "_mt_matrix", None)
+        if labels is None:
+            raise ValueError(
+                "init_bias_from_base_rate needs a multitask datamodule whose train_dataset "
+                "exposes its label matrix (training/datamodule=meds_multitask)."
+            )
+        self.init_head_bias_from_labels(labels)
 
     def on_validation_epoch_start(self) -> None:
         """Clear validation-loop AUROC buffers before each validation pass."""
