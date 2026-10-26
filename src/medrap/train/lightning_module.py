@@ -280,6 +280,12 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
             Traceback (most recent call last):
                 ...
             ValueError: Label matrix has 3 task columns but the head has 2 outputs...
+            >>> MedRAPSupervisedLightningModule(model=nn.Identity()).init_head_bias_from_labels(
+            ...     torch.zeros(4, 2)
+            ... )
+            Traceback (most recent call last):
+                ...
+            ValueError: init_bias_from_base_rate needs model.head.linear (an nn.Linear with a bias).
         """
         linear = getattr(getattr(self.model, "head", None), "linear", None)
         if not isinstance(linear, nn.Linear) or linear.bias is None:
@@ -293,7 +299,32 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
             linear.bias.copy_(base_rate_logits(labels).to(linear.bias))
 
     def on_fit_start(self) -> None:
-        """Optionally initialize the head bias from the training labels' base rates."""
+        """Optionally initialize the head bias from the training labels' base rates.
+
+        Examples:
+            >>> from types import SimpleNamespace
+            >>> from medrap.model.heads import LinearHead
+            >>> class _HeadModel(nn.Module):
+            ...     def __init__(self) -> None:
+            ...         super().__init__()
+            ...         self.head = LinearHead(in_dim=3, out_dim=2)
+            >>> def _fit_start(module, train_dataset):
+            ...     module.trainer = SimpleNamespace(datamodule=SimpleNamespace(train_dataset=train_dataset))
+            ...     module.on_fit_start()
+            ...     return module.model.head.linear.bias.data
+            >>> labels = SimpleNamespace(_mt_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]))
+            >>> module = MedRAPSupervisedLightningModule(model=_HeadModel(), init_bias_from_base_rate=True)
+            >>> _fit_start(module, labels)
+            tensor([0., 0.])
+            >>> _fit_start(module, SimpleNamespace())  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+                ...
+            ValueError: init_bias_from_base_rate needs a multitask datamodule...
+            >>> off = MedRAPSupervisedLightningModule(model=_HeadModel())
+            >>> bias = off.model.head.linear.bias.data.clone()
+            >>> torch.equal(_fit_start(off, labels), bias)  # disabled: bias untouched
+            True
+        """
         if not self.init_bias_from_base_rate:
             return
         labels = getattr(self.trainer.datamodule.train_dataset, "_mt_matrix", None)
