@@ -11,3 +11,4 @@ device: null
 ablation_mode: none
 cache_payloads: false
 payload_cache_device: null
+append_null_doc: false

@@ -138,6 +138,7 @@ def test_load_hf_dataset_retriever_passes_device_cache_and_ablation_options(monk
         ablation_mode="random_docs",
         cache_payloads=True,
         payload_cache_device="cpu",
+        append_null_doc=True,
     )
 
     assert isinstance(retriever, FakeRetriever)
@@ -157,6 +158,7 @@ def test_load_hf_dataset_retriever_passes_device_cache_and_ablation_options(monk
         "ablation_mode": "random_docs",
         "cache_payloads": True,
         "payload_cache_device": "cpu",
+        "append_null_doc": True,
     }
 
 
