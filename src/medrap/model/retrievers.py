@@ -373,7 +373,8 @@ class HFDatasetRetriever(Retriever):
         append_null_doc: Whether to add the dataset's **last row** (expected to
             be an empty "null" document) after the ``k`` retrieved documents for
             every query, so the model can always choose "no document". Outputs
-            then have ``k + 1`` documents. Its ``doc_scores`` entry is a 0
+            then have ``k + 1`` documents; search skips the null row, so it is
+            never returned twice. Its ``doc_scores`` entry is a 0
             placeholder; marginalized retrieval weights it by its key embedding
             like any other document. ``random_docs`` samples only from the other
             rows.
@@ -634,6 +635,8 @@ class HFDatasetRetriever(Retriever):
             ``(B, R, K)``.
         """
         batch_size, n_retrieval_steps, d_ret = query_embeddings.shape
+        # The null document is appended separately, so search one extra row and drop it below.
+        k_search = self.k + 1 if self._append_null_doc else self.k
 
         flat_queries = (
             query_embeddings.detach()
@@ -646,19 +649,23 @@ class HFDatasetRetriever(Retriever):
         total_scores, total_indices = self._dataset.search_batch(
             self._index_name,
             flat_queries,
-            k=self.k,
+            k=k_search,
         )
 
         scores = torch.as_tensor(total_scores, dtype=torch.float32).reshape(
             batch_size,
             n_retrieval_steps,
-            self.k,
+            k_search,
         )
         row_indices = torch.as_tensor(total_indices, dtype=torch.long).reshape(
             batch_size,
             n_retrieval_steps,
-            self.k,
+            k_search,
         )
+        if self._append_null_doc:
+            is_null = (row_indices == len(self._dataset) - 1).int()
+            keep = torch.argsort(is_null, dim=-1, stable=True)[..., : self.k]
+            scores, row_indices = scores.gather(-1, keep), row_indices.gather(-1, keep)
         return scores, row_indices
 
     def _materialize_output(
@@ -945,6 +952,8 @@ class HFDatasetRetriever(Retriever):
             [[[7, 8]]]
             >>> tuple(null_out.doc_tokens.shape)
             (1, 1, 2, 2)
+            >>> with_null(torch.FloatTensor([[[0.0, 1.0]]])).doc_ids.tolist()  # search skips it
+            [[[7, 8]]]
             >>> with_null.ablation_mode = "random_docs"  # samples rows other than the null doc
             >>> with_null(torch.FloatTensor([[[0.0, 1.0]]] * 4)).doc_ids[..., 0].unique().tolist()
             [7]
