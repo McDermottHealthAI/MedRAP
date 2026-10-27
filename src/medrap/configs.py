@@ -117,6 +117,7 @@ HFDatasetRetrieverConfig = builds_any(
     ablation_mode="none",
     cache_payloads=False,
     payload_cache_device=None,
+    append_null_doc=False,
     zen_dataclass={"cls_name": "HFDatasetRetrieverConfig"},
 )
 DemoInMemoryRetrieverConfig = builds_any(

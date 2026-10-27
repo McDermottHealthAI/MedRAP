@@ -370,6 +370,13 @@ class HFDatasetRetriever(Retriever):
         payload_cache_device: Device for cached payload tensors. ``None`` means
             CPU. Use ``"cuda:0"`` only when the payload corpus fits in GPU
             memory.
+        append_null_doc: Whether to add the dataset's **last row** (expected to
+            be an empty "null" document) after the ``k`` retrieved documents for
+            every query, so the model can always choose "no document". Outputs
+            then have ``k + 1`` documents. Its ``doc_scores`` entry is a 0
+            placeholder; marginalized retrieval weights it by its key embedding
+            like any other document. ``random_docs`` samples only from the other
+            rows.
 
     Cached payloads preserve the same output shapes as uncached retrieval:
     ``doc_tokens`` and ``doc_attention_mask`` are ``(B, R, K, S_doc)``,
@@ -390,6 +397,7 @@ class HFDatasetRetriever(Retriever):
         ablation_mode: str = "none",
         cache_payloads: bool = False,
         payload_cache_device: str | int | torch.device | None = None,
+        append_null_doc: bool = False,
     ) -> None:
         super().__init__()
 
@@ -402,7 +410,8 @@ class HFDatasetRetriever(Retriever):
         self._doc_ids_column = doc_ids_column
         self._doc_key_embeddings_column = doc_key_embeddings_column
         self._dataset = dataset
-        self._dataset_num_rows = len(dataset)
+        self._append_null_doc = append_null_doc
+        self._dataset_num_rows = len(dataset) - 1 if append_null_doc else len(dataset)
         self._index_name = index_name
         self._cached_doc_tokens: Tensor | None = None
         self._cached_doc_attention_mask: Tensor | None = None
@@ -919,6 +928,27 @@ class HFDatasetRetriever(Retriever):
             >>> out_cached_no_ids.doc_key_embeddings is None
             True
 
+            The last row (id 8) as the null document, appended after the top ``k``:
+
+            >>> with_null = HFDatasetRetriever(
+            ...     dataset=dataset,
+            ...     index_name="retrieval",
+            ...     doc_tokens_column="doc_tokens",
+            ...     doc_attention_mask_column="doc_attention_mask",
+            ...     doc_ids_column="doc_ids",
+            ...     doc_key_embeddings_column="doc_key_embeddings",
+            ...     k=1,
+            ...     append_null_doc=True,
+            ... )
+            >>> null_out = with_null(torch.FloatTensor([[[1.0, 0.0]]]))
+            >>> null_out.doc_ids.tolist()
+            [[[7, 8]]]
+            >>> tuple(null_out.doc_tokens.shape)
+            (1, 1, 2, 2)
+            >>> with_null.ablation_mode = "random_docs"  # samples rows other than the null doc
+            >>> with_null(torch.FloatTensor([[[0.0, 1.0]]] * 4)).doc_ids[..., 0].unique().tolist()
+            [7]
+
             >>> HFDatasetRetriever(
             ...     dataset=dataset,
             ...     index_name="retrieval",
@@ -940,6 +970,20 @@ class HFDatasetRetriever(Retriever):
             scores=scores,
             row_indices=row_indices,
         )
+        if self._append_null_doc:
+            null_shape = (*row_indices.shape[:-1], 1)
+            row_indices = torch.cat(
+                [
+                    row_indices,
+                    torch.full(
+                        null_shape, len(self._dataset) - 1, dtype=row_indices.dtype, device=row_indices.device
+                    ),
+                ],
+                dim=-1,
+            )
+            scores = torch.cat(
+                [scores, torch.zeros(null_shape, dtype=scores.dtype, device=scores.device)], dim=-1
+            )
         return self._materialize_output(
             row_indices=row_indices,
             scores=scores,
@@ -961,6 +1005,7 @@ def load_hf_dataset_retriever(
     ablation_mode: str = "none",
     cache_payloads: bool = False,
     payload_cache_device: str | int | torch.device | None = None,
+    append_null_doc: bool = False,
 ) -> HFDatasetRetriever:
     """Load a static dataset-backed retriever from a saved artifact.
 
@@ -985,6 +1030,8 @@ def load_hf_dataset_retriever(
             load time.
         payload_cache_device: Device for cached payload tensors. ``None`` means
             CPU.
+        append_null_doc: Whether to always add the dataset's last row as a null
+            document; see :class:`HFDatasetRetriever`.
 
     Returns:
         Configured :class:`HFDatasetRetriever`.
@@ -1043,6 +1090,7 @@ def load_hf_dataset_retriever(
         ablation_mode=ablation_mode,
         cache_payloads=cache_payloads,
         payload_cache_device=payload_cache_device,
+        append_null_doc=append_null_doc,
     )
 
 
