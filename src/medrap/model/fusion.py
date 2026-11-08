@@ -604,3 +604,186 @@ class PerDocCrossAttentionFusion(FusionModule):
         fused_state = pooled.reshape(b, k, -1)  # (B, K, d_model)
 
         return FusionOutput(fused_state=fused_state)
+
+
+class GatedDocFusion(FusionModule):
+    """Per-document fusion that starts as the patient-only model and adds documents through a gate.
+
+    For each retrieved document ``k`` one query vector cross-attends to the document's token
+    vectors, then a feed-forward layer gives the document's contribution ``c_k``. The query
+    vector is a linear map of ``h``, the masked mean of the patient states (``mode="patient"``),
+    or of the retrieval query (``mode="query"``, retrieval only). The output per document is
+
+    - ``mode="patient"``: ``h + tanh(g) * c_k``, with the scalar gate ``g`` starting at
+      ``gate_init`` (0 by default, as in Flamingo's gated cross-attention). At ``g = 0`` every
+      document gives exactly ``h``, the input the patient-only model's head reads, so training
+      starts at the patient-only model and uses a document only if it lowers the loss.
+    - ``mode="query"``: ``c_k``. The patient reaches the output only through the retrieval
+      query, so this measures what the documents carry by themselves.
+
+    ``c_k`` has no residual from the query vector, so it holds only document content. The output
+    width is ``d_in_patient`` in both modes. Pair with ``marginalized_retrieval=True``.
+
+    Args:
+        d_in_patient: Width ``W`` of ``patient_state``; also the output width.
+        d_in_doc: Width of the document token vectors in ``retrieval_memory``.
+        num_heads: Attention heads (must divide ``d_in_patient``).
+        mode: ``"patient"`` or ``"query"``.
+        d_query: Width of ``query_embeddings`` (used in ``mode="query"``).
+        gate_init: Starting value of ``g`` (``mode="patient"``).
+        dropout: Dropout in attention and the feed-forward layer.
+
+    Input shapes (via :class:`~medrap.types.FusionInput`):
+        - ``patient_state``: ``(B, S_ehr, W)``
+        - ``retrieval_memory``: ``(B, 1, K, S_doc, d_in_doc)``
+        - ``doc_attention_mask`` (optional): ``(B, 1, K, S_doc)``, ``True`` = valid token
+        - ``patient_attention_mask`` (optional): ``(B, S_ehr)``, ``True`` = valid code
+        - ``query_embeddings`` (``mode="query"``): ``(B, 1, d_query)``
+
+    Output shape:
+        ``fused_state``: ``(B, K, W)``
+
+    Examples:
+        >>> import torch
+        >>> from medrap.types import FusionInput
+        >>> _ = torch.manual_seed(0)
+        >>> fusion = GatedDocFusion(d_in_patient=4, d_in_doc=6, num_heads=2)
+        >>> ps = torch.randn(2, 5, 4)
+        >>> mask = torch.BoolTensor([[True] * 5, [True, True, False, False, False]])
+        >>> fi = FusionInput(
+        ...     patient_state=ps,
+        ...     retrieval_memory=torch.randn(2, 1, 3, 7, 6),
+        ...     patient_attention_mask=mask,
+        ... )
+        >>> out = fusion(fi).fused_state
+        >>> tuple(out.shape)
+        (2, 3, 4)
+
+        With the gate at 0 every document gives the masked mean of the patient states:
+
+        >>> h = (ps * mask.unsqueeze(-1)).sum(1) / mask.sum(1, keepdim=True)
+        >>> torch.allclose(out, h.unsqueeze(1).expand(2, 3, 4))
+        True
+
+        Once the gate opens, documents change the output, and the gate gets a gradient at 0:
+
+        >>> fusion.gate.grad is None
+        True
+        >>> fusion(fi).fused_state.sum().backward()
+        >>> bool(fusion.gate.grad.abs() > 0)
+        True
+        >>> with torch.no_grad():
+        ...     _ = fusion.gate.fill_(1.0)
+        >>> torch.allclose(fusion(fi).fused_state, h.unsqueeze(1).expand(2, 3, 4))
+        False
+
+        Document padding is masked out of attention:
+
+        >>> doc_mask = torch.ones(2, 1, 3, 7, dtype=torch.bool)
+        >>> doc_mask[..., 3:] = False
+        >>> rm = torch.randn(2, 1, 3, 7, 6)
+        >>> a = fusion(FusionInput(patient_state=ps, retrieval_memory=rm, doc_attention_mask=doc_mask))
+        >>> rm2 = rm.clone()
+        >>> rm2[..., 3:, :] = 100.0
+        >>> b = fusion(FusionInput(patient_state=ps, retrieval_memory=rm2, doc_attention_mask=doc_mask))
+        >>> torch.allclose(a.fused_state, b.fused_state)
+        True
+
+        Retrieval only (``mode="query"``) reads the documents with the retrieval query and does
+        not depend on the patient states:
+
+        >>> only = GatedDocFusion(d_in_patient=4, d_in_doc=6, num_heads=2, mode="query", d_query=8)
+        >>> q = torch.randn(2, 1, 8)
+        >>> rm = torch.randn(2, 1, 3, 7, 6)
+        >>> x = only(FusionInput(patient_state=ps, retrieval_memory=rm, query_embeddings=q))
+        >>> y = only(FusionInput(patient_state=ps * 0, retrieval_memory=rm, query_embeddings=q))
+        >>> tuple(x.fused_state.shape), torch.allclose(x.fused_state, y.fused_state)
+        ((2, 3, 4), True)
+
+        Errors:
+
+        >>> only(fi)  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+        ...
+        ValueError: GatedDocFusion(mode='query') needs query_embeddings...
+        >>> GatedDocFusion(d_in_patient=4, d_in_doc=6, num_heads=2, mode="other")  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+        ...
+        ValueError: mode must be 'patient' or 'query'...
+        >>> fusion(FusionInput(patient_state=ps, retrieval_memory=torch.randn(2, 3, 6)))  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+        ...
+        ValueError: GatedDocFusion expects retrieval_memory (B, 1, K, S_doc, D)...
+    """
+
+    produces_per_document_state = True
+
+    def __init__(
+        self,
+        *,
+        d_in_patient: int,
+        d_in_doc: int,
+        num_heads: int,
+        mode: str = "patient",
+        d_query: int = 1024,
+        gate_init: float = 0.0,
+        dropout: float = 0.0,
+    ) -> None:
+        super().__init__()
+        if mode not in ("patient", "query"):
+            raise ValueError(f"mode must be 'patient' or 'query', got {mode!r}")
+        self.mode = mode
+        self.query_proj = nn.Linear(d_in_patient if mode == "patient" else d_query, d_in_patient)
+        self.norm_kv = nn.LayerNorm(d_in_doc)
+        self.attn = nn.MultiheadAttention(
+            embed_dim=d_in_patient,
+            num_heads=num_heads,
+            kdim=d_in_doc,
+            vdim=d_in_doc,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.norm_ff = nn.LayerNorm(d_in_patient)
+        self.ff = nn.Sequential(
+            nn.Linear(d_in_patient, 2 * d_in_patient),
+            nn.GELU(),
+            nn.Linear(2 * d_in_patient, d_in_patient),
+        )
+        self.drop = nn.Dropout(dropout)
+        self.gate = nn.Parameter(torch.tensor(float(gate_init)))
+
+    def fuse(self, fusion_input: FusionInput) -> FusionOutput:
+        """Return one ``W``-wide vector per (patient, retrieved document); see the class docstring."""
+        ps = fusion_input.patient_state
+        rm = fusion_input.retrieval_memory
+        if rm.ndim != 5 or rm.shape[1] != 1:
+            raise ValueError(
+                f"GatedDocFusion expects retrieval_memory (B, 1, K, S_doc, D), got {tuple(rm.shape)}"
+            )
+        b, _, k, s_doc, d_mem = rm.shape
+
+        if fusion_input.patient_attention_mask is None:
+            h = ps.mean(dim=1)
+        else:
+            valid = fusion_input.patient_attention_mask.unsqueeze(-1).to(ps.dtype)
+            h = (ps * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1.0)  # (B, W)
+
+        if self.mode == "patient":
+            source = h
+        else:
+            if fusion_input.query_embeddings is None:
+                raise ValueError("GatedDocFusion(mode='query') needs query_embeddings in FusionInput")
+            source = fusion_input.query_embeddings[:, 0]  # (B, d_query)
+        query = self.query_proj(source).repeat_interleave(k, dim=0).unsqueeze(1)  # (B*K, 1, W)
+
+        kv = self.norm_kv(rm.reshape(b * k, s_doc, d_mem))
+        key_padding_mask = None
+        if fusion_input.doc_attention_mask is not None:
+            key_padding_mask = ~fusion_input.doc_attention_mask.reshape(b * k, s_doc).bool()
+        c, _ = self.attn(query, kv, kv, key_padding_mask=key_padding_mask, need_weights=False)
+        c = c + self.drop(self.ff(self.norm_ff(c)))
+        c = self.drop(c).reshape(b, k, -1)  # (B, K, W)
+
+        if self.mode == "query":
+            return FusionOutput(fused_state=c)
+        return FusionOutput(fused_state=h.unsqueeze(1) + torch.tanh(self.gate) * c)

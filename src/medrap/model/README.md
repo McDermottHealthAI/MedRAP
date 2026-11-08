@@ -12,6 +12,6 @@ checkpoint.
 | `retrievers.py`        | `InMemoryRetriever`, `HFDatasetRetriever` (FAISS over a prepared HF dataset)                                                                                         |
 | `retrieval_encoder.py` | `TokenFeatureRetrievalEncoder`, `MeanPooledRetrievalEncoder`, `PerDocMeanPooledRetrievalEncoder`, `LinearProjectionRetrievalEncoder`, `KeyEmbeddingRetrievalEncoder` |
 | `retrieval_scoring.py` | Differentiable retrieval scoring used during the model's forward pass                                                                                                |
-| `fusion.py`            | `ReplaceFusion`, `ConcatFusion`, `PassthroughFusion`, `CrossAttentionFusion`, `PerDocCrossAttentionFusion`                                                           |
+| `fusion.py`            | `ReplaceFusion`, `ConcatFusion`, `PassthroughFusion`, `CrossAttentionFusion`, `PerDocCrossAttentionFusion`, `GatedDocFusion`                                         |
 | `pooling.py`           | `IdentityPooling`, `MaskedMeanPooling`                                                                                                                               |
 | `heads.py`             | `LinearHead`                                                                                                                                                         |
