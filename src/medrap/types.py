@@ -94,6 +94,8 @@ class FusionInput:
         patient_attention_mask: Optional bool mask with shape ``(B, S_ehr)``,
             ``True`` at valid (non-padding) patient-state positions -- forwarded
             from :attr:`~medrap.types.EncoderOutput.attention_mask`.
+        query_embeddings: Optional retrieval queries ``(B, R, D_ret)`` -- forwarded
+            from :attr:`~medrap.types.QueryOutput.query_embeddings`.
     """
 
     patient_state: Tensor
@@ -101,6 +103,7 @@ class FusionInput:
     retrieval_step_ids: Tensor | None = None
     doc_attention_mask: Tensor | None = None
     patient_attention_mask: Tensor | None = None
+    query_embeddings: Tensor | None = None
 
 
 @dataclass(slots=True)

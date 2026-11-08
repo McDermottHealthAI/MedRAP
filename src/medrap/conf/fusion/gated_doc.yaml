@@ -1,0 +1,12 @@
+# Per-document fusion that starts as the patient-only model (gate at 0) and adds each document's
+# contribution through a learned gate; mode=query reads the documents with the retrieval query and
+# drops the patient (retrieval only). Output width = encoder.embedding_dim, so head.in_dim is that.
+# Pair with marginalized_retrieval=true.
+_target_: medrap.model.fusion.GatedDocFusion
+d_in_patient: ${encoder.embedding_dim}
+d_in_doc: ${retrieval_encoder.embedding_dim}
+num_heads: ${encoder.num_heads}
+mode: patient
+d_query: ${query_projector.out_dim}
+gate_init: 0.0
+dropout: 0.0
