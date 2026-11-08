@@ -532,6 +532,22 @@ class PerDocCrossAttentionFusion(FusionModule):
             >>> tuple(fusion.fuse(fi_masked).fused_state.shape)
             (2, 3, 8)
 
+            Patient padding is left out of the mean over codes, so padding a
+            patient's sequence does not change its per-document vectors:
+
+            >>> _ = fusion.eval()
+            >>> ps, rm = torch.randn(1, 4, 4), torch.randn(1, 1, 3, 5, 6)
+            >>> short = fusion.fuse(FusionInput(patient_state=ps, retrieval_memory=rm))
+            >>> padded = fusion.fuse(
+            ...     FusionInput(
+            ...         patient_state=torch.cat([ps, torch.zeros(1, 6, 4)], dim=1),
+            ...         retrieval_memory=rm,
+            ...         patient_attention_mask=torch.BoolTensor([[True] * 4 + [False] * 6]),
+            ...     )
+            ... )
+            >>> torch.allclose(short.fused_state, padded.fused_state, atol=1e-6)
+            True
+
             Wrong ``retrieval_memory`` rank raises ``ValueError``:
 
             >>> bad_rank = FusionInput(
@@ -579,7 +595,12 @@ class PerDocCrossAttentionFusion(FusionModule):
             x = layer(x, kv, key_padding_mask)
         x = self.out_norm(x)  # (B*K, S_ehr, d_model)
 
-        pooled = x.mean(dim=1)  # (B*K, d_model) — one vector per (patient, doc) pair
+        if fusion_input.patient_attention_mask is None:
+            pooled = x.mean(dim=1)  # (B*K, d_model) — one vector per (patient, doc) pair
+        else:
+            # Mean over valid patient codes only, matching MaskedMeanPooling on the patient-only path.
+            valid = fusion_input.patient_attention_mask.repeat_interleave(k, dim=0).unsqueeze(-1).to(x.dtype)
+            pooled = (x * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1.0)
         fused_state = pooled.reshape(b, k, -1)  # (B, K, d_model)
 
         return FusionOutput(fused_state=fused_state)
