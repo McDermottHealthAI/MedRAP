@@ -448,6 +448,10 @@ class PerDocCrossAttentionFusion(FusionModule):
         d_in_patient: Input dimension of ``patient_state`` (``D_ehr``).
         d_in_doc: Input dimension of ``retrieval_memory`` token vectors (``D_mem``).
         dropout: Dropout probability applied inside attention and FFN.
+        zero_init_attn_out: Start every cross-attention output projection at zero, so at
+            initialization documents add nothing to the patient state (it passes through the
+            residual) and their contribution grows only as training finds it useful. Unlike a
+            gate there is no single switch for turning documents off.
 
     Input shapes (via :class:`~medrap.types.FusionInput`):
         - ``patient_state``:    ``(B, S_ehr, D_ehr)``
@@ -470,6 +474,7 @@ class PerDocCrossAttentionFusion(FusionModule):
         d_in_patient: int,
         d_in_doc: int,
         dropout: float = 0.0,
+        zero_init_attn_out: bool = False,
     ) -> None:
         super().__init__()
         self.patient_proj = nn.Linear(d_in_patient, d_model)
@@ -477,6 +482,10 @@ class PerDocCrossAttentionFusion(FusionModule):
             [_CrossAttentionLayer(d_model, d_in_doc, num_heads, ff_dim, dropout) for _ in range(num_layers)]
         )
         self.out_norm = nn.LayerNorm(d_model)
+        if zero_init_attn_out:
+            for layer in self.layers:
+                nn.init.zeros_(layer.attn.out_proj.weight)
+                nn.init.zeros_(layer.attn.out_proj.bias)
 
     def fuse(self, fusion_input: FusionInput) -> FusionOutput:
         """Enrich patient state by attending to each retrieved doc independently.
@@ -531,6 +540,24 @@ class PerDocCrossAttentionFusion(FusionModule):
             ... )
             >>> tuple(fusion.fuse(fi_masked).fused_state.shape)
             (2, 3, 8)
+
+            With ``zero_init_attn_out`` the documents add nothing at initialization, so
+            every document gives the same vector:
+
+            >>> zero = PerDocCrossAttentionFusion(
+            ...     d_model=8,
+            ...     num_heads=2,
+            ...     ff_dim=16,
+            ...     num_layers=2,
+            ...     d_in_patient=4,
+            ...     d_in_doc=6,
+            ...     zero_init_attn_out=True,
+            ... )
+            >>> same = zero.fuse(fi).fused_state
+            >>> torch.allclose(same[:, 0], same[:, 1], atol=1e-6) and torch.allclose(
+            ...     same[:, 0], same[:, 2], atol=1e-6
+            ... )
+            True
 
             Patient padding is left out of the mean over codes, so padding a
             patient's sequence does not change its per-document vectors:
