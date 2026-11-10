@@ -75,9 +75,12 @@ class RetrievalEncoderOutput:
             Supported scaffold shapes include:
             - sequence-style token features: ``(B, R, K, S_doc, D_mem)``
             - tabular pooled memory: ``(B, 1, 1, 1, D_mem)``
+        doc_attention_mask: Optional bool mask ``(B, R, K, S_doc)`` for ``retrieval_memory``, set
+            when the encoder changes the token axis (otherwise the retriever's mask is used).
     """
 
     retrieval_memory: Tensor
+    doc_attention_mask: Tensor | None = None
 
 
 @dataclass(slots=True)

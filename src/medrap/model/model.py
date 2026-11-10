@@ -518,7 +518,11 @@ class RetrievalAugmentedModel(nn.Module):
                 patient_state=encoder_out.patient_state,
                 retrieval_memory=retrieval_encoded.retrieval_memory,
                 retrieval_step_ids=query_out.retrieval_step_ids,
-                doc_attention_mask=retrieval_out.doc_attention_mask,
+                doc_attention_mask=(
+                    retrieval_out.doc_attention_mask
+                    if retrieval_encoded.doc_attention_mask is None
+                    else retrieval_encoded.doc_attention_mask
+                ),
                 patient_attention_mask=encoder_out.attention_mask,
                 query_embeddings=query_out.query_embeddings,
             )
