@@ -35,7 +35,8 @@ Implemented stage components (all in `medrap.model`):
     and a `none`/`random_docs` retrieval ablation mode).
 - **Retrieval encoders**: `TokenFeatureRetrievalEncoder`,
     `MeanPooledRetrievalEncoder`, `PerDocMeanPooledRetrievalEncoder`,
-    `LinearProjectionRetrievalEncoder`, `KeyEmbeddingRetrievalEncoder`.
+    `LinearProjectionRetrievalEncoder`, `KeyEmbeddingRetrievalEncoder`,
+    `QwenHiddenStatesRetrievalEncoder` (contextual token vectors from a frozen Qwen3).
 - **Fusion**: `ReplaceFusion`, `ConcatFusion`, `PassthroughFusion`
     (retrieval-ablation baseline), `CrossAttentionFusion`, `PerDocCrossAttentionFusion`
     (per-document cross-attention; required for `marginalized_retrieval` with attention-based fusion),

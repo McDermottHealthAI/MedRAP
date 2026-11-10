@@ -202,6 +202,8 @@ class QwenHiddenStatesRetrievalEncoder(RetrievalEncoder):
             ids must come from the same tokenizer.
         layer_mix: If ``True``, learn a mix of all hidden layers (embeddings included); if
             ``False``, use the last layer.
+        embedding_dim: Expected size ``D`` of the output vectors (the model's hidden size), so
+            fusion configs can read it; ``None`` skips the check.
         torch_dtype: Dtype the frozen model runs in (``"bfloat16"`` halves memory and time).
             The output is float32.
         trust_remote_code: Passed to ``AutoModel.from_pretrained``. Executes arbitrary code
@@ -236,6 +238,8 @@ class QwenHiddenStatesRetrievalEncoder(RetrievalEncoder):
 
         >>> sum(p.numel() for p in encoder.parameters() if p.requires_grad)
         0
+        >>> encoder.embedding_dim
+        4
         >>> sorted(n for n, p in mixed.named_parameters() if p.requires_grad)
         ['gamma', 'layer_weights']
         >>> tuple(mixed(retrieval).retrieval_memory.shape)
@@ -259,6 +263,15 @@ class QwenHiddenStatesRetrievalEncoder(RetrievalEncoder):
         ... )).retrieval_memory
         >>> bool(empty[0, 0, 1].eq(0).all()), bool(empty.isfinite().all())
         (True, True)
+
+        An ``embedding_dim`` that is not the model's hidden size raises:
+
+        >>> with tempfile.TemporaryDirectory() as model_dir:
+        ...     Qwen3Model(config).save_pretrained(model_dir)
+        ...     QwenHiddenStatesRetrievalEncoder(model_dir, embedding_dim=8, torch_dtype="float32")
+        Traceback (most recent call last):
+        ...
+        ValueError: embedding_dim=8 does not match the model's hidden size 4
     """
 
     def __init__(
@@ -266,6 +279,7 @@ class QwenHiddenStatesRetrievalEncoder(RetrievalEncoder):
         pretrained_model_name_or_path: str,
         *,
         layer_mix: bool = False,
+        embedding_dim: int | None = None,
         torch_dtype: str = "bfloat16",
         trust_remote_code: bool = False,
     ) -> None:
@@ -277,6 +291,11 @@ class QwenHiddenStatesRetrievalEncoder(RetrievalEncoder):
         )
         self.backbone.requires_grad_(False)
         self.backbone.eval()
+        self.embedding_dim = self.backbone.config.hidden_size
+        if embedding_dim is not None and embedding_dim != self.embedding_dim:
+            raise ValueError(
+                f"embedding_dim={embedding_dim} does not match the model's hidden size {self.embedding_dim}"
+            )
         self.layer_mix = layer_mix
         if layer_mix:
             num_states = self.backbone.config.num_hidden_layers + 1  # embeddings + each layer

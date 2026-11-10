@@ -6,4 +6,5 @@
 _target_: medrap.model.retrieval_encoder.QwenHiddenStatesRetrievalEncoder
 pretrained_model_name_or_path: Qwen/Qwen3-Embedding-0.6B
 layer_mix: false
+embedding_dim: 1024
 torch_dtype: bfloat16
