@@ -32,6 +32,7 @@ from .model.retrieval_encoder import (
     LinearProjectionRetrievalEncoder,
     MeanPooledRetrievalEncoder,
     PerDocMeanPooledRetrievalEncoder,
+    QwenHiddenStatesRetrievalEncoder,
     RetrievalEncoder,
     TokenFeatureRetrievalEncoder,
 )
@@ -121,6 +122,7 @@ __all__ = [
     "SequenceMeanQueryProjector",
     "TimeDeltaRoPEPatientEncoder",
     "TokenEmbeddingEncoder",
+    "QwenHiddenStatesRetrievalEncoder",
     "TokenFeatureRetrievalEncoder",
     "float_tensor_config",
     "load_code_index",
