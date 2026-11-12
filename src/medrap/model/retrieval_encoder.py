@@ -6,6 +6,7 @@ These components consume ``RetrieverOutput`` objects and produce
 
 from abc import ABC, abstractmethod
 
+import numpy as np
 import torch
 from torch import nn
 from transformers import AutoModel
@@ -368,6 +369,81 @@ class QwenHiddenStatesRetrievalEncoder(RetrievalEncoder):
             retrieval_memory=memory.reshape(*lead, num_layers * s_doc, d),
             doc_attention_mask=mask.repeat(*([1] * len(lead)), num_layers),  # layer-major, as memory
         )
+
+
+class PrecomputedTokenStatesRetrievalEncoder(RetrievalEncoder):
+    """Per-token document vectors looked up from a precomputed table by retrieved row.
+
+    For when running the language model during training is too slow, for example with many
+    retrieved documents per patient. The table holds one vector per token for every row of the
+    retrieval dataset (the null document included), in row order: for instance the output of
+    :class:`QwenHiddenStatesRetrievalEncoder` with ``layers="last"``, saved once with
+    ``numpy.save``. The encoder reads ``RetrieverOutput.doc_ids``, which must be the dataset row
+    indices (an ``HFDatasetRetriever`` without ``doc_ids_column``). The table is kept in host memory
+    and is not part of the state dict, so checkpoints stay small; it has no trained parameters.
+
+    Args:
+        path: ``.npy`` file of shape ``(N_rows, S_doc, D)`` (float16 halves the memory).
+        embedding_dim: Expected ``D``, so fusion configs can read it; ``None`` skips the check.
+        mmap: If ``True``, read rows from the file on demand instead of loading it into memory.
+
+    Examples:
+        >>> import tempfile
+        >>> import numpy as np
+        >>> from medrap.types import RetrieverOutput
+        >>> table = np.arange(3 * 2 * 4, dtype=np.float16).reshape(3, 2, 4)
+        >>> with tempfile.TemporaryDirectory() as d:
+        ...     np.save(f"{d}/docs.npy", table)
+        ...     encoder = PrecomputedTokenStatesRetrievalEncoder(f"{d}/docs.npy", embedding_dim=4)
+        >>> retrieval = RetrieverOutput(
+        ...     doc_tokens=torch.zeros(1, 1, 2, 2, dtype=torch.long),
+        ...     doc_attention_mask=torch.ones(1, 1, 2, 2, dtype=torch.bool),
+        ...     doc_ids=torch.LongTensor([[[2, 0]]]),
+        ... )
+        >>> out = encoder(retrieval).retrieval_memory
+        >>> tuple(out.shape), out.dtype
+        ((1, 1, 2, 2, 4), torch.float32)
+        >>> torch.equal(out[0, 0, 0], torch.from_numpy(table[2]).float())
+        True
+        >>> sum(p.numel() for p in encoder.parameters()), list(encoder.state_dict())
+        (0, [])
+
+        The doc ids must be present, and ``embedding_dim`` must match the table:
+
+        >>> encoder(RetrieverOutput(doc_tokens=retrieval.doc_tokens, doc_attention_mask=retrieval.doc_attention_mask))
+        Traceback (most recent call last):
+        ...
+        ValueError: PrecomputedTokenStatesRetrievalEncoder requires doc_ids (dataset row indices) on RetrieverOutput
+        >>> with tempfile.TemporaryDirectory() as d:
+        ...     np.save(f"{d}/docs.npy", table)
+        ...     PrecomputedTokenStatesRetrievalEncoder(f"{d}/docs.npy", embedding_dim=8)
+        Traceback (most recent call last):
+        ...
+        ValueError: embedding_dim=8 does not match the table's 4
+    """
+
+    def __init__(self, path: str, *, embedding_dim: int | None = None, mmap: bool = False) -> None:
+        super().__init__()
+        array = np.load(path, mmap_mode="r" if mmap else None)
+        self.table = array if mmap else torch.from_numpy(array)
+        self.embedding_dim = int(array.shape[-1])
+        if embedding_dim is not None and embedding_dim != self.embedding_dim:
+            raise ValueError(f"embedding_dim={embedding_dim} does not match the table's {self.embedding_dim}")
+
+    def encode(self, retrieval: RetrieverOutput) -> RetrievalEncoderOutput:
+        """Look up ``(B, R, K)`` row ids; return ``(B, R, K, S_doc, D)`` float32 vectors."""
+        if retrieval.doc_ids is None:
+            raise ValueError(
+                "PrecomputedTokenStatesRetrievalEncoder requires doc_ids (dataset row indices) on RetrieverOutput"
+            )
+        ids = retrieval.doc_ids.long()
+        flat = ids.reshape(-1).cpu()
+        if isinstance(self.table, torch.Tensor):
+            rows = self.table.index_select(0, flat)
+        else:
+            rows = torch.from_numpy(np.ascontiguousarray(self.table[flat.numpy()]))
+        memory = rows.to(retrieval.doc_attention_mask.device).float()
+        return RetrievalEncoderOutput(retrieval_memory=memory.reshape(*ids.shape, *memory.shape[1:]))
 
 
 class MeanPooledRetrievalEncoder(RetrievalEncoder):
