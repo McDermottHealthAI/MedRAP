@@ -452,6 +452,9 @@ class PerDocCrossAttentionFusion(FusionModule):
             initialization documents add nothing to the patient state (it passes through the
             residual) and their contribution grows only as training finds it useful. Unlike a
             gate there is no single switch for turning documents off.
+        residual: No input projection or output norm, so the output is the patient states plus
+            each layer's document update, pooled. Their mean is then the patient-only head's
+            input plus the documents' contribution. Requires ``d_model == d_in_patient``.
 
     Input shapes (via :class:`~medrap.types.FusionInput`):
         - ``patient_state``:    ``(B, S_ehr, D_ehr)``
@@ -475,13 +478,16 @@ class PerDocCrossAttentionFusion(FusionModule):
         d_in_doc: int,
         dropout: float = 0.0,
         zero_init_attn_out: bool = False,
+        residual: bool = False,
     ) -> None:
         super().__init__()
-        self.patient_proj = nn.Linear(d_in_patient, d_model)
+        if residual and d_model != d_in_patient:
+            raise ValueError(f"residual needs d_model == d_in_patient, got {d_model} and {d_in_patient}")
+        self.patient_proj = nn.Identity() if residual else nn.Linear(d_in_patient, d_model)
         self.layers = nn.ModuleList(
             [_CrossAttentionLayer(d_model, d_in_doc, num_heads, ff_dim, dropout) for _ in range(num_layers)]
         )
-        self.out_norm = nn.LayerNorm(d_model)
+        self.out_norm = nn.Identity() if residual else nn.LayerNorm(d_model)
         if zero_init_attn_out:
             for layer in self.layers:
                 nn.init.zeros_(layer.attn.out_proj.weight)
@@ -574,6 +580,25 @@ class PerDocCrossAttentionFusion(FusionModule):
             ... )
             >>> torch.allclose(short.fused_state, padded.fused_state, atol=1e-6)
             True
+
+            With ``residual`` and zero-initialised attention and feed-forward outputs, every
+            document gives exactly the mean of the patient states, the patient-only head's input:
+
+            >>> res = PerDocCrossAttentionFusion(
+            ...     d_model=4, num_heads=2, ff_dim=8, num_layers=2, d_in_patient=4, d_in_doc=6,
+            ...     residual=True, zero_init_attn_out=True,
+            ... )
+            >>> for layer in res.layers:
+            ...     _ = torch.nn.init.zeros_(layer.ff[-1].weight), torch.nn.init.zeros_(layer.ff[-1].bias)
+            >>> out = res.fuse(FusionInput(patient_state=ps, retrieval_memory=rm)).fused_state
+            >>> torch.allclose(out, ps.mean(dim=1, keepdim=True).expand(1, 3, 4), atol=1e-6)
+            True
+            >>> PerDocCrossAttentionFusion(
+            ...     d_model=8, num_heads=2, ff_dim=8, num_layers=1, d_in_patient=4, d_in_doc=6, residual=True
+            ... )  # doctest: +ELLIPSIS
+            Traceback (most recent call last):
+            ...
+            ValueError: residual needs d_model == d_in_patient...
 
             Wrong ``retrieval_memory`` rank raises ``ValueError``:
 
