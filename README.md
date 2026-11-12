@@ -36,11 +36,12 @@ Implemented stage components (all in `medrap.model`):
 - **Retrieval encoders**: `TokenFeatureRetrievalEncoder`,
     `MeanPooledRetrievalEncoder`, `PerDocMeanPooledRetrievalEncoder`,
     `LinearProjectionRetrievalEncoder`, `KeyEmbeddingRetrievalEncoder`,
-    `QwenHiddenStatesRetrievalEncoder` (contextual token vectors from a frozen Qwen3).
+    `QwenHiddenStatesRetrievalEncoder` (contextual token vectors from a frozen Qwen3),
+    `PrecomputedTokenStatesRetrievalEncoder` (the same, looked up from a precomputed table).
 - **Fusion**: `ReplaceFusion`, `ConcatFusion`, `PassthroughFusion`
     (retrieval-ablation baseline), `CrossAttentionFusion`, `PerDocCrossAttentionFusion`
     (per-document cross-attention; required for `marginalized_retrieval` with attention-based fusion),
-    `GatedDocFusion` (per-document, gated: starts as the patient-only model; `mode=query` for retrieval only).
+    `GatedDocFusion` (per-document, gated: starts as the patient-only model; `gated=false` adds each document with no gate; `mode=query` for retrieval only).
 - **Pooling**: `IdentityPooling`, `MaskedMeanPooling`.
 - **Heads**: `LinearHead`.
 - **Tasks & losses** (in `medrap.train`): binary, marginalized-binary, and

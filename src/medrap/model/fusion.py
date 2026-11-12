@@ -658,6 +658,9 @@ class GatedDocFusion(FusionModule):
         mode: ``"patient"`` or ``"query"``.
         d_query: Width of ``query_embeddings`` (used in ``mode="query"``).
         gate_init: Starting value of ``g`` (``mode="patient"``).
+        gated: If ``False`` there is no gate: the output is ``h + c_k`` (``mode="patient"``), so
+            every document always changes it, while the head still reads the patient-only input
+            ``h`` plus the document's contribution.
         dropout: Dropout in attention and the feed-forward layer.
 
     Input shapes (via :class:`~medrap.types.FusionInput`):
@@ -716,6 +719,14 @@ class GatedDocFusion(FusionModule):
         >>> torch.allclose(a.fused_state, b.fused_state)
         True
 
+        Without the gate, documents change the output from the start and there is no gate
+        parameter:
+
+        >>> ungated = GatedDocFusion(d_in_patient=4, d_in_doc=6, num_heads=2, gated=False)
+        >>> out = ungated.fuse(fi).fused_state
+        >>> torch.allclose(out[:, 0], out[:, 1]), any("gate" in n for n, _ in ungated.named_parameters())
+        (False, False)
+
         Retrieval only (``mode="query"``) reads the documents with the retrieval query and does
         not depend on the patient states:
 
@@ -754,6 +765,7 @@ class GatedDocFusion(FusionModule):
         mode: str = "patient",
         d_query: int = 1024,
         gate_init: float = 0.0,
+        gated: bool = True,
         dropout: float = 0.0,
     ) -> None:
         super().__init__()
@@ -777,7 +789,7 @@ class GatedDocFusion(FusionModule):
             nn.Linear(2 * d_in_patient, d_in_patient),
         )
         self.drop = nn.Dropout(dropout)
-        self.gate = nn.Parameter(torch.tensor(float(gate_init)))
+        self.gate = nn.Parameter(torch.tensor(float(gate_init))) if gated else None
 
     def fuse(self, fusion_input: FusionInput) -> FusionOutput:
         """Return one ``W``-wide vector per (patient, retrieved document); see the class docstring."""
@@ -813,4 +825,6 @@ class GatedDocFusion(FusionModule):
 
         if self.mode == "query":
             return FusionOutput(fused_state=c)
-        return FusionOutput(fused_state=h.unsqueeze(1) + torch.tanh(self.gate) * c)
+        if self.gate is not None:
+            c = torch.tanh(self.gate) * c
+        return FusionOutput(fused_state=h.unsqueeze(1) + c)

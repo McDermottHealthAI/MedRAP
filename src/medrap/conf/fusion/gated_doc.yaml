@@ -9,4 +9,5 @@ num_heads: ${encoder.num_heads}
 mode: patient
 d_query: ${query_projector.out_dim}
 gate_init: 0.0
+gated: true
 dropout: 0.0
