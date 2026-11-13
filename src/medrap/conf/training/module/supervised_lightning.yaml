@@ -7,3 +7,4 @@ validation_auroc: true
 validation_auroc_log_per_task: false
 lr_overrides: {}
 init_bias_from_base_rate: false
+init_encoder_from: null

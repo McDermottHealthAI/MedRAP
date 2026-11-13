@@ -341,6 +341,35 @@ class RetrievalAugmentedModel(nn.Module):
             >>> bool((probs.sum(dim=-1) - 1.0).abs().gt(1e-4).any())
             True
 
+        With :class:`~medrap.model.fusion.GatedDocFusion` the retrieval model starts as the
+        patient-only model: at gate 0 every document's logits are the head applied to the masked
+        mean of the patient states, whatever documents are retrieved:
+
+            >>> from medrap.model.fusion import GatedDocFusion
+            >>> m_gated = RetrievalAugmentedModel(
+            ...     encoder=MEDSCodeEncoder(),
+            ...     query_projector=SequenceMeanQueryProjector(in_dim=1, out_dim=4),
+            ...     retriever=InMemoryRetriever(
+            ...         doc_key_embeddings=torch.FloatTensor(
+            ...             [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]]
+            ...         ),
+            ...         doc_tokens=torch.LongTensor([[1, 2], [3, 4], [5, 6]]),
+            ...         doc_attention_mask=torch.BoolTensor([[True, True], [True, True], [True, True]]),
+            ...         k=2,
+            ...     ),
+            ...     retrieval_encoder=TokenFeatureRetrievalEncoder(vocab_size=8, embedding_dim=6),
+            ...     fusion=GatedDocFusion(d_in_patient=1, d_in_doc=6, num_heads=1),
+            ...     pooling=IdentityPooling(),
+            ...     head=LinearHead(in_dim=1, out_dim=3),
+            ...     marginalized_retrieval=True,
+            ...     marginalized_output_mode="binary",
+            ... )
+            >>> valid = (mb.code != 0).float()
+            >>> h = ((mb.code.float() * valid).sum(1) / valid.sum(1)).unsqueeze(-1)
+            >>> per_doc = m_gated(mb).metadata["per_doc_logits"]  # (B, K, T)
+            >>> torch.allclose(per_doc, m_gated.head(h).unsqueeze(1).expand_as(per_doc))
+            True
+
         Invalid ``marginalized_output_mode`` is rejected eagerly, at
         construction time:
 
@@ -489,8 +518,13 @@ class RetrievalAugmentedModel(nn.Module):
                 patient_state=encoder_out.patient_state,
                 retrieval_memory=retrieval_encoded.retrieval_memory,
                 retrieval_step_ids=query_out.retrieval_step_ids,
-                doc_attention_mask=retrieval_out.doc_attention_mask,
+                doc_attention_mask=(
+                    retrieval_out.doc_attention_mask
+                    if retrieval_encoded.doc_attention_mask is None
+                    else retrieval_encoded.doc_attention_mask
+                ),
                 patient_attention_mask=encoder_out.attention_mask,
+                query_embeddings=query_out.query_embeddings,
             )
         )
         meta: dict[str, object] = {

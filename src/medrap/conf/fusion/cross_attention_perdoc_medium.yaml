@@ -6,3 +6,5 @@ num_layers: 2
 d_in_patient: ${encoder.embedding_dim}
 d_in_doc: ${retrieval_encoder.embedding_dim}
 dropout: 0.1
+zero_init_attn_out: false
+residual: false

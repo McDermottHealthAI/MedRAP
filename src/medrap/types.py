@@ -75,9 +75,12 @@ class RetrievalEncoderOutput:
             Supported scaffold shapes include:
             - sequence-style token features: ``(B, R, K, S_doc, D_mem)``
             - tabular pooled memory: ``(B, 1, 1, 1, D_mem)``
+        doc_attention_mask: Optional bool mask ``(B, R, K, S_doc)`` for ``retrieval_memory``, set
+            when the encoder changes the token axis (otherwise the retriever's mask is used).
     """
 
     retrieval_memory: Tensor
+    doc_attention_mask: Tensor | None = None
 
 
 @dataclass(slots=True)
@@ -94,6 +97,8 @@ class FusionInput:
         patient_attention_mask: Optional bool mask with shape ``(B, S_ehr)``,
             ``True`` at valid (non-padding) patient-state positions -- forwarded
             from :attr:`~medrap.types.EncoderOutput.attention_mask`.
+        query_embeddings: Optional retrieval queries ``(B, R, D_ret)`` -- forwarded
+            from :attr:`~medrap.types.QueryOutput.query_embeddings`.
     """
 
     patient_state: Tensor
@@ -101,6 +106,7 @@ class FusionInput:
     retrieval_step_ids: Tensor | None = None
     doc_attention_mask: Tensor | None = None
     patient_attention_mask: Tensor | None = None
+    query_embeddings: Tensor | None = None
 
 
 @dataclass(slots=True)

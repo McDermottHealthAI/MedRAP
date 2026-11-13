@@ -35,10 +35,13 @@ Implemented stage components (all in `medrap.model`):
     and a `none`/`random_docs` retrieval ablation mode).
 - **Retrieval encoders**: `TokenFeatureRetrievalEncoder`,
     `MeanPooledRetrievalEncoder`, `PerDocMeanPooledRetrievalEncoder`,
-    `LinearProjectionRetrievalEncoder`, `KeyEmbeddingRetrievalEncoder`.
+    `LinearProjectionRetrievalEncoder`, `KeyEmbeddingRetrievalEncoder`,
+    `QwenHiddenStatesRetrievalEncoder` (contextual token vectors from a frozen Qwen3),
+    `PrecomputedTokenStatesRetrievalEncoder` (the same, looked up from a precomputed table).
 - **Fusion**: `ReplaceFusion`, `ConcatFusion`, `PassthroughFusion`
     (retrieval-ablation baseline), `CrossAttentionFusion`, `PerDocCrossAttentionFusion`
-    (per-document cross-attention; required for `marginalized_retrieval` with attention-based fusion).
+    (per-document cross-attention; required for `marginalized_retrieval` with attention-based fusion),
+    `GatedDocFusion` (per-document, gated: starts as the patient-only model; `gated=false` adds each document with no gate; `mode=query` for retrieval only).
 - **Pooling**: `IdentityPooling`, `MaskedMeanPooling`.
 - **Heads**: `LinearHead`.
 - **Tasks & losses** (in `medrap.train`): binary, marginalized-binary, and
@@ -84,9 +87,7 @@ model = RetrievalAugmentedModel(
     encoder=MEDSCodeEncoder(),
     query_projector=SequenceMeanQueryProjector(in_dim=1, out_dim=4),
     retriever=InMemoryRetriever(
-        doc_key_embeddings=torch.FloatTensor(
-            [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]]
-        ),
+        doc_key_embeddings=torch.FloatTensor([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]]),
         doc_tokens=torch.LongTensor([[1, 2], [3, 4]]),
         doc_attention_mask=torch.BoolTensor([[True, True], [True, True]]),
     ),
@@ -181,7 +182,7 @@ Pipeline-stage groups (under `src/medrap/conf/`):
 - `query_projector/` — `linear`, `sequence_mean`, `sequence_mean_1024`
 - `retriever/` — `in_memory`, `in_memory_sanity`, `in_memory_from_pt`, `hf_dataset`
 - `retrieval_encoder/` — `token_feature`, `mean_pooled`, `per_doc_mean_pooled`, `linear_projection`, `key_embedding`
-- `fusion/` — `replace`, `concat`, `passthrough`, `cross_attention_medium`, `cross_attention_perdoc_medium`
+- `fusion/` — `replace`, `concat`, `passthrough`, `cross_attention_medium`, `cross_attention_perdoc_medium`, `gated_doc`
 - `pooling/` — `identity`, `masked_mean`
 - `head/` — `linear`, `linear_1024_to_2`
 

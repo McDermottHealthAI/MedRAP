@@ -80,6 +80,30 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
             (labels from ``train_dataset._mt_matrix``) and a head with a ``linear`` layer
             whose outputs are the per-task logits (``LinearHead``, which marginalized
             retrieval also uses per document).
+        init_encoder_from: Optional path to a Lightning checkpoint whose ``model.encoder.*``
+            weights are loaded into ``model.encoder`` at construction, e.g. to start a
+            retrieval model from a trained patient-only encoder (REALM starts its reader from
+            BERT). Every other part of the model keeps its fresh initialization.
+
+    Examples:
+        ``init_encoder_from`` copies only the encoder's weights:
+
+        >>> import tempfile
+        >>> from pathlib import Path
+        >>> class _EncHead(nn.Module):
+        ...     def __init__(self) -> None:
+        ...         super().__init__()
+        ...         self.encoder = nn.Linear(2, 2)
+        ...         self.head = nn.Linear(2, 1)
+        >>> trained = MedRAPSupervisedLightningModule(model=_EncHead())
+        >>> with tempfile.TemporaryDirectory() as d:
+        ...     path = Path(d) / "trained.ckpt"
+        ...     torch.save({"state_dict": trained.state_dict()}, path)
+        ...     fresh = MedRAPSupervisedLightningModule(model=_EncHead(), init_encoder_from=str(path))
+        >>> torch.equal(fresh.model.encoder.weight, trained.model.encoder.weight)
+        True
+        >>> torch.equal(fresh.model.head.weight, trained.model.head.weight)
+        False
     """
 
     def __init__(
@@ -97,9 +121,15 @@ class MedRAPSupervisedLightningModule(lightning.LightningModule):
         validation_auroc_log_per_task: bool = False,
         lr_overrides: dict[str, float] | None = None,
         init_bias_from_base_rate: bool = False,
+        init_encoder_from: str | None = None,
     ) -> None:
         super().__init__()
         self.model = model
+        if init_encoder_from is not None:
+            state = torch.load(init_encoder_from, map_location="cpu", weights_only=False)["state_dict"]
+            prefix = "model.encoder."
+            encoder_state = {k.removeprefix(prefix): v for k, v in state.items() if k.startswith(prefix)}
+            self.model.encoder.load_state_dict(encoder_state)
         self.task = task or BinaryClassificationTask()
         self.loss_fn = loss_fn or BinaryClassificationLoss()
         self.optimizer_factory = optimizer or (

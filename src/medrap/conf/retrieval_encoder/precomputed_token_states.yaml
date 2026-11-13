@@ -1,0 +1,7 @@
+# Per-token document vectors looked up from a precomputed (N_rows, S_doc, D) .npy table by
+# retrieved row (e.g. Qwen3 last-layer states saved once), for many documents per patient. Needs an
+# hf_dataset retriever without doc_ids_column, so doc_ids are row indices. Set path.
+_target_: medrap.model.retrieval_encoder.PrecomputedTokenStatesRetrievalEncoder
+path: ???
+embedding_dim: 1024
+mmap: false

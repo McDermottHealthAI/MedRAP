@@ -1,0 +1,11 @@
+# Contextual token vectors for retrieved documents: a frozen Qwen3 runs over each document and
+# fusion attends over every token from every layer (layers=attend; layer_stride=4 keeps every 4th
+# layer to save memory). layers=last reads the last layer only; layers=mix a learned mix of all
+# layers. The corpus's doc_tokens must come from the same tokenizer (medrap-prepare-retrieval-dataset
+# with Qwen/Qwen3-Embedding-0.6B). Pair with a fusion whose d_in_doc is 1024.
+_target_: medrap.model.retrieval_encoder.QwenHiddenStatesRetrievalEncoder
+pretrained_model_name_or_path: Qwen/Qwen3-Embedding-0.6B
+layers: attend
+layer_stride: 1
+embedding_dim: 1024
+torch_dtype: bfloat16

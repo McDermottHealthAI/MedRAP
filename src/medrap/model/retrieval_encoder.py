@@ -6,6 +6,7 @@ These components consume ``RetrieverOutput`` objects and produce
 
 from abc import ABC, abstractmethod
 
+import numpy as np
 import torch
 from torch import nn
 from transformers import AutoModel
@@ -184,6 +185,265 @@ class TokenFeatureRetrievalEncoder(RetrievalEncoder):
             True
         """
         return RetrievalEncoderOutput(retrieval_memory=self.embedding(retrieval.doc_tokens.long()))
+
+
+class QwenHiddenStatesRetrievalEncoder(RetrievalEncoder):
+    """Contextual token vectors for retrieved documents from a frozen pretrained language model.
+
+    Runs the frozen model over each retrieved document's tokens and returns its hidden states,
+    so each vector carries the document's context (unlike :class:`TokenFeatureRetrievalEncoder`,
+    which looks tokens up in the input embedding table). ``layers`` picks what fusion reads:
+
+    - ``"attend"``: every token from every layer (embeddings included, every ``layer_stride``-th
+      layer), so fusion attends over tokens and layers together. Each layer's vectors are
+      layer-normalised (no parameters) because the layers' scales differ, and a learned layer
+      embedding tells fusion which layer a vector came from. The token axis becomes
+      ``S_doc * L`` (layer-major) and the output carries the matching ``doc_attention_mask``.
+    - ``"last"``: the last layer's vector per token.
+    - ``"mix"``: a learned mix of all layers per token (ELMo):
+      ``gamma * sum_l softmax(w)_l LN(h_l)``.
+
+    Args:
+        pretrained_model_name_or_path: HuggingFace model name or local path. The document token
+            ids must come from the same tokenizer.
+        layers: ``"attend"``, ``"last"`` or ``"mix"``, as above.
+        layer_stride: With ``"attend"``, keep every ``layer_stride``-th hidden state (always
+            including the last layer); 1 keeps all.
+        embedding_dim: Expected size ``D`` of the output vectors (the model's hidden size), so
+            fusion configs can read it; ``None`` skips the check.
+        torch_dtype: Dtype the frozen model runs in (``"bfloat16"`` halves memory and time).
+            The output is float32.
+        trust_remote_code: Passed to ``AutoModel.from_pretrained``. Executes arbitrary code
+            shipped with the model repository when ``True`` -- only set this for a model source
+            you trust.
+
+    Examples:
+        A tiny randomly initialised Qwen3 model (2 layers, so 3 hidden states) saved locally:
+
+        >>> import tempfile
+        >>> from transformers import Qwen3Config, Qwen3Model
+        >>> from medrap.types import RetrieverOutput
+        >>> config = Qwen3Config(
+        ...     vocab_size=8, hidden_size=4, intermediate_size=8, num_hidden_layers=2,
+        ...     num_attention_heads=1, num_key_value_heads=1, head_dim=4,
+        ... )
+        >>> _ = torch.manual_seed(0)
+        >>> with tempfile.TemporaryDirectory() as model_dir:
+        ...     Qwen3Model(config).save_pretrained(model_dir)
+        ...     encoders = {
+        ...         layers: QwenHiddenStatesRetrievalEncoder(model_dir, layers=layers, torch_dtype="float32")
+        ...         for layers in ("attend", "last", "mix")
+        ...     }
+        >>> retrieval = RetrieverOutput(
+        ...     doc_tokens=torch.LongTensor([[[[1, 2, 3], [2, 1, 0]]]]),
+        ...     doc_attention_mask=torch.BoolTensor([[[[True, True, True], [True, True, False]]]]),
+        ... )
+
+        With ``"attend"`` each document has 3 tokens x 3 hidden states, and the mask repeats the
+        document's mask once per layer:
+
+        >>> out = encoders["attend"](retrieval)
+        >>> tuple(out.retrieval_memory.shape), out.retrieval_memory.dtype
+        ((1, 1, 2, 9, 4), torch.float32)
+        >>> out.doc_attention_mask[0, 0, 1].tolist()
+        [True, True, False, True, True, False, True, True, False]
+
+        ``"last"`` and ``"mix"`` keep one vector per token and the retriever's mask:
+
+        >>> tuple(encoders["last"](retrieval).retrieval_memory.shape), encoders["last"](retrieval).doc_attention_mask
+        ((1, 1, 2, 3, 4), None)
+        >>> tuple(encoders["mix"](retrieval).retrieval_memory.shape)
+        (1, 1, 2, 3, 4)
+
+        The model is frozen; the only trained parameters are the layer embedding or the mix:
+
+        >>> {k: sorted(n for n, p in e.named_parameters() if p.requires_grad) for k, e in encoders.items()}
+        {'attend': ['layer_embedding'], 'last': [], 'mix': ['gamma', 'layer_weights']}
+        >>> encoders["last"].embedding_dim
+        4
+
+        The vectors are contextual: the same token gets a different vector after different
+        tokens (token 2 at position 1 follows 1 in the first document and 2 in the second):
+
+        >>> ctx = encoders["last"](RetrieverOutput(
+        ...     doc_tokens=torch.LongTensor([[[[1, 2], [2, 2]]]]),
+        ...     doc_attention_mask=torch.ones(1, 1, 2, 2, dtype=torch.bool),
+        ... )).retrieval_memory
+        >>> torch.allclose(ctx[0, 0, 0, 1], ctx[0, 0, 1, 1])
+        False
+
+        A document with no valid tokens (the null document) gives zero vectors, not NaN:
+
+        >>> empty = encoders["attend"](RetrieverOutput(
+        ...     doc_tokens=torch.LongTensor([[[[1, 2], [0, 0]]]]),
+        ...     doc_attention_mask=torch.BoolTensor([[[[True, True], [False, False]]]]),
+        ... )).retrieval_memory
+        >>> bool(empty[0, 0, 1].eq(0).all()), bool(empty.isfinite().all())
+        (True, True)
+
+        ``layer_stride`` keeps every n-th hidden state plus the last; a wrong ``embedding_dim``
+        or ``layers`` raises:
+
+        >>> with tempfile.TemporaryDirectory() as model_dir:
+        ...     Qwen3Model(config).save_pretrained(model_dir)
+        ...     QwenHiddenStatesRetrievalEncoder(model_dir, layer_stride=2, torch_dtype="float32").layer_ids
+        ...     QwenHiddenStatesRetrievalEncoder(model_dir, embedding_dim=8, torch_dtype="float32")
+        Traceback (most recent call last):
+        ...
+        ValueError: embedding_dim=8 does not match the model's hidden size 4
+        >>> QwenHiddenStatesRetrievalEncoder("unused", layers="first")
+        Traceback (most recent call last):
+        ...
+        ValueError: layers must be 'attend', 'last' or 'mix', got 'first'
+    """
+
+    def __init__(
+        self,
+        pretrained_model_name_or_path: str,
+        *,
+        layers: str = "attend",
+        layer_stride: int = 1,
+        embedding_dim: int | None = None,
+        torch_dtype: str = "bfloat16",
+        trust_remote_code: bool = False,
+    ) -> None:
+        super().__init__()
+        if layers not in ("attend", "last", "mix"):
+            raise ValueError(f"layers must be 'attend', 'last' or 'mix', got {layers!r}")
+        self.backbone = AutoModel.from_pretrained(
+            pretrained_model_name_or_path,
+            dtype=getattr(torch, torch_dtype),
+            trust_remote_code=trust_remote_code,
+        )
+        self.backbone.requires_grad_(False)
+        self.backbone.eval()
+        self.embedding_dim = self.backbone.config.hidden_size
+        if embedding_dim is not None and embedding_dim != self.embedding_dim:
+            raise ValueError(
+                f"embedding_dim={embedding_dim} does not match the model's hidden size {self.embedding_dim}"
+            )
+        self.layers = layers
+        num_states = self.backbone.config.num_hidden_layers + 1  # embeddings + each layer
+        self.layer_ids = sorted({*range(0, num_states, layer_stride), num_states - 1})
+        if layers == "attend":
+            self.layer_embedding = nn.Parameter(0.02 * torch.randn(len(self.layer_ids), self.embedding_dim))
+        elif layers == "mix":
+            self.layer_weights = nn.Parameter(torch.zeros(num_states))
+            self.gamma = nn.Parameter(torch.ones(()))
+
+    def train(self, mode: bool = True) -> "QwenHiddenStatesRetrievalEncoder":
+        """Set training mode, keeping the frozen model in eval mode (no dropout)."""
+        super().train(mode)
+        self.backbone.eval()
+        return self
+
+    def encode(self, retrieval: RetrieverOutput) -> RetrievalEncoderOutput:
+        """Run the frozen model over ``(B, R, K, S_doc)`` tokens; see the class docstring for outputs."""
+        tokens = retrieval.doc_tokens.long()
+        mask = retrieval.doc_attention_mask.bool()
+        *lead, s_doc = tokens.shape
+        tokens, flat_mask = tokens.reshape(-1, s_doc), mask.reshape(-1, s_doc)
+        # A document with no valid tokens gets one so attention is defined; its output is zeroed.
+        run_mask = flat_mask.clone()
+        run_mask[~flat_mask.any(dim=1), 0] = True
+        with torch.no_grad():
+            out = self.backbone(
+                input_ids=tokens, attention_mask=run_mask.long(), output_hidden_states=self.layers != "last"
+            )
+        valid = flat_mask.unsqueeze(-1)
+        if self.layers == "last":
+            memory = out.last_hidden_state.float() * valid
+            return RetrievalEncoderOutput(retrieval_memory=memory.reshape(*lead, s_doc, -1))
+        d = self.embedding_dim
+        if self.layers == "mix":
+            states = torch.stack([nn.functional.layer_norm(h.float(), (d,)) for h in out.hidden_states])
+            weights = torch.softmax(self.layer_weights, dim=0)
+            memory = self.gamma * torch.einsum("l,lnsd->nsd", weights, states) * valid
+            return RetrievalEncoderOutput(retrieval_memory=memory.reshape(*lead, s_doc, -1))
+        states = torch.stack(
+            [nn.functional.layer_norm(out.hidden_states[i].float(), (d,)) for i in self.layer_ids], dim=1
+        )  # (N, L, S_doc, D)
+        memory = (states + self.layer_embedding[None, :, None, :]) * valid.unsqueeze(1)
+        num_layers = len(self.layer_ids)
+        return RetrievalEncoderOutput(
+            retrieval_memory=memory.reshape(*lead, num_layers * s_doc, d),
+            doc_attention_mask=mask.repeat(*([1] * len(lead)), num_layers),  # layer-major, as memory
+        )
+
+
+class PrecomputedTokenStatesRetrievalEncoder(RetrievalEncoder):
+    """Per-token document vectors looked up from a precomputed table by retrieved row.
+
+    For when running the language model during training is too slow, for example with many
+    retrieved documents per patient. The table holds one vector per token for every row of the
+    retrieval dataset (the null document included), in row order: for instance the output of
+    :class:`QwenHiddenStatesRetrievalEncoder` with ``layers="last"``, saved once with
+    ``numpy.save``. The encoder reads ``RetrieverOutput.doc_ids``, which must be the dataset row
+    indices (an ``HFDatasetRetriever`` without ``doc_ids_column``). The table is kept in host memory
+    and is not part of the state dict, so checkpoints stay small; it has no trained parameters.
+
+    Args:
+        path: ``.npy`` file of shape ``(N_rows, S_doc, D)`` (float16 halves the memory).
+        embedding_dim: Expected ``D``, so fusion configs can read it; ``None`` skips the check.
+        mmap: If ``True``, read rows from the file on demand instead of loading it into memory.
+
+    Examples:
+        >>> import tempfile
+        >>> import numpy as np
+        >>> from medrap.types import RetrieverOutput
+        >>> table = np.arange(3 * 2 * 4, dtype=np.float16).reshape(3, 2, 4)
+        >>> with tempfile.TemporaryDirectory() as d:
+        ...     np.save(f"{d}/docs.npy", table)
+        ...     encoder = PrecomputedTokenStatesRetrievalEncoder(f"{d}/docs.npy", embedding_dim=4)
+        >>> retrieval = RetrieverOutput(
+        ...     doc_tokens=torch.zeros(1, 1, 2, 2, dtype=torch.long),
+        ...     doc_attention_mask=torch.ones(1, 1, 2, 2, dtype=torch.bool),
+        ...     doc_ids=torch.LongTensor([[[2, 0]]]),
+        ... )
+        >>> out = encoder(retrieval).retrieval_memory
+        >>> tuple(out.shape), out.dtype
+        ((1, 1, 2, 2, 4), torch.float32)
+        >>> torch.equal(out[0, 0, 0], torch.from_numpy(table[2]).float())
+        True
+        >>> sum(p.numel() for p in encoder.parameters()), list(encoder.state_dict())
+        (0, [])
+
+        The doc ids must be present, and ``embedding_dim`` must match the table:
+
+        >>> encoder(RetrieverOutput(doc_tokens=retrieval.doc_tokens, doc_attention_mask=retrieval.doc_attention_mask))
+        Traceback (most recent call last):
+        ...
+        ValueError: PrecomputedTokenStatesRetrievalEncoder requires doc_ids (dataset row indices) on RetrieverOutput
+        >>> with tempfile.TemporaryDirectory() as d:
+        ...     np.save(f"{d}/docs.npy", table)
+        ...     PrecomputedTokenStatesRetrievalEncoder(f"{d}/docs.npy", embedding_dim=8)
+        Traceback (most recent call last):
+        ...
+        ValueError: embedding_dim=8 does not match the table's 4
+    """
+
+    def __init__(self, path: str, *, embedding_dim: int | None = None, mmap: bool = False) -> None:
+        super().__init__()
+        array = np.load(path, mmap_mode="r" if mmap else None)
+        self.table = array if mmap else torch.from_numpy(array)
+        self.embedding_dim = int(array.shape[-1])
+        if embedding_dim is not None and embedding_dim != self.embedding_dim:
+            raise ValueError(f"embedding_dim={embedding_dim} does not match the table's {self.embedding_dim}")
+
+    def encode(self, retrieval: RetrieverOutput) -> RetrievalEncoderOutput:
+        """Look up ``(B, R, K)`` row ids; return ``(B, R, K, S_doc, D)`` float32 vectors."""
+        if retrieval.doc_ids is None:
+            raise ValueError(
+                "PrecomputedTokenStatesRetrievalEncoder requires doc_ids (dataset row indices) on RetrieverOutput"
+            )
+        ids = retrieval.doc_ids.long()
+        flat = ids.reshape(-1).cpu()
+        if isinstance(self.table, torch.Tensor):
+            rows = self.table.index_select(0, flat)
+        else:
+            rows = torch.from_numpy(np.ascontiguousarray(self.table[flat.numpy()]))
+        memory = rows.to(retrieval.doc_attention_mask.device).float()
+        return RetrievalEncoderOutput(retrieval_memory=memory.reshape(*ids.shape, *memory.shape[1:]))
 
 
 class MeanPooledRetrievalEncoder(RetrievalEncoder):
